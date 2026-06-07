@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+telegram/browser_profile/
+*.env
+telegram/artifacts/
+telegram/downloads/
+telegram/output/
+telegram/sessions/
+.gdrive*
+dataset_builder/.downloaded/
+dataset_builder/.completed/
+dataset_builder/*.log
