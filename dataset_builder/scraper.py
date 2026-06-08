@@ -14,6 +14,8 @@ def install_dependencies():
         try:
             if dep == "beautifulsoup4":
                 __import__("bs4")
+            elif dep == "pillow":
+                __import__("PIL")
             else:
                 __import__(dep)
         except ImportError:

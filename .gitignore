@@ -11,3 +11,5 @@ telegram/sessions/
 dataset_builder/.downloaded/
 dataset_builder/.completed/
 dataset_builder/*.log
+.downloaded/
+.extras/
