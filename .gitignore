@@ -13,3 +13,4 @@ dataset_builder/.completed/
 dataset_builder/*.log
 .downloaded/
 .extras/
+.completed/

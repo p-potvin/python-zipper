@@ -12,7 +12,7 @@ This project consists of two core automation pipelines:
 
 An automated image pipeline designed to fetch, organize, deduplicate, and filter images:
 
-* **Background HTTP Server (`server.py`)**: Runs on `http://127.0.0.1:5171` to receive download payloads directly from browser extensions.
+* **Background API Server**: Integrated into the central **VaultWares API** (`vaultwares-api` on `http://127.0.0.1:9001`) to receive and process scraping/downloading payloads from browser extensions. (Legacy fallback server `server.py` runs on `http://127.0.0.1:5171`).
 * **Scraper Tool (`scraper.py`)**: Downloads and packages images from any website using standard HTTP requests or browser rendering via Playwright, creating zip archives in batches of 100.
 * **Extraction & Deduplication Pipeline (`unzip_dedupe.ps1`)**: Scans the `.downloaded/` folder, extracts zip files, runs Czkawka CLI to find and isolate duplicate images (keeping the oldest), and moves processed archives to `.downloaded/.completed/`.
 * **AI Person Detection Filter (`face_detector.py`)**: Runs the Hugging Face `facebook/detr-resnet-50` object detection model on extracted images. It automatically keeps only the images containing exactly **one** person, moving all other images to `.downloaded/.completed/`.
@@ -41,13 +41,11 @@ A background pipeline for parsing links, resolving hosts, and cloud upload orche
 
 2. The project relies on the `.venv` virtual environment which contains standard packages like PyTorch, Transformers, Playwright, Telethon, Pillow, and requests.
 
-### Service Installation
+The background server is registered as a Windows Service `vaultwares-api` using NSSM. It runs automatically in the background on Delayed Start:
 
-The background server is registered as a Windows Service `Python Server Zipper` using NSSM. It runs automatically in the background on Delayed Start:
-
-* Port: `5171`
+* Port: `9001`
 * Status Check:
 
   ```powershell
-  nssm status "Python Server Zipper"
+  nssm status "vaultwares-api"
   ```
