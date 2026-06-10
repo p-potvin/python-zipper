@@ -961,6 +961,10 @@
                     <input type="checkbox" id="zipper-toggle-highlights" ${isHighlightEnabled ? 'checked' : ''}>
                     <span class="zipper-slider"></span>
                 </label>
+                <label class="zipper-switch" title="Toggle Image Upscaling">
+                    <input type="checkbox" id="zipper-upscale-enabled">
+                    <span class="zipper-slider"></span>
+                </label>
             </div>
             <button id="zipper-abort-btn">Abort</button>
             <button id="zipper-close-btn">&times;</button>
@@ -1110,6 +1114,17 @@
             <div class="zipper-input-group">
                 <label>Filter / CSS Selector</label>
                 <input type="text" id="zipper-selector" class="zipper-input" placeholder="Filter links or CSS selector e.g. #gallery img">
+            </div>
+            <div class="zipper-input-group">
+                <label>Upscaling Options</label>
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <select id="zipper-upscale-model" class="zipper-input" style="width: 140px; font-size: 11px;">
+                        <option value="4xNomos8k_atd">4x Nomos8k ATD</option>
+                    </select>
+                </div>
+                <div style="font-size: 10px; color: var(--zipper-text-muted); margin-top: 4px;">
+                    Enable upscaling to process images with AI model (4x scale). Only one job at a time.
+                </div>
             </div>
             <button id="zipper-scrape-btn" class="zipper-btn">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
@@ -1394,6 +1409,30 @@
             }
         };
 
+        // Load saved preferences for upscaling and set event listeners
+        const savedUpscaleEnabled = localStorage.getItem('zipper-upscale-enabled') === 'true';
+        const savedUpscaleModel = localStorage.getItem('zipper-upscale-model') || '4xNomos8k_atd';
+
+        // Set initial values (need to wait for elements to be created, so do this later)
+        setTimeout(() => {
+            const upscaleToggle = document.getElementById('zipper-upscale-enabled');
+            const upscaleModelSelect = document.getElementById('zipper-upscale-model');
+            
+            if (upscaleToggle) {
+                upscaleToggle.checked = savedUpscaleEnabled;
+                upscaleToggle.onchange = (e) => {
+                    localStorage.setItem('zipper-upscale-enabled', e.target.checked);
+                };
+            }
+            
+            if (upscaleModelSelect) {
+                upscaleModelSelect.value = savedUpscaleModel;
+                upscaleModelSelect.onchange = (e) => {
+                    localStorage.setItem('zipper-upscale-model', e.target.value);
+                };
+            }
+        }, 100);
+
         // Tab Switching
         let dashboardPollInterval = null;
 
@@ -1428,6 +1467,7 @@
                                     <div style="font-size: 10px; color: var(--zipper-text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-bottom: 6px;" title="${job.url}">
                                         Source: ${job.url}
                                     </div>
+                                    ${job.upscale_enabled ? `<div style="font-size: 9px; color: var(--zipper-accent); margin-bottom: 4px;"><strong>Upscaling:</strong> ${job.upscale_model}</div>` : ''}
                                     <div style="display: flex; align-items: center; gap: 8px;">
                                         <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
                                             <div style="width: ${percent}%; height: 100%; background: ${statusColor}; transition: width 0.3s;"></div>
@@ -1702,16 +1742,32 @@
             scrapeBtn.disabled = true;
             logToConsole(`[Media] Sending ${urls.length} media files to VaultWares API...`, 'info');
 
+            // Get upscaling config
+            const upscaleEnabled = document.getElementById('zipper-upscale-enabled').checked;
+            const upscaleModel = document.getElementById('zipper-upscale-model').value;
+
             if (serverOnline) {
                 try {
                     const response = await makeGMRequest("http://127.0.0.1:9001/download", "POST", {
                         url: window.location.href,
                         links: urls,
-                        batch_size: 100
+                        batch_size: 5,
+                        upscale_enabled: upscaleEnabled,
+                        upscale_model: upscaleModel
                     });
 
                     if (response.ok) {
-                        logToConsole(`[Server] Success: Sent ${urls.length} media files to pipeline.`, 'success');
+                        let data;
+                        try {
+                            data = await response.json();
+                            logToConsole(`[Server] Success: Sent ${urls.length} media files to pipeline.`, 'success');
+                            if (data.correlationId) {
+                                logToConsole(`[Server] Job ID: ${data.correlationId}`, 'info');
+                            }
+                        } catch (e) {
+                            logToConsole(`[Server] Success: Sent ${urls.length} media files to pipeline.`, 'success');
+                        }
+                        flashFab();
                     } else {
                         throw new Error(`Server returned ${response.status}`);
                     }

@@ -28,13 +28,15 @@ def install_dependencies():
             print(f"Please install them manually using: pip install {' '.join(dependencies)}")
             sys.exit(1)
 
-# Ensure dependencies are installed before we import them
 install_dependencies()
 
-# Now safe to import
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
 from transformers import DetrImageProcessor, DetrForObjectDetection
+
+# Prevent PIL from throwing errors or stalling on large images
+Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def move_file_safe(src, dst_dir):
     if not os.path.exists(src):
@@ -65,21 +67,21 @@ def main():
 
     os.makedirs(args.completed, exist_ok=True)
 
+    # FIXED: Explicitly target CUDA (RTX 3060) to leverage hardware acceleration and clear thread locks
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device for inference: {device}")
+
     print("Initializing Facebook DETR-ResNet-50 object detection model...")
     try:
-        # Load DETR model
         processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
-        model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50")
-        # Put model in evaluation mode
+        model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50").to(device)
         model.eval()
     except Exception as e:
         print(f"Failed to load DETR model from Hugging Face: {e}")
         sys.exit(1)
 
-    # Valid image extensions
     valid_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
     
-    # Collect all images in directory
     files = [
         os.path.join(args.dir, f) for f in os.listdir(args.dir)
         if os.path.isfile(os.path.join(args.dir, f)) and os.path.splitext(f)[1].lower() in valid_extensions
@@ -91,28 +93,24 @@ def main():
 
     print(f"Analyzing {len(files)} images for person presence...")
     
-    # Disable gradient computation for faster inference and lower memory usage
-    with torch.no_grad():
+    # FIXED: Use inference_mode instead of no_grad for better optimization performance on Ampere architecture
+    with torch.inference_mode():
         for file_path in files:
-            # Skip files in the .completed directory itself if scanned
             if os.path.abspath(file_path).startswith(os.path.abspath(args.completed)):
                 continue
 
             try:
-                # Open image
                 image = Image.open(file_path).convert("RGB")
                 
-                # Preprocess image
+                # FIXED: Move tensors directly to your GPU
                 inputs = processor(images=image, return_tensors="pt")
+                inputs = {k: v.to(device) for k, v in inputs.items()}
                 
-                # Run inference
                 outputs = model(**inputs)
                 
-                # Post-process results
-                target_sizes = torch.tensor([image.size[::-1]])
+                target_sizes = torch.tensor([image.size[::-1]]).to(device)
                 results = processor.post_process_object_detection(outputs, target_sizes=target_sizes, threshold=args.threshold)[0]
                 
-                # Count "person" class detections
                 person_count = 0
                 for label in results["labels"]:
                     label_name = model.config.id2label[label.item()]
@@ -121,13 +119,11 @@ def main():
                         
                 print(f"Image '{os.path.basename(file_path)}': detected {person_count} person(s)")
                 
-                # Keep if exactly one person, move to completed otherwise
                 if person_count != 1:
                     move_file_safe(file_path, args.completed)
                     
             except Exception as e:
                 print(f"Error processing image {file_path}: {e}")
-                # Move corrupted or unreadable images to completed as well
                 move_file_safe(file_path, args.completed)
 
     print("Person detection filtering phase complete.")
