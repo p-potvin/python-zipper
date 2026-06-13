@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Zip it (zip.js Edition) - VaultWares API Link
+// @name         Zip it - VaultWares
 // @namespace    clopeux-scripts
 // @version      7.0.2
-// @description  Visually stunning, glassmorphic download and upload manager for python-zipper
+// @description  Visually stunning, glassmorphic download and upload manager.VaultWares API Download Manager Browser Helper Script Addon Bridge for Media Cloud Management on Local Server (uses pyload :8003 as well as Internet Download Manager and Real-Debrid to download restricted links in bulk and Katfile, Fileboom/k2s API to upload directly to my cloud accounts and Linkvertise to wrap these links inside a comfortable linkvertise PPD link distributed automatically on both tube-sites' link-sharing feature and downloaded by customers around the world)
 // @author       Clopeux
 // @match        *://*/*
 // @icon         https://icons.duckduckgo.com/ip2/7-zip.org.ico
@@ -69,8 +69,8 @@
     // Color theory palette generator (soft analogous tones)
     function generatePalette(h, s, l) {
         // Safe ranges for readability and high contrast against dark panel background
-        const safeS = Math.max(45, Math.min(85, s));
-        const safeL = Math.max(55, Math.min(75, l));
+        const safeS = Math.max(35, Math.min(90, s));
+        const safeL = Math.max(35, Math.min(90, l));
 
         const primary = `hsl(${h}, ${safeS}%, ${safeL}%)`;
 
@@ -164,8 +164,8 @@
                 backdrop-filter: blur(12px);
                 border: 1px solid var(--zipper-border);
                 box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-                cursor: pointer;
-                z-index: 9999999;
+                cursor: grab;
+                z-index: 10000001;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -226,7 +226,7 @@
                 backdrop-filter: blur(16px) saturate(120%);
                 border: 1px solid var(--zipper-border);
                 box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-                z-index: 9999998;
+                z-index: 10000002;
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
@@ -319,12 +319,44 @@
                 cursor: pointer;
                 transition: all 0.2s;
                 text-align: center;
+                border-radius: 0 !important;
             }
 
             .zipper-tab-btn.active {
                 color: var(--zipper-primary);
                 background: rgba(255, 255, 255, 0.02);
                 box-shadow: inset 0 -2px 0 var(--zipper-primary);
+                border-radius: 0 !important;
+            }
+
+            .zipper-icon-toggle {
+                background: transparent;
+                border: none;
+                padding: 6px;
+                border-radius: 4px;
+                color: var(--zipper-text-muted);
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.2s ease;
+                opacity: 0.6;
+            }
+            .zipper-icon-toggle:hover {
+                background: rgba(255, 255, 255, 0.08);
+                opacity: 0.9;
+                color: var(--zipper-text);
+            }
+            .zipper-icon-toggle.active {
+                color: var(--zipper-primary);
+                opacity: 1;
+                background: rgba(255, 255, 255, 0.05);
+                box-shadow: 0 0 8px rgba(255, 255, 255, 0.05);
+            }
+            .zipper-icon-toggle:disabled {
+                opacity: 0.15 !important;
+                cursor: not-allowed !important;
+                pointer-events: none !important;
             }
 
             .zipper-content {
@@ -418,10 +450,9 @@
 
             #zipper-console {
                 height: 100px;
-                background: rgba(0, 0, 0, 0.45);
-                border-radius: 6px;
-                border: 1px solid var(--zipper-border);
-                padding: 8px;
+                background: rgba(0, 0, 0, 0.3);
+                border-top: 1px solid var(--zipper-border);
+                padding: 8px 12px;
                 overflow-y: auto;
                 font-family: 'Jetbrains Mono', monospace;
                 font-size: 10px;
@@ -429,6 +460,7 @@
                 display: flex;
                 flex-direction: column;
                 gap: 2px;
+                flex-shrink: 0;
             }
 
             .console-line {
@@ -612,6 +644,16 @@
                 transform: translateX(15px);
             }
 
+            .zipper-switch input:disabled + .zipper-slider {
+                background-color: rgba(255, 255, 255, 0.08);
+                cursor: not-allowed;
+                opacity: 0.5;
+            }
+
+            .zipper-switch input:disabled + .zipper-slider:before {
+                background-color: #555566;
+            }
+
             /* Floating Download Button */
             #zipper-float-download-btn {
                 display: none;
@@ -651,7 +693,7 @@
     }
 
     async function checkServerStatus() {
-        const res = await makeGMRequest("http://127.0.0.1:9001/health", "GET");
+        const res = await makeGMRequest("http://100.67.25.118:9001/health", "GET");
         return res.ok;
     }
 
@@ -679,7 +721,7 @@
             let url = urls[i];
             try {
                 let rawBuffer = await fetchAsArrayBuffer(url);
-                let ext = url.split('.').pop().split(/[\?#]/)[0];
+                let ext = url.split('.').pop().split(new RegExp('[?#]'))[0];
                 if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi'].includes(ext.toLowerCase())) ext = 'jpg';
 
                 blob = new Blob([rawBuffer]);
@@ -741,6 +783,7 @@
     function harvestLinks() {
         const mediaExtRegex = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)/i;
         const tagRegex = /^(img|video|source)$/i;
+        const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
 
         const mediaLinks = new Set();
         const cloudLinks = new Set();
@@ -801,7 +844,6 @@
             const lowerUrl = url.toLowerCase();
 
             // Videos are highly interesting!
-            const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
             const isVideo = videoExtensions.some(ext => lowerUrl.endsWith(ext)) || (el && (el.tagName.toLowerCase() === 'video' || el.tagName.toLowerCase() === 'source'));
             if (isVideo) return true;
 
@@ -851,6 +893,11 @@
                             if (!mediaLinksMetadata.has(url) || interesting) {
                                 mediaLinksMetadata.set(url, interesting);
                             }
+                            const isVideoTag = tagName.toLowerCase() === 'video' || tagName.toLowerCase() === 'source';
+                            const isVideoUrl = videoExtensions.some(ext => url.toLowerCase().includes(ext)) || url.toLowerCase().includes("bunkr") || url.toLowerCase().includes("bunkrr");
+                            if (isVideoTag || isVideoUrl) {
+                                cloudLinks.add(url);
+                            }
                         }
                     }
                 }
@@ -870,6 +917,10 @@
                             const interesting = isInterestingMedia(href, el);
                             if (!mediaLinksMetadata.has(href) || interesting) {
                                 mediaLinksMetadata.set(href, interesting);
+                            }
+                            const isVideoUrl = videoExtensions.some(ext => lowerHref.includes(ext)) || lowerHref.includes("bunkr") || lowerHref.includes("bunkrr");
+                            if (isVideoUrl) {
+                                cloudLinks.add(href);
                             }
                         }
                     } else if (isCloud) {
@@ -893,6 +944,10 @@
                     const interesting = isInterestingMedia(url, null);
                     if (!mediaLinksMetadata.has(url) || interesting) {
                         mediaLinksMetadata.set(url, interesting);
+                    }
+                    const isVideoUrl = videoExtensions.some(ext => lowerUrl.includes(ext)) || lowerUrl.includes("bunkr") || lowerUrl.includes("bunkrr");
+                    if (isVideoUrl) {
+                        cloudLinks.add(url);
                     }
                 }
             } else if (isCloud) {
@@ -956,15 +1011,19 @@
         const isHighlightEnabled = localStorage.getItem('zipper-highlight-enabled') !== 'false';
         header.innerHTML = `
             <div style="display: flex; align-items: center; gap: 8px;">
-                <h3>Python Zipper Control</h3>
-                <label class="zipper-switch" title="Toggle DOM Highlights">
-                    <input type="checkbox" id="zipper-toggle-highlights" ${isHighlightEnabled ? 'checked' : ''}>
-                    <span class="zipper-slider"></span>
-                </label>
-                <label class="zipper-switch" title="Toggle Image Upscaling">
-                    <input type="checkbox" id="zipper-upscale-enabled">
-                    <span class="zipper-slider"></span>
-                </label>
+                <h3 style="font-size: 13px; margin-right: 4px;">Python Zipper</h3>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <button id="zipper-toggle-highlights-btn" class="zipper-icon-toggle ${isHighlightEnabled ? 'active' : ''}" title="Toggle DOM Highlights">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                            <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                        </svg>
+                    </button>
+                    <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" disabled>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                            <path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8l-2.5-1.4L14 15.4l1.4-2.5L14 10.4l2.5 1.4 2.5-1.4-1.4 2.5zM20 2l-1.4 2.5L20 7l-2.5-1.4L15 7l1.4-2.5L15 2l2.5 1.4zm-9.5 9.5l-6 6-.7-.7 6-6zm4.2-2.8l-1.4-1.4-1.4 1.4 1.4 1.4z"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
             <button id="zipper-abort-btn">Abort</button>
             <button id="zipper-close-btn">&times;</button>
@@ -989,7 +1048,7 @@
         // --- Console ---
         const consolePanel = document.createElement('div');
         consolePanel.id = 'zipper-console';
-        content.appendChild(consolePanel);
+        panel.appendChild(consolePanel);
 
         function logToConsole(message, type = '') {
             const line = document.createElement('div');
@@ -1017,7 +1076,7 @@
             try {
                 logToConsole(`[Download] Starting download for: ${url.split('/').pop()}`, 'info');
                 if (serverOnline) {
-                    const response = await makeGMRequest("http://127.0.0.1:9001/download", "POST", {
+                    const response = await makeGMRequest("http://100.67.25.118:9001/download", "POST", {
                         url: window.location.href,
                         links: [url],
                         batch_size: 1
@@ -1111,22 +1170,19 @@
                 <label><input type="checkbox" id="zipper-media-select-all" checked> Media Links (<span id="zipper-media-count">0</span>)</label>
             </div>
             <div id="zipper-media-list" class="zipper-link-list"></div>
-            <div class="zipper-input-group">
-                <label>Filter / CSS Selector</label>
-                <input type="text" id="zipper-selector" class="zipper-input" placeholder="Filter links or CSS selector e.g. #gallery img">
-            </div>
-            <div class="zipper-input-group">
-                <label>Upscaling Options</label>
-                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                    <select id="zipper-upscale-model" class="zipper-input" style="width: 140px; font-size: 11px;">
-                        <option value="4xNomos8k_atd">4x Nomos8k ATD</option>
+            <div style="display: flex; gap: 8px; align-items: flex-end;">
+                <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
+                    <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Filter / Selector</label>
+                    <input type="text" id="zipper-selector" class="zipper-input" placeholder="Filter or CSS selector..." style="width: 100%; box-sizing: border-box; height: 32px; padding: 4px 8px;">
+                </div>
+                <div class="zipper-input-group" style="width: 110px; margin: 0; flex-shrink: 0;">
+                    <label>AI Model</label>
+                    <select id="zipper-upscale-model" class="zipper-input" style="width: 100%; font-size: 11px; height: 32px; padding: 4px; box-sizing: border-box;">
+                        <option value="4xNomos8k_atd">Nomos8k</option>
                     </select>
                 </div>
-                <div style="font-size: 10px; color: var(--zipper-text-muted); margin-top: 4px;">
-                    Enable upscaling to process images with AI model (4x scale). Only one job at a time.
-                </div>
             </div>
-            <button id="zipper-scrape-btn" class="zipper-btn">
+            <button id="zipper-scrape-btn" class="zipper-btn" style="margin-top: 4px;">
                 <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
                     <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
@@ -1134,7 +1190,7 @@
                 <span>Send Selected Media</span>
             </button>
         `;
-        content.insertBefore(imagesSection, consolePanel);
+        content.appendChild(imagesSection);
 
         // --- Links/Cloud Section ---
         const linksSection = document.createElement('div');
@@ -1156,7 +1212,7 @@
                 <span>Send Selected to Cloud</span>
             </button>
         `;
-        content.insertBefore(linksSection, consolePanel);
+        content.appendChild(linksSection);
 
         // --- Dashboard Section ---
         const dashboardSection = document.createElement('div');
@@ -1171,7 +1227,19 @@
                 <div style="font-size: 11px; padding: 10px; text-align: center; color: var(--zipper-text-muted);">No active or recent jobs found.</div>
             </div>
         `;
-        content.insertBefore(dashboardSection, consolePanel);
+        content.appendChild(dashboardSection);
+
+        const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
+        jobsListContainer.onclick = async (e) => {
+            const openFileBtn = e.target.closest('.zipper-open-btn');
+            const openFolderBtn = e.target.closest('.zipper-open-folder-btn');
+            if (openFileBtn) {
+                const filename = openFileBtn.getAttribute('data-file');
+                await makeGMRequest("http://100.67.25.118:9001/api/open-downloaded", "POST", { filename });
+            } else if (openFolderBtn) {
+                await makeGMRequest("http://100.67.25.118:9001/api/open-downloaded", "POST", { folder: true });
+            }
+        };
 
         // --- Drag and Drop Overlay ---
         const dropOverlay = document.createElement('div');
@@ -1367,13 +1435,18 @@
 
         // --- Interactivity & Event Binding ---
 
-        // Toggle Expand
-        fab.onclick = () => {
+        // Toggle Expand (click only, not drag)
+        let fabDragged = false;
+        fab.addEventListener('click', () => {
+            if (fabDragged) {
+                fabDragged = false;
+                return;
+            }
             const isVisible = panel.classList.toggle('visible');
             if (isVisible) {
                 refreshHarvestedLinks();
             }
-        };
+        });
 
         header.querySelector('#zipper-close-btn').onclick = () => {
             panel.classList.remove('visible');
@@ -1382,7 +1455,7 @@
         header.querySelector('#zipper-abort-btn').onclick = async () => {
             if (serverOnline) {
                 try {
-                    const response = await makeGMRequest("http://127.0.0.1:9001/api/abort", "POST");
+                    const response = await makeGMRequest("http://100.67.25.118:9001/api/abort", "POST");
                     if (response.ok) {
                         logToConsole("[Server] Cancellation command sent.", "info");
                     } else {
@@ -1396,9 +1469,10 @@
             }
         };
 
-        const toggleHighlightsCb = header.querySelector('#zipper-toggle-highlights');
-        toggleHighlightsCb.onchange = () => {
-            const enabled = toggleHighlightsCb.checked;
+        const toggleHighlightsBtn = header.querySelector('#zipper-toggle-highlights-btn');
+        toggleHighlightsBtn.onclick = () => {
+            const enabled = !toggleHighlightsBtn.classList.contains('active');
+            toggleHighlightsBtn.classList.toggle('active', enabled);
             localStorage.setItem('zipper-highlight-enabled', enabled);
             if (enabled) {
                 refreshHarvestedLinks();
@@ -1415,16 +1489,18 @@
 
         // Set initial values (need to wait for elements to be created, so do this later)
         setTimeout(() => {
-            const upscaleToggle = document.getElementById('zipper-upscale-enabled');
+            const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
             const upscaleModelSelect = document.getElementById('zipper-upscale-model');
-            
-            if (upscaleToggle) {
-                upscaleToggle.checked = savedUpscaleEnabled;
-                upscaleToggle.onchange = (e) => {
-                    localStorage.setItem('zipper-upscale-enabled', e.target.checked);
+
+            if (upscaleBtn) {
+                upscaleBtn.classList.toggle('active', savedUpscaleEnabled);
+                upscaleBtn.onclick = () => {
+                    const enabled = !upscaleBtn.classList.contains('active');
+                    upscaleBtn.classList.toggle('active', enabled);
+                    localStorage.setItem('zipper-upscale-enabled', enabled);
                 };
             }
-            
+
             if (upscaleModelSelect) {
                 upscaleModelSelect.value = savedUpscaleModel;
                 upscaleModelSelect.onchange = (e) => {
@@ -1439,7 +1515,7 @@
         async function refreshJobs() {
             if (!serverOnline) return;
             try {
-                const response = await makeGMRequest("http://127.0.0.1:9001/api/jobs", "GET");
+                const response = await makeGMRequest("http://100.67.25.118:9001/api/jobs", "GET");
                 if (response.ok) {
                     const data = await response.json();
                     const jobs = data.jobs || {};
@@ -1474,10 +1550,27 @@
                                         </div>
                                         <span style="font-size: 10px; font-weight: bold; min-width: 24px; text-align: right;">${percent}%</span>
                                     </div>
-                                    <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--zipper-text-muted); margin-top: 4px;">
+                                    <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--zipper-text-muted); margin-top: 4px; align-items: center;">
                                         <span>Processed: ${job.processed_links}/${job.total_links}</span>
                                         <span>Media zipped: ${job.images_count}</span>
                                     </div>
+                                    ${job.status === 'completed' ? `
+                                        <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
+                                            ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
+                                                <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
+                                                    <a href="http://100.67.25.118:9001/downloaded/${encodeURIComponent(arch)}" target="_blank" class="zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
+                                                        View ${arch.split('_').pop() || 'File'}
+                                                    </a>
+                                                    <button class="zipper-open-btn zipper-btn" data-file="${arch}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
+                                                        📂
+                                                    </button>
+                                                </div>
+                                            `).join('') : ''}
+                                            <button class="zipper-open-folder-btn zipper-btn" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
+                                                Open Folder
+                                            </button>
+                                        </div>
+                                    ` : ''}
                                 </div>
                             `;
                         }).join('');
@@ -1556,11 +1649,13 @@
 
         // Draggable Panel Handler
         let isDragging = false;
+        let dragTarget = null; // 'panel' or 'fab'
         let startX, startY, startRight, startBottom;
 
         function stopDrag() {
             if (isDragging) {
                 isDragging = false;
+                dragTarget = null;
                 document.body.style.userSelect = '';
             }
         }
@@ -1572,6 +1667,7 @@
             }
             e.preventDefault();
             isDragging = true;
+            dragTarget = 'panel';
             startX = e.clientX;
             startY = e.clientY;
             startRight = parseInt(window.getComputedStyle(panel).right) || 20;
@@ -1579,12 +1675,58 @@
             document.body.style.userSelect = 'none';
         });
 
+        // FAB draggable
+        fab.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            isDragging = true;
+            dragTarget = 'fab';
+            fabDragged = false;
+            startX = e.clientX;
+            startY = e.clientY;
+            startRight = parseInt(window.getComputedStyle(fab).right) || 20;
+            startBottom = parseInt(window.getComputedStyle(fab).bottom) || 20;
+            document.body.style.userSelect = 'none';
+        });
+
         document.addEventListener('mousemove', (moveEvent) => {
             if (!isDragging) return;
             let dx = moveEvent.clientX - startX;
             let dy = moveEvent.clientY - startY;
-            panel.style.right = `${startRight - dx}px`;
-            panel.style.bottom = `${startBottom - dy}px`;
+
+            // Only mark as a drag (not a click) if mouse moved > 4px
+            if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+                fabDragged = true;
+            }
+
+            const margin = 10;
+
+            if (dragTarget === 'panel') {
+                let right = startRight - dx;
+                let bottom = startBottom - dy;
+                const panelWidth = panel.offsetWidth || 350;
+                const panelHeight = panel.offsetHeight || 520;
+
+                // Edge snapping and clamping with 10px margin (top boundary protects bookmarks/nav bar)
+                if (right < margin) right = margin;
+                if (right > window.innerWidth - panelWidth - margin) right = window.innerWidth - panelWidth - margin;
+                if (bottom < margin) bottom = margin;
+                if (bottom > window.innerHeight - panelHeight - margin) bottom = window.innerHeight - panelHeight - margin;
+
+                panel.style.right = `${right}px`;
+                panel.style.bottom = `${bottom}px`;
+            } else if (dragTarget === 'fab') {
+                let right = startRight - dx;
+                let bottom = startBottom - dy;
+                const fabSize = fab.offsetWidth || 48;
+
+                if (right < margin) right = margin;
+                if (right > window.innerWidth - fabSize - margin) right = window.innerWidth - fabSize - margin;
+                if (bottom < margin) bottom = margin;
+                if (bottom > window.innerHeight - fabSize - margin) bottom = window.innerHeight - fabSize - margin;
+
+                fab.style.right = `${right}px`;
+                fab.style.bottom = `${bottom}px`;
+            }
         });
 
         // Capture-phase mouseup to guarantee we catch it even if panel swallows the event
@@ -1601,21 +1743,50 @@
 
         // Live Server Status Tracker
         const statusDot = fab.querySelector('#zipper-status-dot');
+        let upscalerAvailable = false;
 
         async function updateStatus() {
             const online = await checkServerStatus();
             serverOnline = online;
+            const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
             if (online) {
                 statusDot.classList.add('online');
                 if (statusDot.title !== 'Server Online') {
                     statusDot.title = 'Server Online';
                     logToConsole('Connection established with VaultWares API on 9001', 'success');
                 }
+
+                // Check upscaler status
+                try {
+                    const upscalerRes = await makeGMRequest("http://100.67.25.118:9001/api/upscaler/status", "GET");
+                    if (upscalerRes.ok) {
+                        const upscalerData = upscalerRes.json();
+                        upscalerAvailable = upscalerData.available;
+                        if (upscaleBtn) {
+                            if (upscalerAvailable) {
+                                upscaleBtn.removeAttribute('disabled');
+                                upscaleBtn.title = `Toggle Image Upscaling (using ${upscalerData.models.join(', ')})`;
+                            } else {
+                                upscaleBtn.classList.remove('active');
+                                upscaleBtn.setAttribute('disabled', 'true');
+                                upscaleBtn.title = `Upscaler Unavailable: ${upscalerData.error || 'No models or CUDA unavailable'}`;
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error("Failed to query upscaler status", err);
+                }
             } else {
                 statusDot.classList.remove('online');
                 if (statusDot.title !== 'Server Offline') {
                     statusDot.title = 'Server Offline';
                     logToConsole('VaultWares API offline on port 9001. Using local fallback.', 'error');
+                }
+                upscalerAvailable = false;
+                if (upscaleBtn) {
+                    upscaleBtn.classList.remove('active');
+                    upscaleBtn.setAttribute('disabled', 'true');
+                    upscaleBtn.title = 'Upscaler Unavailable (Server Offline)';
                 }
             }
         }
@@ -1743,12 +1914,13 @@
             logToConsole(`[Media] Sending ${urls.length} media files to VaultWares API...`, 'info');
 
             // Get upscaling config
-            const upscaleEnabled = document.getElementById('zipper-upscale-enabled').checked;
+            const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
+            const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
             const upscaleModel = document.getElementById('zipper-upscale-model').value;
 
             if (serverOnline) {
                 try {
-                    const response = await makeGMRequest("http://127.0.0.1:9001/download", "POST", {
+                    const response = await makeGMRequest("http://100.67.25.118:9001/download", "POST", {
                         url: window.location.href,
                         links: urls,
                         batch_size: 5,
@@ -1805,7 +1977,7 @@
 
             if (serverOnline) {
                 try {
-                    const response = await makeGMRequest("http://127.0.0.1:9001/download", "POST", {
+                    const response = await makeGMRequest("http://100.67.25.118:9001/download", "POST", {
                         url: window.location.href,
                         links: links,
                         batch_size: 100
@@ -1846,7 +2018,7 @@
     async function start() {
         const avgColor = await getAverageColor();
         const rgb = avgColor.match(/\d+/g);
-        let h = 230, s = 80, l = 55; // Default HSL values (Indigo)
+        let h = 120, s = 80, l = 75; // Default HSL values (vibrant green)
         if (rgb && rgb.length >= 3) {
             [h, s, l] = rgbToHsl(Number(rgb[0]), Number(rgb[1]), Number(rgb[2]));
         }

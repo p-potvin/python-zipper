@@ -874,7 +874,7 @@ def register_mirror_in_link_sharing(filename, remote_url):
     import uuid
     from urllib.parse import urlparse
     
-    API_BASE_URL = "http://127.0.0.1:3001"
+    API_BASE_URL = "http://100.67.25.118:9001"
     API_KEY = "dev-secret-key-123" # Must match .env config
     
     headers = {
