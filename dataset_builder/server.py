@@ -18,6 +18,11 @@ PORT = 5171
 DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
 
+# VaultWares API on OVHCloud (for job tracking, cloud pipeline)
+VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "http://100.67.25.118:9001")
+# Local upscaler models directory
+MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
+
 def get_rd_token():
     try:
         if os.path.exists(RD_TOKEN_PATH):
@@ -140,7 +145,79 @@ class ScraperHandler(BaseHTTPRequestHandler):
         elif self.path.startswith('/api/ollama'):
             self._proxy_request("http://127.0.0.1:11434", len("/api/ollama"))
             return True
+        # Proxy vaultwares-api routes to OVHCloud
+        elif self.path.startswith('/api/jobs') or self.path.startswith('/api/abort'):
+            self._proxy_request(VAULTWARES_API, 0)
+            return True
         return False
+
+    def _handle_upscaler_status(self):
+        """Check local upscaler availability (spandrel + model files)."""
+        models_dir = os.path.abspath(MODELS_DIR)
+        available_models = []
+        error = None
+        cuda_available = False
+
+        try:
+            import importlib.util
+            if importlib.util.find_spec("spandrel") is None:
+                error = "spandrel not installed (pip install spandrel)"
+            else:
+                if os.path.exists(models_dir):
+                    for f in os.listdir(models_dir):
+                        if f.lower().endswith(('.safetensors', '.pth', '.ckpt')):
+                            available_models.append(os.path.splitext(f)[0])
+                if not available_models:
+                    error = f"No model files in {models_dir}"
+        except Exception as e:
+            error = str(e)
+
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+        except Exception:
+            pass
+
+        available = bool(available_models and not error)
+        result = {
+            "available": available,
+            "models": available_models,
+            "cuda": cuda_available
+        }
+        if error:
+            result["error"] = error
+
+        body = json.dumps(result).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_open_downloaded(self, data):
+        """Open a downloaded file or the downloads folder locally."""
+        try:
+            dest = os.path.abspath(DEST_DIR)
+            if data.get('folder'):
+                os.makedirs(dest, exist_ok=True)
+                os.startfile(dest)
+                result = {"status": "opened folder"}
+            else:
+                filename = data.get('filename', '')
+                filepath = os.path.join(dest, filename)
+                if os.path.exists(filepath):
+                    os.startfile(filepath)
+                    result = {"status": "opened file"}
+                else:
+                    result = {"status": "error", "error": f"File not found: {filename}"}
+            body = json.dumps(result).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -149,11 +226,40 @@ class ScraperHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self._handle_proxy():
             return
-        if self.path in ['/', '/health', '/api']:
+        if self.path == '/api/upscaler/status':
+            self._handle_upscaler_status()
+        elif self.path in ['/', '/health', '/api']:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "online"}).encode('utf-8'))
+        elif self.path == '/qa-logs':
+            try:
+                log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
+                logs = []
+                if os.path.exists(log_dir):
+                    for filename in os.listdir(log_dir):
+                        if filename.endswith('.log'):
+                            filepath = os.path.join(log_dir, filename)
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line:
+                                        try:
+                                            logs.append(json.loads(line))
+                                        except:
+                                            pass
+                logs.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+                logs = logs[:200]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "ok", "logs": logs}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
@@ -214,6 +320,38 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                
+        elif self.path == '/logs':
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                
+                log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
+                os.makedirs(log_dir, exist_ok=True)
+                
+                node = data.get('node', 'unknown_node')
+                log_file_path = os.path.join(log_dir, f"{node}.log")
+                
+                with open(log_file_path, 'a', encoding='utf-8') as f:
+                    f.write(json.dumps(data) + "\n")
+                    
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"status": "Log received"}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+        elif self.path == '/api/open-downloaded':
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            try:
+                data = json.loads(post_data.decode('utf-8')) if content_length > 0 else {}
+            except Exception:
+                data = {}
+            self._handle_open_downloaded(data)
         else:
             self.send_response(404)
             self.end_headers()
@@ -374,8 +512,8 @@ class ThreadedHTTPServer(ThreadingTCPServer):
     allow_reuse_address = True
 
 def run_server():
-    server = ThreadedHTTPServer(('127.0.0.1', PORT), ScraperHandler)
-    print(f"Dataset Builder Local HTTP Server running on http://127.0.0.1:{PORT} ...")
+    server = ThreadedHTTPServer(('0.0.0.0', PORT), ScraperHandler)
+    print(f"Dataset Builder Local HTTP Server running on http://0.0.0.0:{PORT} ...")
     server.serve_forever()
 
 if __name__ == '__main__':

@@ -95,7 +95,7 @@ KATFILE_UPLOAD_SERVER_ENDPOINT = "https://katfile.space/api/upload/server"
 KATFILE_DOMAIN = "https://katfile.space"
 
 # pyLoad configuration
-PYLOAD_API_URL = "http://localhost:8003/api"
+PYLOAD_API_URL = os.environ.get("PYLOAD_API_URL", "http://localhost:8003/api")
 PYLOAD_ENABLED = False  # Will be set to True if API is accessible
 
 DOWNLOAD_DIR = r"G:\mega"

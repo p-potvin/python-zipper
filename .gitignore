@@ -14,3 +14,5 @@ dataset_builder/*.log
 .downloaded/
 .extras/
 .completed/
+central-logs/
+telegram/debug.log
