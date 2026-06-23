@@ -26,7 +26,7 @@ import win11toast
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from dotenv import load_dotenv
-from k2s_uploader import upload_file_dual
+from k2s_uploader import upload_file_dual, is_token_valid
 
 # ==============================================================================
 # CONFIGURATION
@@ -95,7 +95,8 @@ KATFILE_UPLOAD_SERVER_ENDPOINT = "https://katfile.space/api/upload/server"
 KATFILE_DOMAIN = "https://katfile.space"
 
 # pyLoad configuration
-PYLOAD_API_URL = os.environ.get("PYLOAD_API_URL", "http://localhost:8003/api")
+PYLOAD_API_URL = os.environ.get("PYLOAD_API_URL", "https://pyload.vaultwares.ca/api")
+PYLOAD_API_KEY = os.environ.get("PYLOAD_API_KEY", "pl_11qb0iw6-Pdm9hf1lhqS4y_0vOBnjaunDZZdGNE97S0QQ")
 PYLOAD_ENABLED = False  # Will be set to True if API is accessible
 
 DOWNLOAD_DIR = r"G:\mega"
@@ -963,6 +964,10 @@ def register_mirror_in_link_sharing(filename, remote_url):
         return None
 
 async def background_dual_uploader():
+    if not is_token_valid():
+        print("[BG Dual Uploader] ✗ Keep2Share/FileBoom token is invalid or expired. Skipping background uploader.")
+        return
+
     """
     Scans G:\\mega for files and uploads them to FileBoom/Keep2Share in parallel (up to 3 concurrent uploads)
     at random. Appends links to output/uploads_log.txt and logs progress.
@@ -1623,12 +1628,66 @@ def can_upload_to_katfile(new_file_size):
 # PYLOAD INTEGRATION
 # ==============================================================================
 
+def convert_bunkr_link(url):
+    """Convert bunkr.la, bunkr.ru, bunkr.to, bunkr.is, bunkr.cr, etc. to balbums.st"""
+    import re
+    pattern = r'https?://(?:[a-zA-Z0-9-]+\.)?bunkr\.[a-z]+(/.*)?'
+    match = re.match(pattern, url, re.IGNORECASE)
+    if match:
+        path = match.group(1) or ""
+        return f"https://balbums.st{path}"
+    return url
+
+def classify_and_filter_url(url):
+    """
+    Classifies a URL and returns a tuple (action, processed_url)
+    Actions:
+      - 'rd': Process via Real-Debrid (mega.nz, etc.)
+      - 'pyload': Queue directly to pyLoad without RD (balbums.st, cyberfile, etc.)
+      - 'skip': Drop or ignore completely (fishing, telegram, discord, login/contact, rentry/pasterix)
+    """
+    url_lower = url.lower()
+    
+    # 1. Skip check: Drop fishing links
+    if 'fishing' in url_lower:
+        return 'skip', None
+        
+    # 2. Skip check: Ignore discord, telegram, rentry, pasterix, etc.
+    skip_domains = ['discord.gg', 'discord.com', 't.me', 'telegram.me', 'telegram.org', 'rentry.co', 'rentry.org', 'pasterix.net']
+    if any(domain in url_lower for domain in skip_domains):
+        return 'skip', None
+        
+    # 3. Skip check: Ignore edit, login, contact, register, signup pages
+    skip_keywords = ['/login', '/register', '/signup', '/contact', '/edit', '/about', '/faq']
+    if any(keyword in url_lower for keyword in skip_keywords):
+        return 'skip', None
+        
+    # 4. Convert bunkr links to balbums.st
+    if 'bunkr.' in url_lower:
+        converted_url = convert_bunkr_link(url)
+        return 'pyload', converted_url
+        
+    # 5. Cyberfile links go to pyLoad
+    if 'cyberfile.' in url_lower:
+        return 'pyload', url
+        
+    # 6. Balbums links go to pyLoad
+    if 'balbums.st' in url_lower:
+        return 'pyload', url
+        
+    # 7. Real-Debrid hosts (Mega.nz is primary)
+    if 'mega.nz' in url_lower or 'mega.co.nz' in url_lower:
+        return 'rd', url
+        
+    return 'pyload', url
+
 def check_pyload_api():
     """Check if pyLoad API is accessible"""
     global PYLOAD_ENABLED
     try:
         import requests
-        response = requests.get(f"{PYLOAD_API_URL}/v1/server/info", timeout=3)
+        headers = {"X-API-Key": PYLOAD_API_KEY}
+        response = requests.get(f"{PYLOAD_API_URL}/status_server", headers=headers, timeout=3)
         if response.status_code == 200:
             PYLOAD_ENABLED = True
             print(f"[INIT] pyLoad API accessible at {PYLOAD_API_URL}")
@@ -1673,14 +1732,21 @@ def queue_links_to_pyload(links, package_name="Failed Downloads"):
         
         # pyLoad API: POST /v1/packages to create a new package
         response = requests.post(
-            f"{PYLOAD_API_URL}/v1/packages",
+            f"{PYLOAD_API_URL}/add_package",
             json=package_data,
+            headers={"X-API-Key": PYLOAD_API_KEY},
             timeout=10
         )
         
         if response.status_code in [200, 201]:
-            result = response.json()
-            package_id = result.get('pid') or result.get('package_id')
+            try:
+                result = response.json()
+            except Exception:
+                result = response.text.strip()
+            if isinstance(result, dict):
+                package_id = result.get('pid') or result.get('package_id') or result.get('id')
+            else:
+                package_id = result
             print(f"   [pyLoad] ✓ Package created: {package_name} (ID: {package_id})")
             print(f"   [pyLoad] ✓ Queued {len(links)} links")
             return {
@@ -1903,6 +1969,26 @@ async def main():
                     raise launch_err
                 await asyncio.sleep(2)
         
+        # Check if browser is logged in to Real-Debrid
+        print("[Real-Debrid] Checking login status...")
+        check_page = await browser.new_page()
+        try:
+            await check_page.goto("https://real-debrid.com/login", wait_until="domcontentloaded", timeout=15000)
+            if "login" in check_page.url:
+                print("[Real-Debrid] ⚠️ NOT LOGGED IN! Real-Debrid requires manual authentication.")
+                is_interactive = sys.stdin.isatty() and not args.non_interactive
+                if is_interactive:
+                    print("[Real-Debrid] [INTERACTIVE] Please log in to Real-Debrid in the opened browser window.")
+                    await asyncio.to_thread(input, ">>> Press ENTER in this console once you have logged in to Real-Debrid >>> ")
+                else:
+                    print("[Real-Debrid] [NON-INTERACTIVE] Running in non-interactive mode. Real-Debrid unrestriction may fail for MEGA links if the cloned profile session is expired.")
+            else:
+                print("[Real-Debrid] ✓ Already logged in.")
+        except Exception as e:
+            print(f"[Real-Debrid] [WARN] Could not verify login status: {e}")
+        finally:
+            await check_page.close()
+
         rentry_links = {}  # Map linkvertise -> rentry link
         for idx, link_com in enumerate(linkvertise_links.keys(), 1):
             print(f"\n[{idx}/{len(linkvertise_links)}] Processing: {link_com}")
@@ -1941,6 +2027,15 @@ async def main():
         # Now process all found URLs with the Real-Debrid Browser Extension
         print(f"\n[BROWSER EXTENSION PROCESSING] Opening links to let Real-Debrid auto-unrestrict...")
         for idx, url in enumerate(sorted(all_extracted_urls), 1):
+            action, processed_url = classify_and_filter_url(url)
+            if action == 'skip':
+                print(f"\n[{idx}/{len(all_extracted_urls)}] Skipping Link: {url}")
+                continue
+            elif action == 'pyload':
+                print(f"\n[{idx}/{len(all_extracted_urls)}] Queueing directly to pyLoad: {processed_url}")
+                failed_links.append(processed_url)
+                continue
+            url = processed_url
             print(f"\n[{idx}/{len(all_extracted_urls)}] Processing Link: {url}")
             
             # Navigate to the link

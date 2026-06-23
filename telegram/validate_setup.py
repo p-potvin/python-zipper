@@ -41,7 +41,7 @@ for pkg in ["telethon", "playwright", "requests", "aiohttp", "win10toast"]:
 print("\nSCRIPT FILES")
 print("-" * 40)
 
-script_dir = r"c:\Users\Administrator\Desktop\Github Repos\python-scripts\telegram"
+script_dir = os.path.dirname(os.path.abspath(__file__))
 files_ok = True
 
 for f in ["telethon_link_resolver.py", "setup_scheduled_task.ps1"]:
@@ -93,7 +93,7 @@ try:
         check("Large file handling (3GB-10GB)", has_large)
 except Exception as e:
     config_ok = False
-    print(f"  [✗] Could not read telethon_link_resolver.py: {e}")
+    print(f"  [FAIL] Could not read telethon_link_resolver.py: {e}")
 
 # State file
 print("\nPIPELINE STATE")

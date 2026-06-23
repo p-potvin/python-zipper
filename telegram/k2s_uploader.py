@@ -202,3 +202,24 @@ def upload_file_dual(file_path):
         
     print(f"   [Dual Uploader] [{filename}] [FAIL] Both FileBoom and Keep2Share uploads failed.")
     return None
+
+def is_token_valid():
+    """
+    Checks if the active token is valid/authorized by calling K2S /accountInfo API.
+    """
+    token = get_active_token()
+    if not token:
+        return False
+    
+    payload = {"auth_token": token}
+    res = api_post("accountInfo", payload, K2S_BASE)
+    
+    if res and res.get("status") == "success":
+        return True
+        
+    res_fboom = api_post("accountInfo", payload, FBOOM_BASE)
+    if res_fboom and res_fboom.get("status") == "success":
+        return True
+        
+    return False
+
