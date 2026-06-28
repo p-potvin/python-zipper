@@ -26,8 +26,8 @@ $zipFiles = @(Get-ChildItem -Path "$targetParentPath\*" -File -Include "*.zip", 
 
 if ($zipFiles.Count -eq 0) {
     Write-Warning "No .zip, .rar, or .7z archives found inside: $targetParentPath"
-    if (Test-Path -Path $processingPath) { Remove-Item -Path $processingPath -Recurse -Force }
-    Exit
+    #if (Test-Path -Path $processingPath) { Remove-Item -Path $processingPath -Recurse -Force }
+    #Exit
 }
 
 Write-Host "Found $($zipFiles.Count) archives to process."
@@ -107,8 +107,8 @@ if (Test-Path -Path $czkawkaBin) {
 }
 
 # Run person detection using Hugging Face DETR model
-Write-Host "Filtering images by person presence using DETR-ResNet-50..."
-& $pythonExe "$scriptPath\face_detector.py" --dir $targetParentPath --completed $completedPath
+#Write-Host "Filtering images by person presence using DETR-ResNet-50..."
+#& $pythonExe "$scriptPath\face_detector.py" --dir $targetParentPath --completed $completedPath
 
 # Relocate processed source files safely
 Write-Host "Moving original source zip archives to .completed folder..."
