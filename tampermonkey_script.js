@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zip it - VaultWares
 // @namespace    clopeux-scripts
-// @version      7.2.3
+// @version      7.2.6
 // @description  VaultWares API Download Manager Browser Helper Script Addon Bridge for Media Cloud Management on Local Server (uses pyload :8003 as well as Internet Download Manager and Real-Debrid to download restricted links in bulk and Katfile, Fileboom/k2s API to upload directly to my cloud accounts and Katfile/Linkvertise to wrap these links inside a comfortable linkvertise/katfile PPD link distributed automatically on every tube-sites' link-sharing feature and downloaded by customers around the world)
 
 // @author       Clopeux
@@ -24,11 +24,14 @@
     'use strict';
     let pathname = window.location.pathname;
     let serverOnline = false;
+    let activeApiOrigin = null;
 
     class Api {
-        static protocol = "http://";
-        static base = "127.0.0.1";
-        static port = "5171";
+        static endpoints = Object.freeze({
+            primary: "http://100.67.25.118:9001",
+            local: "http://127.0.0.1:5171",
+            localhost: "http://localhost:5171"
+        });
 
         static routes = Object.freeze({
             root: "/",
@@ -42,29 +45,49 @@
         });
 
         static get origin() {
-            return `${this.protocol}${this.base}:${this.port}`;
+            return activeApiOrigin || this.endpoints.local;
         }
 
-        static getRouteUrl(routeKey) {
+        static getRouteUrl(routeKey, endpointKey = null) {
             const path = this.routes[routeKey];
             if (path === undefined) {
                 throw new Error(`Invalid route key: "${routeKey}"`);
             }
-            return `${this.origin}${path}`;
+            const origin = endpointKey ? this.endpoints[endpointKey] : this.origin;
+            if (!origin) {
+                throw new Error(`Invalid endpoint key: "${endpointKey}"`);
+            }
+            return `${origin}${path}`;
         }
 
-        static async send(routeKey, method = "GET", data = null) {
+        static async send(routeKey, method = "GET", data = null, endpointKey = null) {
             try {
-                const url = this.getRouteUrl(routeKey);
-                return await makeGMRequest(url, method, data);
+                const url = this.getRouteUrl(routeKey, endpointKey);
+                const response = await makeGMRequest(url, method, data);
+                response.endpointKey = endpointKey;
+                response.origin = endpointKey ? this.endpoints[endpointKey] : this.origin;
+                return response;
             } catch (error) {
                 console.error(`[API Engine Error] Route: ${routeKey}, Method: ${method}`, error);
                 return { ok: false, status: 0 };
             }
         }
 
+        static async sendWithFallback(routeKey, method = "GET", data = null, endpointKeys = ["primary", "local", "localhost"]) {
+            let lastResponse = { ok: false, status: 0 };
+            for (const endpointKey of endpointKeys) {
+                const response = await this.send(routeKey, method, data, endpointKey);
+                lastResponse = response;
+                if (response.ok) {
+                    activeApiOrigin = this.endpoints[endpointKey];
+                    return response;
+                }
+            }
+            return lastResponse;
+        }
+
         static async checkServerStatus() {
-            const res = await this.send("health", "GET");
+            const res = await this.sendWithFallback("health", "GET");
             return res.ok;
         }
     }
@@ -98,6 +121,29 @@
                 ontimeout: () => resolve({ ok: false, status: 0 })
             });
         });
+    }
+
+    function getZipperSetting(key, fallbackValue) {
+        const storageKey = `zipper-${key}`;
+        try {
+            const value = GM_getValue(storageKey, undefined);
+            if (value !== undefined && value !== null) return String(value);
+        } catch (_e) { }
+        try {
+            const legacyValue = localStorage.getItem(storageKey);
+            if (legacyValue !== null) {
+                try { GM_setValue(storageKey, legacyValue); } catch (_e) { }
+                return legacyValue;
+            }
+        } catch (_e) { }
+        return String(fallbackValue);
+    }
+
+    function setZipperSetting(key, value) {
+        const storageKey = `zipper-${key}`;
+        const normalized = String(value);
+        try { GM_setValue(storageKey, normalized); } catch (_e) { }
+        try { localStorage.setItem(storageKey, normalized); } catch (_e) { }
     }
 
     // RGB to HSL conversion helper
@@ -821,8 +867,48 @@
         "subscribestar.adult", "kemono.cr", "kemono.su"
     ];
 
+    function normalizeUrl(url, baseUrl = window.location.href) {
+        if (!url) return "";
+        let value = String(url).trim();
+        if (!value || value.startsWith("data:") || value.startsWith("blob:")) return "";
+        if (value.includes(",")) {
+            value = value.split(",").pop().trim().split(/\s+/)[0];
+        }
+        value = value.replace(/[)\].,;'"<>]+$/g, "");
+        try {
+            return new URL(value, baseUrl).href;
+        } catch (_e) {
+            return "";
+        }
+    }
+
+    function extractUrlsFromText(text, baseUrl = window.location.href) {
+        const matched = String(text || "").match(/(?:https?:)?\/\/[^\s"'<>\(\)]+/gi) || [];
+        return [...new Set(matched.map(url => normalizeUrl(url, baseUrl)).filter(Boolean))];
+    }
+
+    function getElementUrl(el) {
+        if (!el) return "";
+        const srcset = el.getAttribute('srcset') || el.srcset || '';
+        if (srcset) {
+            const candidates = srcset.split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
+            if (candidates.length > 0) return normalizeUrl(candidates[candidates.length - 1], window.location.href);
+        }
+        return normalizeUrl(el.currentSrc || el.src || el.getAttribute('data-src') || el.href || el.getAttribute('href') || '', window.location.href);
+    }
+
+    function isCloudUrl(url) {
+        const lower = url.toLowerCase();
+        return cloudDomains.some(domain => lower.includes(domain));
+    }
+
+    function isMediaUrl(url) {
+        const lower = url.toLowerCase();
+        return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
+            mediaDomains.some(domain => lower.includes(domain));
+    }
+
     function harvestLinks() {
-        const mediaExtRegex = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)/i;
         const tagRegex = /^(img|video|source)$/i;
         const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
 
@@ -831,7 +917,7 @@
         const mediaLinksMetadata = new Map();
 
         function highlightElement(el) {
-            const highlightEnabled = localStorage.getItem('zipper-highlight-enabled') !== 'false';
+            const highlightEnabled = getZipperSetting('highlight-enabled', 'true') !== 'false';
             if (!highlightEnabled) return;
 
             let target = el;
@@ -912,35 +998,29 @@
             const tagName = el.tagName;
 
             if (tagRegex.test(tagName)) {
-                const src = el.src || el.getAttribute('data-src') || el.srcset || el.getAttribute('srcset');
-                if (src) {
-                    let url = src.trim();
-                    if (url.includes(',')) {
-                        url = url.split(',').pop().trim().split(' ')[0];
-                    }
-                    if (url && (url.startsWith('http') || url.indexOf('//') !== -1)) {
-                        if (!shouldFilterMedia(url, el)) {
-                            mediaLinks.add(url);
-                            highlightElement(el);
-                            const interesting = isInterestingMedia(url, el);
-                            if (!mediaLinksMetadata.has(url) || interesting) {
-                                mediaLinksMetadata.set(url, interesting);
-                            }
-                            const isVideoTag = tagName.toLowerCase() === 'video' || tagName.toLowerCase() === 'source';
-                            const isVideoUrl = videoExtensions.some(ext => url.toLowerCase().includes(ext)) || url.toLowerCase().includes("bunkr") || url.toLowerCase().includes("bunkrr");
-                            if (isVideoTag || isVideoUrl) {
-                                cloudLinks.add(url);
-                            }
+                const url = getElementUrl(el);
+                if (url) {
+                    if (!shouldFilterMedia(url, el)) {
+                        mediaLinks.add(url);
+                        highlightElement(el);
+                        const interesting = isInterestingMedia(url, el);
+                        if (!mediaLinksMetadata.has(url) || interesting) {
+                            mediaLinksMetadata.set(url, interesting);
+                        }
+                        const isVideoTag = tagName.toLowerCase() === 'video' || tagName.toLowerCase() === 'source';
+                        const isVideoUrl = videoExtensions.some(ext => url.toLowerCase().includes(ext)) || url.toLowerCase().includes("bunkr") || url.toLowerCase().includes("bunkrr");
+                        if (isVideoTag || isVideoUrl) {
+                            cloudLinks.add(url);
                         }
                     }
                 }
             }
             else if (tagName.toLowerCase() === 'a') {
-                const href = el.href;
+                const href = getElementUrl(el);
                 if (href) {
                     const lowerHref = href.toLowerCase();
-                    const isMedia = mediaExtRegex.test(lowerHref) || mediaDomains.some(domain => lowerHref.includes(domain));
-                    const isCloud = cloudDomains.some(domain => lowerHref.includes(domain));
+                    const isMedia = isMediaUrl(href);
+                    const isCloud = isCloudUrl(href);
 
                     if (isMedia) {
                         if (!shouldFilterMedia(href, el)) {
@@ -963,11 +1043,11 @@
         });
 
         const text = document.body.innerText || "";
-        const textUrls = text.match(/https?:\/\/[^\s"'<>\(\)]+/gi) || [];
+        const textUrls = extractUrlsFromText(text, window.location.href);
         textUrls.forEach(url => {
             const lowerUrl = url.toLowerCase();
-            const isMedia = mediaExtRegex.test(lowerUrl) || mediaDomains.some(domain => lowerUrl.includes(domain));
-            const isCloud = cloudDomains.some(domain => lowerUrl.includes(domain));
+            const isMedia = isMediaUrl(url);
+            const isCloud = isCloudUrl(url);
 
             if (isMedia) {
                 if (!shouldFilterMedia(url, null)) {
@@ -1048,7 +1128,7 @@
         // --- Header (Draggable) ---
         const header = document.createElement('div');
         header.id = 'zipper-header';
-        const isHighlightEnabled = localStorage.getItem('zipper-highlight-enabled') !== 'false';
+        const isHighlightEnabled = getZipperSetting('highlight-enabled', 'true') !== 'false';
         header.innerHTML = `
             <div style="display: flex; align-items: center; gap: 8px;">
                 <h3 style="font-size: 13px; margin-right: 4px;">Python Zipper</h3>
@@ -1116,7 +1196,7 @@
             try {
                 logToConsole(`[Download] Starting download for: ${url.split('/').pop()}`, 'info');
                 if (serverOnline) {
-                    const response = await Api.send("download", "POST", {
+                    const response = await Api.sendWithFallback("download", "POST", {
                         url: window.location.href,
                         links: [url],
                         batch_size: 1
@@ -1150,7 +1230,7 @@
         let activeHoveredUrl = null;
 
         window.addEventListener('mouseover', (e) => {
-            const highlightEnabled = localStorage.getItem('zipper-highlight-enabled') !== 'false';
+            const highlightEnabled = getZipperSetting('highlight-enabled', 'true') !== 'false';
             if (!highlightEnabled) {
                 floatBtn.style.display = 'none';
                 return;
@@ -1159,10 +1239,10 @@
             const target = e.target.closest('.zipper-captured-highlight');
             if (target) {
                 activeHoveredElement = target;
-                let url = target.src || target.getAttribute('data-src') || target.href;
+                let url = getElementUrl(target);
                 if (!url && target.tagName.toLowerCase() === 'video') {
                     const srcEl = target.querySelector('source');
-                    if (srcEl) url = srcEl.src;
+                    if (srcEl) url = getElementUrl(srcEl);
                 }
 
                 if (url) {
@@ -1217,6 +1297,7 @@
                     <label>AI Model</label>
                     <select id="zipper-upscale-model" class="zipper-input" style="width: 100%; font-size: 11px; height: 32px; padding: 4px; box-sizing: border-box;">
                         <option value="4xNomos8k_atd">Nomos8k</option>
+                        <option value="pillow-lanczos">Pillow 4x</option>
                     </select>
                 </div>
             </div>
@@ -1398,7 +1479,7 @@
                 if (matched.length > 0) {
                     selectorMatchedUrls = new Set();
                     matched.forEach(el => {
-                        const src = el.src || el.getAttribute('data-src') || el.href || '';
+                        const src = getElementUrl(el);
                         if (src) selectorMatchedUrls.add(src);
                     });
                 }
@@ -1422,10 +1503,11 @@
 
         function addDroppedLinks(links) {
             links.forEach(url => {
+                url = normalizeUrl(url, window.location.href);
+                if (!url) return;
                 const lower = url.toLowerCase();
-                const isCloud = cloudDomains.some(domain => lower.includes(domain));
-                const isMedia = mediaDomains.some(domain => lower.includes(domain)) ||
-                    /\.(jpg|jpeg|png|gif|webp|svg)/i.test(lower);
+                const isCloud = isCloudUrl(url);
+                const isMedia = isMediaUrl(url);
 
                 if (isCloud) {
                     const exists = Array.from(linksSection.querySelectorAll('.zipper-cloud-checkbox')).some(cb => cb.getAttribute('data-url') === url);
@@ -1502,7 +1584,7 @@
         toggleHighlightsBtn.onclick = () => {
             const enabled = !toggleHighlightsBtn.classList.contains('active');
             toggleHighlightsBtn.classList.toggle('active', enabled);
-            localStorage.setItem('zipper-highlight-enabled', enabled);
+            setZipperSetting('highlight-enabled', String(enabled));
             if (enabled) {
                 refreshHarvestedLinks();
             } else {
@@ -1512,7 +1594,7 @@
             }
         };
 
-        const savedUpscaleModel = localStorage.getItem('zipper-upscale-model') || '4xNomos8k_atd';
+        const savedUpscaleModel = getZipperSetting('upscale-model', '4xNomos8k_atd') || '4xNomos8k_atd';
 
         // Set up upscale button handler synchronously (no timeout needed)
         const upscaleBtnInit = header.querySelector('#zipper-upscale-toggle-btn');
@@ -1521,7 +1603,7 @@
                 if (upscaleBtnInit.hasAttribute('disabled')) return;
                 const enabled = !upscaleBtnInit.classList.contains('active');
                 upscaleBtnInit.classList.toggle('active', enabled);
-                localStorage.setItem('zipper-upscale-enabled', String(enabled));
+                setZipperSetting('upscale-enabled', String(enabled));
             };
         }
 
@@ -1529,73 +1611,85 @@
         if (upscaleModelSelectInit) {
             upscaleModelSelectInit.value = savedUpscaleModel;
             upscaleModelSelectInit.onchange = (e) => {
-                localStorage.setItem('zipper-upscale-model', e.target.value);
+                setZipperSetting('upscale-model', e.target.value);
             };
         }
 
         let dashboardPollInterval = null;
 
+        async function fetchJobsFromEndpoints() {
+            const mergedJobs = {};
+            let jobOrigin = Api.origin;
+            for (const endpointKey of ["primary", "local", "localhost"]) {
+                const response = await Api.send("jobs", "GET", null, endpointKey);
+                if (!response.ok) continue;
+                let data = {};
+                try { data = await response.json(); } catch (_e) { data = {}; }
+                if (data.jobs && Object.keys(data.jobs).length > 0) {
+                    Object.assign(mergedJobs, data.jobs);
+                    jobOrigin = response.origin || jobOrigin;
+                }
+            }
+            return { jobs: mergedJobs, origin: jobOrigin };
+        }
+
         async function refreshJobs() {
             if (!serverOnline) return;
-            const response = await Api.send("jobs", "GET");
-            if (response.ok) {
-                const data = await response.json();
-                const jobs = data.jobs || {};
-                const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
-                const jobKeys = Object.keys(jobs);
-                if (jobKeys.length === 0) {
-                    jobsListContainer.innerHTML = '<div style="font-size: 11px; padding: 10px; text-align: center; color: var(--zipper-text-muted);">No active or recent jobs found.</div>';
-                } else {
-                    jobKeys.sort((a, b) => jobs[b].created_at - jobs[a].created_at);
-                    jobsListContainer.innerHTML = jobKeys.map(key => {
-                        const job = jobs[key];
-                        const statusColor = job.status === 'running' ? '#60a5fa' :
-                            job.status === 'completed' ? '#22c55e' :
-                                job.status === 'aborted' ? '#f59e0b' : '#ef4444';
+            const { jobs, origin: jobOrigin } = await fetchJobsFromEndpoints();
+            const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
+            const jobKeys = Object.keys(jobs);
+            if (jobKeys.length === 0) {
+                jobsListContainer.innerHTML = '<div style="font-size: 11px; padding: 10px; text-align: center; color: var(--zipper-text-muted);">No active or recent jobs found.</div>';
+            } else {
+                jobKeys.sort((a, b) => jobs[b].created_at - jobs[a].created_at);
+                jobsListContainer.innerHTML = jobKeys.map(key => {
+                    const job = jobs[key];
+                    const statusColor = job.status === 'running' ? '#60a5fa' :
+                        job.status === 'completed' ? '#22c55e' :
+                            job.status === 'aborted' ? '#f59e0b' : '#ef4444';
 
-                        const percent = job.total_links > 0 ? Math.min(100, Math.round((job.processed_links / job.total_links) * 100)) : 0;
+                    const percent = job.total_links > 0 ? Math.min(100, Math.round((job.processed_links / job.total_links) * 100)) : 0;
 
-                        return `
-                            <div class="zipper-job-item" style="border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.15); margin-bottom: 6px;">
-                                <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
-                                    <span class="zipper-job-id" style="font-family: monospace; color: var(--zipper-primary);" title="${key}">${key.substring(0, 15)}...</span>
-                                    <span style="color: ${statusColor}; font-weight: bold; font-size: 10px; text-transform: uppercase;">${job.status}</span>
-                                </div>
-                                <div style="font-size: 10px; color: var(--zipper-text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-bottom: 6px;" title="${job.url}">
-                                    Source: ${job.url}
-                                </div>
-                                ${job.upscale_enabled ? `<div style="font-size: 9px; color: var(--zipper-accent); margin-bottom: 4px;"><strong>Upscaling:</strong> ${job.upscale_model}</div>` : ''}
-                                <div style="display: flex; align-items: center; gap: 8px;">
-                                    <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
-                                        <div style="width: ${percent}%; height: 100%; background: ${statusColor}; transition: width 0.3s;"></div>
-                                    </div>
-                                    <span style="font-size: 10px; font-weight: bold; min-width: 24px; text-align: right;">${percent}%</span>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--zipper-text-muted); margin-top: 4px; align-items: center;">
-                                    <span>Processed: ${job.processed_links}/${job.total_links}</span>
-                                    <span>Media zipped: ${job.images_count}</span>
-                                </div>
-                                ${job.status === 'completed' ? `
-                                    <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
-                                        ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
-                                            <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
-                                                <a href="${Api.origin}/downloaded/${encodeURIComponent(arch)}" target="_blank" class="zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
-                                                    View ${arch.split('_').pop() || 'File'}
-                                                </a>
-                                                <button class="zipper-open-btn zipper-btn" data-file="${arch}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
-                                                    📂
-                                                </button>
-                                            </div>
-                                        `).join('') : ''}
-                                        <button class="zipper-open-folder-btn zipper-btn" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
-                                            Open Folder
-                                        </button>
-                                    </div>
-                                ` : ''}
+                    return `
+                        <div class="zipper-job-item" style="border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.15); margin-bottom: 6px;">
+                            <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
+                                <span class="zipper-job-id" style="font-family: monospace; color: var(--zipper-primary);" title="${key}">${key.substring(0, 15)}...</span>
+                                <span style="color: ${statusColor}; font-weight: bold; font-size: 10px; text-transform: uppercase;">${job.status}</span>
                             </div>
-                        `;
-                    }).join('');
-                }
+                            <div style="font-size: 10px; color: var(--zipper-text-muted); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; margin-bottom: 6px;" title="${job.url}">
+                                Source: ${job.url}
+                            </div>
+                            ${job.upscale_enabled ? `<div style="font-size: 9px; color: var(--zipper-accent); margin-bottom: 4px;"><strong>Upscaling:</strong> ${job.upscale_model}</div>` : ''}
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
+                                    <div style="width: ${percent}%; height: 100%; background: ${statusColor}; transition: width 0.3s;"></div>
+                                </div>
+                                <span style="font-size: 10px; font-weight: bold; min-width: 24px; text-align: right;">${percent}%</span>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--zipper-text-muted); margin-top: 4px; align-items: center;">
+                                <span>Processed: ${job.processed_links}/${job.total_links}</span>
+                                <span>Media zipped: ${job.images_count}</span>
+                            </div>
+                            ${job.status === 'completed' ? `
+                                <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
+                                    ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
+                                        <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
+                                            <a href="${jobOrigin}/downloaded/${encodeURIComponent(arch)}" target="_blank" class="zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
+                                                View ${arch.split('_').pop() || 'File'}
+                                            </a>
+                                            <button class="zipper-open-btn zipper-btn" data-file="${arch}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
+                                                📂
+                                            </button>
+                                        </div>
+                                    `).join('') : ''}
+                                    <button class="zipper-open-folder-btn zipper-btn" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
+                                        Open Folder
+                                    </button>
+                                </div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('');
             }
         }
 
@@ -1779,12 +1873,13 @@
             const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
             if (online) {
                 statusDot.classList.add('online');
-                if (statusDot.title !== 'Server Online') {
-                    statusDot.title = 'Server Online';
-                    logToConsole('Connected to python-zipper local server on port 5171', 'success');
+                const onlineTitle = `Server Online (${Api.origin})`;
+                if (statusDot.title !== onlineTitle) {
+                    statusDot.title = onlineTitle;
+                    logToConsole(`Connected to download server: ${Api.origin}`, 'success');
                 }
 
-                const upscalerRes = await Api.send("upscalerStatus", "GET");
+                const upscalerRes = await Api.sendWithFallback("upscalerStatus", "GET", null, ["local", "localhost"]);
                 if (upscalerRes.ok) {
                     let upscalerData;
                     try { upscalerData = upscalerRes.json(); } catch (e) { upscalerData = {}; }
@@ -1793,7 +1888,7 @@
                         if (upscalerAvailable) {
                             upscaleBtn.removeAttribute('disabled');
                             // Restore saved active state now that we know it's available
-                            const savedEnabled = localStorage.getItem('zipper-upscale-enabled') === 'true';
+                            const savedEnabled = getZipperSetting('upscale-enabled', 'false') === 'true';
                             upscaleBtn.classList.toggle('active', savedEnabled);
                             upscaleBtn.title = `Toggle Image Upscaling (4x AI — ${(upscalerData.models || []).join(', ')})`;
                         } else {
@@ -1868,8 +1963,7 @@
                     if (file.type.startsWith('text/') || file.name.endsWith('.txt') || file.name.endsWith('.json') || file.name.endsWith('.html')) {
                         try {
                             const text = await file.text();
-                            const matched = text.match(/https?:\/\/[^\s"'<>\(\)]+/gi) || [];
-                            links = links.concat(matched);
+                            links = links.concat(extractUrlsFromText(text, window.location.href));
                         } catch (err) {
                             logToConsole(`Failed to read file: ${err.message}`, 'error');
                         }
@@ -1882,16 +1976,15 @@
 
             if (html) {
                 const doc = new DOMParser().parseFromString(html, 'text/html');
-                doc.querySelectorAll('a').forEach(a => { if (a.href) links.push(a.href); });
-                doc.querySelectorAll('img').forEach(img => { if (img.src) links.push(img.src); });
+                doc.querySelectorAll('a').forEach(a => { if (a.href) links.push(normalizeUrl(a.href, window.location.href)); });
+                doc.querySelectorAll('img').forEach(img => { if (img.src) links.push(normalizeUrl(img.src, window.location.href)); });
             }
 
             if (text) {
-                const matched = text.match(/https?:\/\/[^\s"'<>\(\)]+/gi) || [];
-                links = links.concat(matched);
+                links = links.concat(extractUrlsFromText(text, window.location.href));
             }
 
-            links = [...new Set(links.filter(url => url && (url.startsWith('http') || url.indexOf("//") !== -1)))];
+            links = [...new Set(links.map(url => normalizeUrl(url, window.location.href)).filter(Boolean))];
 
             if (links.length > 0) {
                 logToConsole(`[Drop] Extracted ${links.length} unique URLs!`, 'info');
@@ -1905,7 +1998,7 @@
         const scrapeBtn = imagesSection.querySelector('#zipper-scrape-btn');
         scrapeBtn.onclick = async () => {
             const checkedBoxes = Array.from(imagesSection.querySelectorAll('.zipper-media-checkbox:checked'));
-            let urls = checkedBoxes.map(cb => cb.getAttribute('data-url'));
+            let urls = checkedBoxes.map(cb => normalizeUrl(cb.getAttribute('data-url'), window.location.href)).filter(Boolean);
 
             let selVal = selectorInput.value.trim();
             if (selVal) {
@@ -1915,15 +2008,8 @@
                     logToConsole(`[Media] Scrape targeted to container: "${selVal}"`);
                 }
                 let nodes = container.querySelectorAll('img, video, source');
-                let rawUrls = Array.from(nodes).map(el => {
-                    return el.href || el.src || el.getAttribute('data-src') || el.srcset || el.getAttribute('srcset');
-                }).map(url => {
-                    if (url && url.includes(',')) {
-                        return url.split(',').pop().trim().split(' ')[0];
-                    }
-                    return url;
-                });
-                let extraUrls = [...new Set(rawUrls.filter(url => url && (url.startsWith('http') || url.indexOf("//") !== -1)))];
+                let rawUrls = Array.from(nodes).map(el => getElementUrl(el));
+                let extraUrls = [...new Set(rawUrls.map(url => normalizeUrl(url, window.location.href)).filter(Boolean))];
                 urls = [...new Set([...urls, ...extraUrls])];
             }
 
@@ -1941,7 +2027,7 @@
 
             if (serverOnline) {
                 try {
-                    const response = await Api.send("download", "POST", {
+                    const response = await Api.sendWithFallback("download", "POST", {
                         url: window.location.href,
                         links: urls,
                         batch_size: 5,
@@ -1979,11 +2065,11 @@
 
         sendBtn.onclick = async () => {
             const checkedBoxes = Array.from(linksSection.querySelectorAll('.zipper-cloud-checkbox:checked'));
-            let links = checkedBoxes.map(cb => cb.getAttribute('data-url'));
+            let links = checkedBoxes.map(cb => normalizeUrl(cb.getAttribute('data-url'), window.location.href)).filter(Boolean);
 
             const rawText = linksInput.value.trim();
             if (rawText) {
-                const manualLinks = [...new Set(rawText.split('\n').map(l => l.trim()).filter(l => l.startsWith('http') || l.indexOf("//") !== -1))];
+                const manualLinks = extractUrlsFromText(rawText, window.location.href);
                 links = [...new Set([...links, ...manualLinks])];
             }
 
@@ -1997,7 +2083,7 @@
 
             if (serverOnline) {
                 try {
-                    const response = await Api.send("download", "POST", {
+                    const response = await Api.sendWithFallback("download", "POST", {
                         url: window.location.href,
                         links: links,
                         batch_size: 100

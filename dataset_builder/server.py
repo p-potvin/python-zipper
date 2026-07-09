@@ -6,6 +6,9 @@ import zipfile
 import threading
 import re
 import requests
+import subprocess
+import time
+import uuid
 from urllib.parse import urlparse, urljoin
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
@@ -22,6 +25,118 @@ RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid
 VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "http://100.67.25.118:9001")
 # Local upscaler models directory
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
+NOMOS_MODEL_NAME = "4xNomos8k_atd"
+NOMOS_MODEL_PATH = os.path.join(MODELS_DIR, f"{NOMOS_MODEL_NAME}.safetensors")
+DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton:python-zipper"
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "svg"}
+UPSCALE_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+def get_available_upscale_models():
+    models = []
+    if os.path.exists(NOMOS_MODEL_PATH):
+        models.append({
+            "name": NOMOS_MODEL_NAME,
+            "kind": "spandrel",
+            "path": os.path.abspath(NOMOS_MODEL_PATH),
+        })
+    models.append({
+        "name": "pillow-lanczos",
+        "kind": "pillow",
+        "path": "",
+    })
+    return models
+
+def create_job(url, links, batch_size, upscale_enabled, upscale_model):
+    now = int(time.time() * 1000)
+    job_id = f"local-{uuid.uuid4().hex[:12]}"
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "url": url,
+        "total_links": len(links),
+        "processed_links": 0,
+        "images_count": 0,
+        "archives": [],
+        "batch_size": batch_size,
+        "upscale_enabled": bool(upscale_enabled),
+        "upscale_model": upscale_model,
+        "rclone_complete": False,
+        "created_at": now,
+        "updated_at": now,
+        "source": "local-python-zipper",
+    }
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+    return job_id
+
+def update_job(job_id, **changes):
+    if not job_id:
+        return
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return
+        job.update(changes)
+        job["updated_at"] = int(time.time() * 1000)
+
+def complete_job(job_id, archives=None, rclone_complete=False):
+    update_job(
+        job_id,
+        status="completed",
+        archives=list(archives or []),
+        rclone_complete=bool(rclone_complete),
+    )
+
+def fail_job(job_id, error):
+    update_job(job_id, status="failed", error=str(error))
+
+def get_jobs_snapshot():
+    with JOBS_LOCK:
+        return {key: dict(value) for key, value in JOBS.items()}
+
+def _configured_rclone_remotes():
+    raw = os.environ.get("PYTHON_ZIPPER_RCLONE_REMOTES", DEFAULT_RCLONE_REMOTES)
+    return [remote.strip() for remote in raw.split(",") if remote.strip()]
+
+def handoff_to_rclone(file_path):
+    """Move a completed download to the first configured rclone remote that accepts it."""
+    if not file_path or not os.path.exists(file_path):
+        return False
+
+    for remote in _configured_rclone_remotes():
+        destination = remote if remote.endswith(("/", ":")) else f"{remote}/"
+        try:
+            print(f"[Server] Moving completed download to rclone remote: {remote}")
+            result = subprocess.run(
+                ["rclone", "move", file_path, destination, "--create-empty-src-dirs"],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode == 0:
+                print(f"[Server] rclone handoff complete: {remote}")
+                return True
+            print(f"[Server] rclone handoff failed for {remote}: {result.stderr.strip()}")
+        except FileNotFoundError:
+            print("[Server] rclone executable was not found. Keeping local file.")
+            return False
+        except Exception as e:
+            print(f"[Server] rclone handoff exception for {remote}: {e}")
+
+    print(f"[Server] All rclone remotes failed. Keeping local file: {file_path}")
+    return False
+
+def upscale_image_content(content, ext, model):
+    if ext.lower() not in UPSCALE_IMAGE_EXTENSIONS:
+        return content
+    try:
+        from upscale_image import upscale_bytes
+        return upscale_bytes(content, model=model)
+    except Exception as e:
+        print(f"[Server] Local Python upscaling failed; keeping original image: {e}")
+        return content
 
 def get_rd_token():
     try:
@@ -145,30 +260,26 @@ class ScraperHandler(BaseHTTPRequestHandler):
         elif self.path.startswith('/api/ollama'):
             self._proxy_request("http://127.0.0.1:11434", len("/api/ollama"))
             return True
-        # Proxy vaultwares-api routes to OVHCloud
-        elif self.path.startswith('/api/jobs') or self.path.startswith('/api/abort'):
+        # Proxy vaultwares-api routes to OVHCloud. /api/jobs is served locally so
+        # the browser dashboard can fall back to this server when the API is down.
+        elif self.path.startswith('/api/abort'):
             self._proxy_request(VAULTWARES_API, 0)
             return True
         return False
 
     def _handle_upscaler_status(self):
-        """Check local upscaler availability (spandrel + model files)."""
-        models_dir = os.path.abspath(MODELS_DIR)
-        available_models = []
+        """Check local Python upscaler availability."""
+        models = get_available_upscale_models()
+        available_models = [model["name"] for model in models]
         error = None
         cuda_available = False
 
         try:
             import importlib.util
-            if importlib.util.find_spec("spandrel") is None:
+            if importlib.util.find_spec("PIL") is None:
+                error = "Pillow not installed (pip install pillow)"
+            if NOMOS_MODEL_NAME in available_models and importlib.util.find_spec("spandrel") is None:
                 error = "spandrel not installed (pip install spandrel)"
-            else:
-                if os.path.exists(models_dir):
-                    for f in os.listdir(models_dir):
-                        if f.lower().endswith(('.safetensors', '.pth', '.ckpt')):
-                            available_models.append(os.path.splitext(f)[0])
-                if not available_models:
-                    error = f"No model files in {models_dir}"
         except Exception as e:
             error = str(e)
 
@@ -182,6 +293,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
         result = {
             "available": available,
             "models": available_models,
+            "model_details": models,
             "cuda": cuda_available
         }
         if error:
@@ -228,6 +340,11 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return
         if self.path == '/api/upscaler/status':
             self._handle_upscaler_status()
+        elif self.path == '/api/jobs':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"jobs": get_jobs_snapshot(), "source": "local-python-zipper"}).encode('utf-8'))
         elif self.path in ['/', '/health', '/api']:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -303,6 +420,8 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 url = data.get('url')
                 links = data.get('links', [])
                 batch_size = data.get('batch_size', 100)
+                upscale_enabled = bool(data.get('upscale_enabled', False))
+                upscale_model = data.get('upscale_model', NOMOS_MODEL_NAME)
                 
                 if not url or not links:
                     self.send_response(400)
@@ -310,12 +429,13 @@ class ScraperHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b"Missing url or links parameters")
                     return
                 
-                threading.Thread(target=self._run_downloader, args=(url, links, batch_size)).start()
+                job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
+                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model)).start()
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({"status": "Download task started", "count": len(links)}).encode('utf-8'))
+                self.wfile.write(json.dumps({"status": "Download task started", "count": len(links), "correlationId": job_id}).encode('utf-8'))
             except Exception as e:
                 self.send_response(400)
                 self.end_headers()
@@ -371,12 +491,22 @@ class ScraperHandler(BaseHTTPRequestHandler):
             
         self._download_and_process(url, urls, batch_size)
 
-    def _run_downloader(self, url, links, batch_size):
+    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME):
         print(f"\n[Server] Background downloader task started for URL: {url} ({len(links)} links)")
         os.makedirs(DEST_DIR, exist_ok=True)
-        self._download_and_process(url, links, batch_size)
+        update_job(job_id, status="running")
+        try:
+            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id)
+            complete_job(
+                job_id,
+                archives=result.get("archives", []),
+                rclone_complete=result.get("rclone_complete", False),
+            )
+        except Exception as e:
+            fail_job(job_id, e)
+            raise
 
-    def _download_and_process(self, page_url, raw_links, batch_size):
+    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None):
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
@@ -393,10 +523,13 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 unique_urls.append(full_url)
 
         print(f"[Server] Processing {len(unique_urls)} link(s)...")
+        update_job(job_id, total_links=len(unique_urls), status="running")
 
         image_urls = []
+        archives = []
+        rclone_results = []
         
-        for url in unique_urls:
+        for index, url in enumerate(unique_urls, start=1):
             # 1. Bypass shorteners
             resolved_url = url
             if any(domain in url.lower() for domain in ["linkvertise.com", "direct-link.net", "link-center.net", "link-hub.net", "link-target.net"]):
@@ -417,17 +550,28 @@ class ScraperHandler(BaseHTTPRequestHandler):
             parsed = urlparse(final_url)
             ext = os.path.splitext(parsed.path)[1].lower().strip(".")
             
-            is_image = ext in ["jpg", "jpeg", "png", "gif", "webp", "svg"]
+            is_image = ext in IMAGE_EXTENSIONS
             
             if is_image:
                 image_urls.append(final_url)
             else:
-                # Save non-image file directly in background
-                threading.Thread(target=self._download_direct_file, args=(final_url, headers)).start()
+                direct_result = self._download_direct_file(final_url, headers)
+                if direct_result.get("filename"):
+                    archives.append(direct_result["filename"])
+                    rclone_results.append(direct_result.get("rclone_complete", False))
+            update_job(job_id, processed_links=index, images_count=len(image_urls))
 
         # Download and zip remaining image files in batches
         if image_urls:
-            self._download_and_zip_images(url_slug, page_url, image_urls, batch_size, headers)
+            zip_result = self._download_and_zip_images(url_slug, page_url, image_urls, batch_size, headers, upscale_enabled, upscale_model)
+            archives.extend(zip_result.get("archives", []))
+            rclone_results.extend(zip_result.get("rclone_results", []))
+            update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
+
+        return {
+            "archives": archives,
+            "rclone_complete": bool(rclone_results) and all(rclone_results),
+        }
 
     def _download_direct_file(self, url, headers):
         try:
@@ -435,7 +579,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
             resp = requests.get(url, headers=headers, stream=True, timeout=120)
             if resp.status_code != 200:
                 print(f"[Server] Direct download failed for {url}: status {resp.status_code}")
-                return
+                return {}
                 
             content_disp = resp.headers.get('content-disposition', '')
             filename = ""
@@ -461,26 +605,34 @@ class ScraperHandler(BaseHTTPRequestHandler):
                     if chunk:
                         f.write(chunk)
             print(f"[Server] Completed download: {filename}")
+            rclone_complete = handoff_to_rclone(file_path)
+            return {"filename": filename, "rclone_complete": rclone_complete}
         except Exception as e:
             print(f"[Server] Error downloading {url}: {e}")
+            return {}
 
-    def _download_and_zip_images(self, url_slug, page_url, img_urls, batch_size, headers):
+    def _download_and_zip_images(self, url_slug, page_url, img_urls, batch_size, headers, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME):
         zip_writer = None
         zip_path = None
         count = 0
         zip_file_count = 0
+        archives = []
+        rclone_results = []
         
         print(f"[Server] Downloading {len(img_urls)} images for slug '{url_slug}'...")
 
         for i, img_url in enumerate(img_urls):
             parsed_img = urlparse(img_url)
             ext = os.path.splitext(parsed_img.path)[1].lower().strip(".")
-            if ext not in ["jpg", "jpeg", "png", "gif", "webp", "svg"]:
+            if ext not in IMAGE_EXTENSIONS:
                 ext = "jpg"
 
             content = scraper.download_image(img_url, headers)
             if not content:
                 continue
+
+            if upscale_enabled:
+                content = upscale_image_content(content, ext, upscale_model)
 
             if zip_writer is None:
                 random_suffix = random.randint(0, 9000)
@@ -498,15 +650,24 @@ class ScraperHandler(BaseHTTPRequestHandler):
 
             if count > 0 and count % batch_size == 0:
                 zip_writer.close()
+                archives.append(os.path.basename(zip_path))
+                rclone_results.append(handoff_to_rclone(zip_path))
                 zip_writer = None
                 print(f"[Server] Closed zip: {zip_path}")
                 count = 0
 
         if zip_writer is not None:
             zip_writer.close()
+            archives.append(os.path.basename(zip_path))
+            rclone_results.append(handoff_to_rclone(zip_path))
             print(f"[Server] Closed final zip: {zip_path}")
 
         print(f"[Server] Finished downloading and zipping task for: {page_url}")
+        return {
+            "archives": archives,
+            "images_count": len(img_urls),
+            "rclone_results": rclone_results,
+        }
 
 class ThreadedHTTPServer(ThreadingTCPServer):
     allow_reuse_address = True
