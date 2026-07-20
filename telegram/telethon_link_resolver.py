@@ -20,13 +20,42 @@ import shutil
 from urllib.parse import quote
 from telethon import TelegramClient
 from telethon.tl.types import MessageEntityUrl, MessageEntityTextUrl
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+from patchright.async_api import async_playwright
+import urllib.parse
+import sys
+
+# --- PROXY PATCHING FOR REQUESTS ---
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    import proxy_utils
+    _proxy_dict = proxy_utils.get_requests_proxies()
+    if _proxy_dict:
+        _old_request = requests.Session.request
+        def _new_request(self, method, url, **kwargs):
+            if "proxies" not in kwargs and not str(url).startswith("http://127.0.0.1") and not str(url).startswith("http://localhost"):
+                kwargs["proxies"] = _proxy_dict
+            return _old_request(self, method, url, **kwargs)
+        requests.Session.request = _new_request
+except ImportError:
+    pass
+# -----------------------------------
+
 import win11toast
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from dotenv import load_dotenv
 from k2s_uploader import upload_file_dual, is_token_valid
+from uploaders import (
+    upload_to_katfile, upload_local_file_to_katfile,
+    upload_local_to_pixeldrain, upload_local_to_1fichier, upload_local_to_gofile,
+    upload_local_with_fallbacks,
+    register_mirror_in_link_sharing, slugify,
+    get_katfile_daily_uploaded_size, can_upload_to_katfile,
+)
+from pipeline_state import PipelineState
+import uploaders
+from site_downloaders import get_handler, get_supported_domains
 
 # ==============================================================================
 # CONFIGURATION
@@ -45,17 +74,17 @@ API_HASH = os.environ.get("TELEGRAM_API_HASH", "")     # <--- REPLACE: string
 # Choose the channel or user you want to scrape.
 # You can use: channel username ('@channelname'), channel ID (integer or string: '123456' or -1001234567890), link, or 'me'.
 # Use tuple syntax for multiple channels: ('@channel1', '123456', 'https://t.me/channel2')
-CHANNEL_NAME = ('@ThePlugLeaks', 'SPRO', "StreamerGirls.net Official 2")
+CHANNEL_NAME = ('SPRO') #('@ThePlugLeaks', 'SPRO', "StreamerGirls.net Official 2")
 
 # Maximum number of recent messages to look at
 MESSAGE_LIMIT = 5
 
 # Skip first N messages (to avoid re-processing same links)
 # Change this to process different messages each run
-MESSAGE_SKIP = 0
+MESSAGE_SKIP = 15
 
 # Create output and artifacts directories
-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "logs")
 ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "artifacts")
 SESSIONS_DIR = os.path.join(SCRIPT_DIR, "sessions")
 ASSETS_DIR = os.path.join(SCRIPT_DIR, "assets")
@@ -94,16 +123,37 @@ KATFILE_API_BASE = "https://katfile.space/api"
 KATFILE_UPLOAD_SERVER_ENDPOINT = "https://katfile.space/api/upload/server"
 KATFILE_DOMAIN = "https://katfile.space"
 
+# Cloud storage fallback keys (loaded from .access/cloud_storage_keys.txt)
+CLOUD_STORAGE_KEYS_FILE = os.path.join(os.path.dirname(os.path.dirname(SCRIPT_DIR)), ".access", "cloud_storage_keys.txt")
+PIXELDRAIN_KEY = ""
+ONEFICHIER_KEY = ""
+GOFILE_KEY = ""
+if os.path.exists(CLOUD_STORAGE_KEYS_FILE):
+    try:
+        with open(CLOUD_STORAGE_KEYS_FILE, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    if _k.lower() == "pixeldrain": PIXELDRAIN_KEY = _v
+                    elif _k.lower() == "1fichier": ONEFICHIER_KEY = _v
+                    elif _k.lower() == "gofile": GOFILE_KEY = _v
+    except Exception as _e:
+        print(f"[Config] Error loading cloud storage keys: {_e}")
+
 # pyLoad configuration
-PYLOAD_API_URL = os.environ.get("PYLOAD_API_URL", "https://pyload.vaultwares.ca/api")
+PYLOAD_API_URL = os.environ.get("PYLOAD_API_URL", "http://localhost:8003/api")
 PYLOAD_API_KEY = os.environ.get("PYLOAD_API_KEY", "pl_11qb0iw6-Pdm9hf1lhqS4y_0vOBnjaunDZZdGNE97S0QQ")
-PYLOAD_ENABLED = False  # Will be set to True if API is accessible
+PYLOAD_ENABLED = True  # Will be set to True if API is accessible
 
 DOWNLOAD_DIR = r"G:\mega"
 
-# Large file handling: 3GB-10GB → G:\TelethonDownloads instead of uploading to Katfile
-MAX_FILESIZE_UPLOAD = 3 * 1024 * 1024 * 1024  # 3 GB (upload limit before downloading)
-MAX_FILESIZE_DOWNLOAD = 10 * 1024 * 1024 * 1024  # 10 GB (max file we'll download)
+# Track files downloaded during this run — background uploaders only process these
+_current_run_files = set()
+
+# Large file handling: 2GB → G:\TelethonDownloads instead of uploading to Katfile
+MAX_FILESIZE_UPLOAD = 2 * 1024 * 1024 * 1024  # 2 GB (upload limit before downloading)
+MAX_FILESIZE_DOWNLOAD = 2 * 1024 * 1024 * 1024  # 2 GB (max file we'll download)
 LARGE_FILE_DOWNLOAD_DIR = r"G:\TelethonDownloads"
 
 # Katfile daily upload limit: 2GB → fallback to G: drive
@@ -118,6 +168,19 @@ if not os.path.exists(LARGE_FILE_DOWNLOAD_DIR):
 if not os.path.exists(KATFILE_UPLOAD_DIR):
     os.makedirs(KATFILE_UPLOAD_DIR)
     print(f"[INIT] Created Katfile overflow directory: {KATFILE_UPLOAD_DIR}")
+
+# Configure uploaders module with our config values
+uploaders.configure(
+    KATFILE_API_KEY=KATFILE_API_KEY,
+    KATFILE_API_BASE=KATFILE_API_BASE,
+    KATFILE_UPLOAD_SERVER_ENDPOINT=KATFILE_UPLOAD_SERVER_ENDPOINT,
+    KATFILE_DOMAIN=KATFILE_DOMAIN,
+    KATFILE_DAILY_LIMIT=KATFILE_DAILY_LIMIT,
+    PIXELDRAIN_KEY=PIXELDRAIN_KEY,
+    ONEFICHIER_KEY=ONEFICHIER_KEY,
+    GOFILE_KEY=GOFILE_KEY,
+    OUTPUT_DIR=OUTPUT_DIR,
+)
 
 # Load Real-Debrid API token
 if REALDEBRID_API_TOKEN:
@@ -139,71 +202,6 @@ if not os.path.exists(DOWNLOAD_DIR):
         print(f"[INIT] Warning: Could not create download directory {DOWNLOAD_DIR}: {e}")
 
 # ==============================================================================
-
-def get_chrome_profile(user_data_dir):
-    """
-    Clones essential parts of Chrome user data directory to a temporary directory
-    to prevent profile locks and allow parallel browser instances.
-    """
-    import os
-    import tempfile
-    import shutil
-    
-    temp_profile_dir = tempfile.mkdtemp(prefix="chrome_profile_cloned_")
-    print(f"[INFO] Cloning Chrome profile to temporary directory: {temp_profile_dir}")
-    
-    # Essential files and subdirectories for extension configuration
-    essential_items = [
-        "Default/Extensions",
-        "Default/Local Extension Settings",
-        "Default/Local Storage",
-        "Default/Preferences",
-        "Default/Network/Cookies",
-        "Default/Cookies",
-        "Default/Secure Preferences",
-        "Default/Extension State",
-        "Local State"
-    ]
-    
-    ignore_files = ['Lock', 'SingletonLock', 'SingletonSocket', 'SingletonCookie', 'parent.lock']
-    
-    for item in essential_items:
-        src_path = os.path.join(user_data_dir, item)
-        dest_path = os.path.join(temp_profile_dir, item)
-        
-        if os.path.exists(src_path):
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            try:
-                if os.path.isdir(src_path):
-                    def ignore_func(path, names):
-                        ignored = []
-                        for name in names:
-                            if name in ignore_files or 'cache' in name.lower() or 'code cache' in name.lower():
-                                ignored.append(name)
-                        return ignored
-                    shutil.copytree(src_path, dest_path, ignore=ignore_func, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src_path, dest_path)
-            except Exception as e:
-                print(f"  [WARN] Failed to copy {item}: {e}")
-                
-    # Ensure any copied lock files are deleted
-    for root, dirs, files in os.walk(temp_profile_dir):
-        for name in files:
-            if name in ignore_files:
-                try:
-                    os.remove(os.path.join(root, name))
-                except:
-                    pass
-                    
-    def cleanup():
-        print(f"[INFO] Cleaning up temporary Chrome profile: {temp_profile_dir}")
-        try:
-            shutil.rmtree(temp_profile_dir, ignore_errors=True)
-        except Exception as e:
-            print(f"  [WARN] Failed to delete temporary directory {temp_profile_dir}: {e}")
-            
-    return temp_profile_dir, cleanup
 
 def resolve_initial_url(url):
     """ Follows URL shorteners to find the underlying URL before processing. """
@@ -597,222 +595,20 @@ def unrestrict_mega_with_realdebrid(mega_url, item_idx):
         print(f"   [{item_idx}] ✗ Real-Debrid unrestriction failed: {str(e)}")
         return None
 
-def upload_to_katfile(download_url, filename, item_idx):
-    """ Streams file directly from Real-Debrid download URL to Katfile using 3-step API """
-    if not KATFILE_API_KEY:
-        print(f"   [{item_idx}] ✗ Katfile API key not loaded")
-        return None
-    
-    try:
-        print(f"   [{item_idx}] Uploading to Katfile: {filename}")
-        
-        # STEP 1: Get upload server and session ID
-        print(f"   [{item_idx}] Step 1/3: Getting upload server...")
-        server_response = requests.get(
-            KATFILE_UPLOAD_SERVER_ENDPOINT,
-            params={'key': KATFILE_API_KEY},
-            timeout=10
-        )
-        
-        if server_response.status_code != 200:
-            print(f"   [{item_idx}] ✗ Failed to get upload server: {server_response.status_code}")
-            print(f"   [{item_idx}]   Response: {server_response.text[:200]}")
-            return None
-        
-        try:
-            server_data = server_response.json()
-            upload_url = server_data.get('result')
-            sess_id = server_data.get('sess_id')
-            
-            if not upload_url or not sess_id:
-                print(f"   [{item_idx}] ✗ Invalid upload server response: {server_data}")
-                return None
-                
-            print(f"   [{item_idx}] ✓ Got upload server: {upload_url}")
-            print(f"   [{item_idx}] ✓ Session ID: {sess_id}")
-        except:
-            print(f"   [{item_idx}] ✗ Failed to parse server response: {server_response.text[:200]}")
-            return None
-        
-        # STEP 2: Upload file to the server
-        print(f"   [{item_idx}] Step 2/3: Uploading file to server...")
-        print(f"   [{item_idx}] Streaming from Real-Debrid...")
-        
-        with requests.get(download_url, stream=True, timeout=600) as rd_response:
-            if rd_response.status_code != 200:
-                print(f"   [{item_idx}] ✗ Failed to access Real-Debrid download URL: {rd_response.status_code}")
-                return None
-            
-            files = {
-                'file_0': (filename, rd_response.raw, 'application/octet-stream')
-            }
-            
-            data = {
-                'sess_id': sess_id,
-                'utype': 'prem'
-            }
-            
-            upload_response = requests.post(
-                upload_url,
-                files=files,
-                data=data,
-                timeout=600
-            )
-            
-            if upload_response.status_code != 200:
-                print(f"   [{item_idx}] ✗ Upload failed: {upload_response.status_code}")
-                print(f"   [{item_idx}]   Response: {upload_response.text[:200]}")
-                return None
-            
-            try:
-                upload_result = upload_response.json()
-                
-                # Response is an array like [{"file_code":"yzanp0ps7sgl","file_status":"OK"}]
-                if isinstance(upload_result, list) and len(upload_result) > 0:
-                    file_data = upload_result[0]
-                    file_code = file_data.get('file_code')
-                    file_status = file_data.get('file_status')
-                    
-                    if file_status != 'OK' or not file_code:
-                        print(f"   [{item_idx}] ✗ Upload status: {file_status}")
-                        return None
-                    
-                    print(f"   [{item_idx}] ✓ Upload successful")
-                    print(f"   [{item_idx}] File code: {file_code}")
-                else:
-                    print(f"   [{item_idx}] ✗ Invalid upload response: {upload_result}")
-                    return None
-            except Exception as e:
-                print(f"   [{item_idx}] ✗ Failed to parse upload response: {str(e)}")
-                print(f"   [{item_idx}]   Response: {upload_response.text[:200]}")
-                return None
-        
-        # STEP 3: Construct final URL
-        print(f"   [{item_idx}] Step 3/3: Constructing final URL...")
-        katfile_url = f"{KATFILE_DOMAIN}/{file_code}"
-        
-        print(f"   [{item_idx}] ✓ File uploaded to Katfile")
-        print(f"   [{item_idx}]   URL: {katfile_url}")
-        
-        return {
-            'katfile_url': katfile_url,
-            'file_code': file_code,
-            'filename': filename
-        }
-    
-    except requests.exceptions.Timeout:
-        print(f"   [{item_idx}] ✗ Request timeout")
-        return None
-    except Exception as e:
-        print(f"   [{item_idx}] ✗ Katfile upload error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def upload_local_file_to_katfile(local_file_path, item_idx):
-    """ Uploads a local file from disk to Katfile using the 3-step API """
-    if not KATFILE_API_KEY:
-        print(f"   [Katfile Local] ✗ API key not loaded")
-        return None
-    
-    filename = os.path.basename(local_file_path)
-    file_size = os.path.getsize(local_file_path)
-    
-    try:
-        print(f"   [Katfile Local] [{item_idx}] Uploading: {filename} ({file_size / (1024**2):.2f} MB)...")
-        
-        # STEP 1: Get upload server
-        server_response = requests.get(
-            KATFILE_UPLOAD_SERVER_ENDPOINT,
-            params={'key': KATFILE_API_KEY},
-            timeout=10
-        )
-        
-        if server_response.status_code != 200:
-            print(f"   [Katfile Local] [{item_idx}] ✗ Failed to get server: {server_response.status_code}")
-            return None
-            
-        server_data = server_response.json()
-        upload_url = server_data.get('result')
-        sess_id = server_data.get('sess_id')
-        
-        if not upload_url or not sess_id:
-            print(f"   [Katfile Local] [{item_idx}] ✗ Invalid server response")
-            return None
-            
-        # STEP 2: Post the local file
-        with open(local_file_path, 'rb') as f:
-            files = {
-                'file_0': (filename, f, 'application/octet-stream')
-            }
-            data = {
-                'sess_id': sess_id,
-                'utype': 'prem'
-            }
-            
-            upload_response = requests.post(
-                upload_url,
-                files=files,
-                data=data,
-                timeout=1200  # Give it 20 minutes for large uploads
-            )
-            
-        if upload_response.status_code != 200:
-            print(f"   [Katfile Local] [{item_idx}] [FAIL] Upload failed: {upload_response.status_code}")
-            return None
-            
-        upload_result = upload_response.json()
-        if isinstance(upload_result, list) and len(upload_result) > 0:
-            file_data = upload_result[0]
-            file_code = file_data.get('file_code')
-            file_status = file_data.get('file_status')
-            
-            if file_status != 'OK' or not file_code:
-                print(f"   [Katfile Local] [{item_idx}] [FAIL] Upload status: {file_status}")
-                return None
-                
-            katfile_url = f"{KATFILE_DOMAIN}/{file_code}"
-            print(f"   [Katfile Local] [{item_idx}] [OK] Uploaded: {katfile_url}")
-            
-            # Register in Link Sharing
-            register_mirror_in_link_sharing(filename, katfile_url)
-            
-            # Log the upload to keep track of daily size
-            log_file = os.path.join(OUTPUT_DIR, "uploads_log.txt")
-            today = datetime.date.today().isoformat()
-            with open(log_file, 'a', encoding='utf-8') as lf:
-                lf.write(f"[{today}] {filename} ({file_size / (1024**3):.4f} GB) -> katfile (local)\n")
-                
-            return {
-                'katfile_url': katfile_url,
-                'file_code': file_code,
-                'filename': filename
-            }
-        return None
-    except Exception as e:
-        print(f"   [Katfile Local] [{item_idx}] [FAIL] Upload error: {e}")
-        return None
-
 async def background_katfile_uploader():
     """
-    Scans DOWNLOAD_DIR for files and uploads them to Katfile in parallel (up to 3 concurrent uploads)
-    at random until the daily Katfile upload limit is reached. Keeps files on disk and logs a warning on completion/limit.
+    Uploads files downloaded during this run to Katfile in parallel (up to 3 concurrent uploads).
+    Falls back to Gofile, K2S/FileBoom, then Katfile.
     """
-    import glob
     import random
     
-    upload_dir = DOWNLOAD_DIR
-    if not os.path.exists(upload_dir):
-        print(f"[BG Uploader] Directory {upload_dir} does not exist. Uploader skipped.")
+    # Only process files from the current run
+    files = [f for f in _current_run_files if os.path.isfile(f)]
+    if not files:
+        print(f"[BG Uploader] No files from this run to upload.")
         return
         
-    print(f"[BG Uploader] Starting background uploader for {upload_dir}...")
-    
-    # Get all files in DOWNLOAD_DIR
-    files = [f for f in glob.glob(os.path.join(upload_dir, "*")) if os.path.isfile(f)]
-    if not files:
-        print(f"[BG Uploader] No files found in {upload_dir}.")
-        return
+    print(f"[BG Uploader] Starting background uploader for {len(files)} files from this run...")
         
     # Shuffle files to pick at random
     random.shuffle(files)
@@ -827,8 +623,11 @@ async def background_katfile_uploader():
         # Check if we can upload without exceeding limit
         uploaded_today = get_katfile_daily_uploaded_size()
         if uploaded_today + file_size > KATFILE_DAILY_LIMIT:
-            print(f"[BG Uploader] [WARN] Limit reached or file {os.path.basename(file_path)} would exceed daily Katfile limit of {KATFILE_DAILY_LIMIT / (1024**3):.2f} GB. Stopping background uploads.")
-            break
+            if uploaded_today >= KATFILE_DAILY_LIMIT:
+                print(f"[BG Uploader] [WARN] Daily Katfile limit of {KATFILE_DAILY_LIMIT / (1024**3):.2f} GB reached. Stopping background uploads.")
+                break
+            print(f"[BG Uploader] [SKIP] File {os.path.basename(file_path)} would exceed daily Katfile limit of {KATFILE_DAILY_LIMIT / (1024**3):.2f} GB. Skipping to next file.")
+            continue
             
         # Wait if we hit max concurrent limit
         while len(active_uploads) >= max_concurrent_uploads:
@@ -837,10 +636,10 @@ async def background_katfile_uploader():
             await asyncio.sleep(1)
             
         print(f"[BG Uploader] Scheduling upload: {os.path.basename(file_path)}")
-        # Start upload in background thread/task
+        # Start upload in background thread/task (with fallback chain)
         task = asyncio.get_running_loop().run_in_executor(
             None,
-            upload_local_file_to_katfile,
+            upload_local_with_fallbacks,
             file_path,
             idx
         )
@@ -854,136 +653,20 @@ async def background_katfile_uploader():
         await asyncio.gather(*active_uploads, return_exceptions=True)
     print(f"[BG Uploader] [WARN] Background uploader finished. Keeping uploaded files in {upload_dir}.")
 
-def slugify(text):
-    text = text.lower()
-    # Remove extension if present
-    if '.' in text:
-        text = '.'.join(text.split('.')[:-1])
-    # Replace non-alphanumeric with hyphens
-    text = re.sub(r'[^a-z0-9_-]+', '-', text)
-    # Remove multiple consecutive hyphens
-    text = re.sub(r'-+', '-', text)
-    # Strip hyphens from ends
-    return text.strip('-')[:100]
-
-def register_mirror_in_link_sharing(filename, remote_url):
-    """
-    Registers a file and its mirror link in the local Prom King Link Sharing service.
-    """
-    import requests
-    import re
-    import uuid
-    from urllib.parse import urlparse
-    
-    API_BASE_URL = "http://100.67.25.118:9001"
-    API_KEY = "dev-secret-key-123" # Must match .env config
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}"
-    }
-    
-    try:
-        # 1. Fetch hosts from Link Sharing API
-        hosts_resp = requests.get(f"{API_BASE_URL}/api/hosts", headers=headers, timeout=5)
-        if hosts_resp.status_code != 200:
-            print(f"[Link Sharing] Failed to fetch hosts: {hosts_resp.status_code} {hosts_resp.text}")
-            return None
-            
-        hosts = hosts_resp.json()
-        
-        # 2. Determine which host matches the remote_url
-        domain = urlparse(remote_url).hostname
-        if not domain:
-            print(f"[Link Sharing] Invalid mirror URL: {remote_url}")
-            return None
-        domain = domain.lower().replace("www.", "")
-        
-        host_id = None
-        for host in hosts:
-            base_domain = host.get("baseDomain", "").lower()
-            # Simple check if host domain is inside our mirror domain or vice versa
-            if base_domain in domain or domain in base_domain:
-                host_id = host["id"]
-                break
-                
-        # Keyword fallback matching if not found by exact/substring domain match
-        if not host_id:
-            keywords_mapping = {
-                "katfile": ["katfile"],
-                "keep2share": ["k2s", "keep2share"],
-                "fileboom": ["fileboom", "fboom"],
-                "rapidgator": ["rapidgator", "rg.to"]
-            }
-            for host in hosts:
-                host_name_lower = host.get("name", "").lower()
-                base_domain = host.get("baseDomain", "").lower()
-                for key, kw_list in keywords_mapping.items():
-                    if any(kw in domain for kw in kw_list):
-                        if any(kw in host_name_lower or kw in base_domain for kw in kw_list):
-                            host_id = host["id"]
-                            break
-                if host_id:
-                    break
-                    
-        if not host_id:
-            print(f"[Link Sharing] No matching host found in DB for domain: {domain}")
-            return None
-            
-        # 3. Create a clean, unique slug
-        slug = slugify(filename)
-        # Add a short random suffix to make it completely unique and avoid slug conflicts
-        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
-        
-        # 4. Call quick-create endpoint
-        payload = {
-            "title": filename,
-            "contentId": f"vid-{hash(filename) & 0xffffffff}",
-            "slug": slug,
-            "hostId": host_id,
-            "remoteUrl": remote_url,
-            "priority": 100
-        }
-        
-        create_resp = requests.post(
-            f"{API_BASE_URL}/api/routes/quick-create",
-            headers=headers,
-            json=payload,
-            timeout=5
-        )
-        
-        if create_resp.status_code in [200, 201]:
-            result = create_resp.json()
-            print(f"[Link Sharing] [OK] Registered mirror on {domain} -> {API_BASE_URL}/f/{result['slug']}")
-            return result
-        else:
-            print(f"[Link Sharing] Failed to quick-create route: {create_resp.status_code} {create_resp.text}")
-            return None
-            
-    except Exception as e:
-        print(f"[Link Sharing] [ERROR] Exception registering mirror: {e}")
-        return None
-
 async def background_dual_uploader():
     if not is_token_valid():
-        print("[BG Dual Uploader] ✗ Keep2Share/FileBoom token is invalid or expired. Skipping background uploader.")
+        print("[BG Dual Uploader] ✗ Keep2Share/FileBoom token is invalid or expired. Skipping dual uploader.")
+        print("[BG Dual Uploader] Tip: Check K2S_TOKEN / FBOOM_TOKEN in telegram/.env or re-authenticate.")
         return
 
     """
-    Scans G:\\mega for files and uploads them to FileBoom/Keep2Share in parallel (up to 3 concurrent uploads)
-    at random. Appends links to output/uploads_log.txt and logs progress.
+    Uploads files downloaded during this run to FileBoom/Keep2Share in parallel (up to 3 concurrent uploads).
+    Appends links to logs/uploads_log.txt and logs progress.
     """
-    import glob
     import random
-    
-    upload_dir = r"G:\mega"
-    if not os.path.exists(upload_dir):
-        print(f"[BG Dual Uploader] Directory {upload_dir} does not exist. Uploader skipped.")
-        return
-        
-    print(f"[BG Dual Uploader] Starting background dual uploader for {upload_dir}...")
-    
-    # Get all files in G:\mega
-    all_files = [f for f in glob.glob(os.path.join(upload_dir, "*")) if os.path.isfile(f)]
+
+    # Only process files from the current run
+    all_files = [f for f in _current_run_files if os.path.isfile(f)]
     # Filter out helper files/incomplete downloads
     files = []
     for f in all_files:
@@ -991,10 +674,12 @@ async def background_dual_uploader():
         if name.startswith('.') or name.endswith('.incomplete') or name.endswith('.trickplay') or name.endswith('.torrents'):
             continue
         files.append(f)
-        
+
     if not files:
-        print(f"[BG Dual Uploader] No valid upload candidates found in {upload_dir}.")
+        print(f"[BG Dual Uploader] No valid upload candidates from this run.")
         return
+
+    print(f"[BG Dual Uploader] Starting background dual uploader for {len(files)} files from this run...")
         
     # Shuffle to pick at random
     random.shuffle(files)
@@ -1279,6 +964,8 @@ async def download_file_with_browser(download_url, filename, browser, item_idx):
         
         file_size = os.path.getsize(output_path)
         print(f"   [{item_idx}] ✓ Downloaded: {filename} ({file_size / (1024**3):.2f} GB)")
+        
+        _current_run_files.add(output_path)
         
         await page.close()
         return output_path
@@ -1591,43 +1278,6 @@ async def resolve_url_with_browser(url, context, page_idx):
         if page:
             await page.close()
 
-def get_katfile_daily_uploaded_size():
-    """Get total size of files already uploaded to Katfile today"""
-    log_file = os.path.join(OUTPUT_DIR, "uploads_log.txt")
-    if not os.path.exists(log_file):
-        return 0
-    
-    today = datetime.date.today().isoformat()
-    total_size = 0
-    
-    try:
-        with open(log_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if today in line and 'katfile' in line.lower():
-                    # Try to extract file size from log line
-                    # Format: [2026-05-28] filename (1.23 GB) -> katfile
-                    match = re.search(r'\(([\d.]+)\s*GB\)', line)
-                    if match:
-                        try:
-                            size_gb = float(match.group(1))
-                            total_size += size_gb * (1024 ** 3)
-                        except:
-                            pass
-    except Exception as e:
-        print(f"   [WARN] Error reading upload log: {e}")
-    
-    return total_size
-
-def can_upload_to_katfile(new_file_size):
-    """Check if file can be uploaded to Katfile without exceeding daily limit"""
-    uploaded_today = get_katfile_daily_uploaded_size()
-    available_space = KATFILE_DAILY_LIMIT - uploaded_today
-    return new_file_size <= available_space
-
-# ==============================================================================
-# PYLOAD INTEGRATION
-# ==============================================================================
-
 def convert_bunkr_link(url):
     """Convert bunkr.la, bunkr.ru, bunkr.to, bunkr.is, bunkr.cr, etc. to balbums.st"""
     import re
@@ -1638,48 +1288,97 @@ def convert_bunkr_link(url):
         return f"https://balbums.st{path}"
     return url
 
+def normalize_url(url):
+    """Strip fragments, query params, and known suffix paths to deduplicate URLs."""
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    # Remove fragment
+    path = parsed.path.rstrip('/')
+    # Strip known suffix patterns
+    strip_suffixes = ['/edit', '/raw', '/export-page', '/report-url', '/lang', '/langs',
+                      '/how', '/what', '/archive', '/contact', '/login', '/register',
+                      '/signup', '/about', '/faq', '/sitemap.xml']
+    for suffix in strip_suffixes:
+        if path.endswith(suffix):
+            path = path[:-len(suffix)]
+    # Remove query string entirely
+    normalized = urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+    return normalized
+
+
 def classify_and_filter_url(url):
     """
     Classifies a URL and returns a tuple (action, processed_url)
     Actions:
       - 'rd': Process via Real-Debrid (mega.nz, etc.)
-      - 'pyload': Queue directly to pyLoad without RD (balbums.st, cyberfile, etc.)
-      - 'skip': Drop or ignore completely (fishing, telegram, discord, login/contact, rentry/pasterix)
+      - 'direct': Download directly via Playwright site handler (balbums.st, cyberfile, streamergirls, etc.)
+      - 'pyload': Queue to pyLoad (fallback for unhandled sites)
+      - 'skip': Drop or ignore completely
     """
     url_lower = url.lower()
-    
+
     # 1. Skip check: Drop fishing links
     if 'fishing' in url_lower:
         return 'skip', None
-        
-    # 2. Skip check: Ignore discord, telegram, rentry, pasterix, etc.
-    skip_domains = ['discord.gg', 'discord.com', 't.me', 'telegram.me', 'telegram.org', 'rentry.co', 'rentry.org', 'pasterix.net']
+
+    # 2. Skip check: Ignore non-download domains entirely
+    # pasterix/pastehill are hub pages — scraped earlier for links, not downloaded directly
+    skip_domains = [
+        'discord.gg', 'discord.com', 't.me', 'telegram.me', 'telegram.org',
+        'rentry.co', 'rentry.org',
+        'pasterix.com', 'pasterix.net', 'pastehill.com',
+        'plugleaksvip.com', 'plugleakz.net',
+    ]
     if any(domain in url_lower for domain in skip_domains):
         return 'skip', None
-        
-    # 3. Skip check: Ignore edit, login, contact, register, signup pages
-    skip_keywords = ['/login', '/register', '/signup', '/contact', '/edit', '/about', '/faq']
+
+    # 3. Skip check: Ignore navigation/utility pages by path keyword
+    skip_keywords = [
+        '/login', '/register', '/signup', '/contact', '/edit', '/about', '/faq',
+        '/archive', '/sitemap', '/lang/', '/pages/', '/how', '/what',
+        '/report-url', '/request-login', '/export-page', '/raw',
+        '/clone/', '/u/',
+    ]
     if any(keyword in url_lower for keyword in skip_keywords):
         return 'skip', None
-        
-    # 4. Convert bunkr links to balbums.st
+
+    # 4. Skip check: Ignore bare domain roots (no path or just /)
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.path or parsed.path == '/':
+        return 'skip', None
+
+    # 5. Convert bunkr links to balbums.st and route to direct downloader
     if 'bunkr.' in url_lower:
-        converted_url = convert_bunkr_link(url)
-        return 'pyload', converted_url
-        
-    # 5. Cyberfile links go to pyLoad
+        #converted_url = convert_bunkr_link(url)
+        return 'direct', url
+
+    # 6. Cyberfile links go to direct downloader
     if 'cyberfile.' in url_lower:
-        return 'pyload', url
-        
-    # 6. Balbums links go to pyLoad
+        return 'direct', url
+
+    # 7. Balbums links go to direct downloader
     if 'balbums.st' in url_lower:
-        return 'pyload', url
-        
-    # 7. Real-Debrid hosts (Mega.nz is primary)
+        return 'direct', url
+
+    # 8. Streamergirls links go to direct downloader (via bypass.city)
+    if 'streamergirls.' in url_lower:
+        return 'direct', url
+
+    # 9. Real-Debrid hosts (Mega.nz is primary)
     if 'mega.nz' in url_lower or 'mega.co.nz' in url_lower:
         return 'rd', url
-        
-    return 'pyload', url
+
+    # 10. Everything else goes to pyLoad (but only if it looks like a file link)
+    # Filter out obvious non-file URLs
+    file_indicators = ['/download/', '/d/', '/file/', '/f/', '/get/', '/dl/',
+                       '.mp4', '.zip', '.rar', '.7z', '.mkv', '.avi', '.wmv',
+                       '/v/', '/watch/', '/embed/']
+    if any(indicator in url_lower for indicator in file_indicators):
+        return 'pyload', url
+
+    # Unknown URL with no file indicators — skip it to avoid sending junk to pyLoad
+    return 'skip', None
 
 def check_pyload_api():
     """Check if pyLoad API is accessible"""
@@ -1816,13 +1515,117 @@ async def extract_links_from_rentry(rentry_url, browser, page_idx):
 
 
 
+async def mega_folder_rd_extension_automation(page, mega_url, browser, item_idx):
+    """
+    Navigate to a mega.nz folder, click the Real-Debrid extension icon in the toolbar,
+    click 'unrestrict links', then 'copy links', and read the clipboard.
+    Returns a list of unrestricted download URLs.
+    """
+    import subprocess
+    
+    try:
+        import pyautogui
+        import pyperclip
+    except ImportError:
+        print(f"   [{item_idx}] [WARN] pyautogui/pyperclip not installed, falling back to API")
+        return []
+
+    print(f"   [{item_idx}] [MEGA FOLDER] Navigating to {mega_url}")
+    
+    # Navigate to the mega folder
+    try:
+        await page.goto(mega_url, timeout=20000)
+    except Exception as e:
+        print(f"   [{item_idx}] [WARN] Navigation error: {str(e)[:80]}")
+    
+    # Wait for page to fully load
+    await asyncio.sleep(5)
+    
+    # Step 1: Click the Real-Debrid extension icon (pinned in toolbar)
+    # The extension icon position depends on screen resolution and Chrome layout
+    # We'll use a configurable position with environment variable fallback
+    rd_icon_x = int(os.environ.get("RD_EXTENSION_X", 0))
+    rd_icon_y = int(os.environ.get("RD_EXTENSION_Y", 0))
+    
+    if rd_icon_x == 0 or rd_icon_y == 0:
+        print(f"   [{item_idx}] [WARN] RD extension icon position not configured (set RD_EXTENSION_X and RD_EXTENSION_Y env vars)")
+        print(f"   [{item_idx}] [INFO] Falling back to API for individual file links")
+        return []
+    
+    print(f"   [{item_idx}] [MEGA FOLDER] Clicking RD extension icon at ({rd_icon_x}, {rd_icon_y})...")
+    pyautogui.click(rd_icon_x, rd_icon_y)
+    
+    # Wait for extension popup to open
+    await asyncio.sleep(3)
+    
+    # Step 2: Click "Unrestrict links" button in the popup
+    unrestrict_x = int(os.environ.get("RD_UNRESTRICT_X", 0))
+    unrestrict_y = int(os.environ.get("RD_UNRESTRICT_Y", 0))
+    
+    if unrestrict_x == 0 or unrestrict_y == 0:
+        print(f"   [{item_idx}] [WARN] 'Unrestrict links' button position not configured (set RD_UNRESTRICT_X and RD_UNRESTRICT_Y)")
+        # Try to find it by taking a screenshot and looking for the button
+        print(f"   [{item_idx}] [INFO] Attempting to find button via text search...")
+        # Close popup first
+        pyautogui.press('Escape')
+        await asyncio.sleep(1)
+        return []
+    
+    print(f"   [{item_idx}] [MEGA FOLDER] Clicking 'Unrestrict links' at ({unrestrict_x}, {unrestrict_y})...")
+    pyautogui.click(unrestrict_x, unrestrict_y)
+    
+    # Wait for unrestriction to complete
+    await asyncio.sleep(10)
+    
+    # Step 3: Click "Copy links" button
+    copy_x = int(os.environ.get("RD_COPY_X", 0))
+    copy_y = int(os.environ.get("RD_COPY_Y", 0))
+    
+    if copy_x == 0 or copy_y == 0:
+        print(f"   [{item_idx}] [WARN] 'Copy links' button position not configured (set RD_COPY_X and RD_COPY_Y)")
+        pyautogui.press('Escape')
+        await asyncio.sleep(1)
+        return []
+    
+    print(f"   [{item_idx}] [MEGA FOLDER] Clicking 'Copy links' at ({copy_x}, {copy_y})...")
+    pyautogui.click(copy_x, copy_y)
+    
+    # Wait for clipboard to be populated
+    await asyncio.sleep(2)
+    
+    # Close the extension popup
+    pyautogui.press('Escape')
+    await asyncio.sleep(1)
+    
+    # Step 4: Read clipboard
+    clipboard_content = pyperclip.paste()
+    if not clipboard_content:
+        print(f"   [{item_idx}] [WARN] Clipboard is empty after 'Copy links'")
+        return []
+    
+    # Parse clipboard for URLs (one per line)
+    urls = [line.strip() for line in clipboard_content.split('\n') if line.strip().startswith('http')]
+    
+    if urls:
+        print(f"   [{item_idx}] [MEGA FOLDER] ✓ Got {len(urls)} unrestricted URLs from clipboard")
+        
+        # Write to file
+        rd_links_file = os.path.join(OUTPUT_DIR, "mega_folder_rd_links.txt")
+        with open(rd_links_file, "a", encoding="utf-8") as f:
+            for u in urls:
+                f.write(u + "\n")
+        print(f"   [{item_idx}] [MEGA FOLDER] Written to {rd_links_file}")
+    else:
+        print(f"   [{item_idx}] [WARN] No URLs found in clipboard content")
+    
+    return urls
+
 async def main():
     import argparse
     import sys
     
     parser = argparse.ArgumentParser(description="Telethon Scraper Link Resolver")
     parser.add_argument("--non-interactive", action="store_true", default=None, help="Run in non-interactive mode")
-    parser.add_argument("--no-clone", action="store_true", help="Do not clone Chrome user profile")
     args, unknown = parser.parse_known_args()
     
     if args.non_interactive is None:
@@ -1897,20 +1700,58 @@ async def main():
         send_notification("Pipeline Complete", msg, 10)
         return
         
-    print(f"Found {len(links)} raw links! Initially resolving redirects to locate linkvertise.com...")
+    print(f"Found {len(links)} raw links! Classifying and resolving redirects...")
     
     linkvertise_links = {}  # Map .com -> .lol for tracking
+    hub_links = set()  # pasterix/pastehill/rentry pages that contain download links
+    direct_links_from_telegram = set()  # Direct download links (gofile, bunkr, mega, etc.)
+    
+    # Patterns for link-* redirectors that resolve to linkvertise
+    link_redirector_patterns = ['link-hub', 'link-target', 'link-hub.net', 'link-target.net']
+    
     for idx, raw_url in enumerate(links, 1):
-        actual_url = resolve_initial_url(raw_url)
-        if 'linkvertise.com' in actual_url:
-            converted = actual_url.replace('linkvertise.com', 'linkvertise.lol')
-            linkvertise_links[actual_url] = converted  # Store both versions
-            print(f"[{idx}/{len(links)}] Found Linkvertise! Original: {actual_url}")
+        url_lower = raw_url.lower()
+        
+        # Check if it's a link-* redirector (resolves to linkvertise)
+        is_link_redirector = any(p in url_lower for p in link_redirector_patterns)
+        
+        if is_link_redirector:
+            # Resolve redirect to get the actual linkvertise URL
+            actual_url = resolve_initial_url(raw_url)
+            if 'linkvertise.com' in actual_url.lower():
+                converted = actual_url.replace('linkvertise.com', 'linkvertise.lol')
+                linkvertise_links[actual_url] = converted
+                print(f"[{idx}/{len(links)}] Link redirector -> Linkvertise: {raw_url} -> {actual_url}")
+            else:
+                print(f"[{idx}/{len(links)}] Link redirector but didn't resolve to linkvertise: {raw_url} -> {actual_url}")
+        elif 'linkvertise.com' in url_lower:
+            converted = raw_url.replace('linkvertise.com', 'linkvertise.lol')
+            linkvertise_links[raw_url] = converted
+            print(f"[{idx}/{len(links)}] Found Linkvertise: {raw_url}")
+        elif 'rentry.co' in url_lower or 'rentry.org' in url_lower:
+            # Rentry pages — scrape directly for download links (skip utility pages)
+            skip_patterns = ['/edit', '/raw', '/export-page', '/report-url', '/how', '/what', '/langs', '/request-login']
+            if not any(p in url_lower for p in skip_patterns) and url_lower != 'https://rentry.co/' and url_lower != 'https://rentry.org/':
+                hub_links.add(raw_url)
+                print(f"[{idx}/{len(links)}] Found rentry hub page: {raw_url}")
+        elif 'pasterix.com' in url_lower or 'pasterix.net' in url_lower or 'pastehill.com' in url_lower:
+            # Hub pages — scrape for download links (skip navigation/utility pages)
+            skip_patterns = ['/login', '/register', '/contact', '/archive', '/sitemap',
+                             '/lang/', '/pages/', '/clone/', '/u/']
+            if not any(p in url_lower for p in skip_patterns):
+                hub_links.add(raw_url)
+                print(f"[{idx}/{len(links)}] Found hub page (pasterix/pastehill): {raw_url}")
         else:
-            print(f"[{idx}/{len(links)}] Ignored Non-Linkvertise link")
+            # Check if it's a direct download link we can process
+            action, processed_url = classify_and_filter_url(raw_url)
+            if action in ('rd', 'direct', 'pyload'):
+                direct_links_from_telegram.add(raw_url)
+                print(f"[{idx}/{len(links)}] Found direct link ({action}): {raw_url}")
+            else:
+                print(f"[{idx}/{len(links)}] Ignored: {raw_url}")
 
-    if not linkvertise_links:
-        print("No linkvertise links were found after resolving. Exiting.")
+    if not linkvertise_links and not hub_links and not direct_links_from_telegram:
+        print("No processable links were found. Exiting.")
         return
         
     intermediate_file = os.path.join(OUTPUT_DIR, "linkvertise_links.txt")
@@ -1935,32 +1776,35 @@ async def main():
     
     resolved = set()
     downloads = []
-    
-    cleanup_profile = None
-    if not args.no_clone:
-        try:
-            user_data_dir_orig = r"C:\Users\Administrator\AppData\Local\Google\Chrome\User Data"
-            user_data_dir, cleanup_profile = get_chrome_profile(user_data_dir_orig)
-            import atexit
-            atexit.register(cleanup_profile)
-        except Exception as e:
-            print(f"[WARN] Failed to clone Chrome profile: {e}. Falling back to original profile directory.")
-            user_data_dir = r"C:\Users\Administrator\AppData\Local\Google\Chrome\User Data"
-    else:
-        user_data_dir = r"C:\Users\Administrator\AppData\Local\Google\Chrome\User Data"
+
+    # Use dedicated persistent browser profile (retains extensions, cookies, sessions across runs)
+    user_data_dir = BROWSER_PROFILE_DIR
+    print(f"[INFO] Using persistent browser profile: {user_data_dir}")
+    print(f"[INFO] Extensions and sessions are retained between runs (no cloning).")
 
     async with async_playwright() as p:
-        # Use Persistent Context to allow Real-Debrid extension to work
         print(f"[INFO] Launching Chrome Persistent Context (for Real-Debrid Extension)...")
         browser = None
+        
+        # Inject proxy if available
+        import sys
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        try:
+            import proxy_utils
+            proxy_config = proxy_utils.get_patchright_proxy()
+        except ImportError:
+            proxy_config = None
+        
         for attempt in range(1, 4):
             try:
                 browser = await p.chromium.launch_persistent_context(
-                    user_data_dir,
-                    executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                    headless=False,
-                    ignore_default_args=["--disable-extensions", "--enable-automation", "--no-sandbox"],
-                    args=['--disable-blink-features=AutomationControlled']
+                    channel="chrome",                 # Uses your stable Google Chrome app binary
+                    headless=False,                  # OPENS THE BROWSER VISUALLY
+                    no_viewport=True,
+                    user_data_dir=user_data_dir,
+                    executable_path=r"C:\Users\Administrator\AppData\Local\ms-playwright\chromium-1228\chrome-win64\chrome.exe",
+                    artifacts_dir=r"G:\artifacts",
+                    proxy=proxy_config
                 )
                 break
             except Exception as launch_err:
@@ -1969,19 +1813,14 @@ async def main():
                     raise launch_err
                 await asyncio.sleep(2)
         
+
         # Check if browser is logged in to Real-Debrid
         print("[Real-Debrid] Checking login status...")
         check_page = await browser.new_page()
         try:
             await check_page.goto("https://real-debrid.com/login", wait_until="domcontentloaded", timeout=15000)
             if "login" in check_page.url:
-                print("[Real-Debrid] ⚠️ NOT LOGGED IN! Real-Debrid requires manual authentication.")
-                is_interactive = sys.stdin.isatty() and not args.non_interactive
-                if is_interactive:
-                    print("[Real-Debrid] [INTERACTIVE] Please log in to Real-Debrid in the opened browser window.")
-                    await asyncio.to_thread(input, ">>> Press ENTER in this console once you have logged in to Real-Debrid >>> ")
-                else:
-                    print("[Real-Debrid] [NON-INTERACTIVE] Running in non-interactive mode. Real-Debrid unrestriction may fail for MEGA links if the cloned profile session is expired.")
+                print("[Real-Debrid] ⚠️ NOT LOGGED IN! Real-Debrid unrestriction may fail for MEGA links.")
             else:
                 print("[Real-Debrid] ✓ Already logged in.")
         except Exception as e:
@@ -1989,9 +1828,55 @@ async def main():
         finally:
             await check_page.close()
 
+        # Step 1: Scrape hub pages (rentry/pasterix/pastehill from Telegram) to extract linkvertise links
+        # Utility URL patterns to skip when extracting links from hub pages
+        utility_skip_patterns = ['/edit', '/raw', '/export-page', '/report-url', '/how', '/what',
+                                 '/langs', '/request-login', '/login', '/register', '/contact',
+                                 '/archive', '/sitemap', '/pages/', '/clone/', '/u/']
+        
+        print(f"\n[HUB SCRAPING] Opening {len(hub_links)} hub pages to extract linkvertise links...")
+        for idx, hub_url in enumerate(sorted(hub_links), 1):
+            print(f"[{idx}/{len(hub_links)}] Extracting links from: {hub_url}")
+            extracted_links = await extract_links_from_rentry(hub_url, browser, idx)
+            for l in extracted_links:
+                l_lower = l.lower()
+                # Skip utility/navigation URLs (export-page, edit, raw, etc.)
+                if any(p in l_lower for p in utility_skip_patterns):
+                    continue
+                # Skip bare domain roots
+                if l_lower in ('https://rentry.co/', 'https://rentry.org/', 'https://rentry.co', 'https://rentry.org'):
+                    continue
+                # Check for linkvertise links
+                if 'linkvertise.com' in l_lower:
+                    if l not in linkvertise_links:
+                        converted = l.replace('linkvertise.com', 'linkvertise.lol')
+                        linkvertise_links[l] = converted
+                        print(f"   [HUB] Found new linkvertise: {l}")
+                elif any(p in l_lower for p in link_redirector_patterns):
+                    # link-hub/link-target redirectors → resolve to linkvertise
+                    actual = resolve_initial_url(l)
+                    if 'linkvertise.com' in actual.lower() and actual not in linkvertise_links:
+                        converted = actual.replace('linkvertise.com', 'linkvertise.lol')
+                        linkvertise_links[actual] = converted
+                        print(f"   [HUB] Found link redirector -> linkvertise: {l} -> {actual}")
+                # Also collect any direct download links found on hub pages
+                else:
+                    action, _ = classify_and_filter_url(l)
+                    if action in ('rd', 'direct', 'pyload'):
+                        direct_links_from_telegram.add(l)
+                        print(f"   [HUB] Found direct link ({action}): {l}")
+
+        # Update linkvertise files with newly discovered links from hub pages
+        if linkvertise_links:
+            with open(intermediate_file, 'w', encoding='utf-8') as f:
+                for link_com in sorted(linkvertise_links.keys()):
+                    f.write(f"{link_com}\n")
+            print(f"[INFO] Updated linkvertise_links.txt with {len(linkvertise_links)} total links")
+
+        # Step 2: Bypass all linkvertise links (from Telegram + from hub pages) to get actual rentry pages
         rentry_links = {}  # Map linkvertise -> rentry link
         for idx, link_com in enumerate(linkvertise_links.keys(), 1):
-            print(f"\n[{idx}/{len(linkvertise_links)}] Processing: {link_com}")
+            print(f"\n[{idx}/{len(linkvertise_links)}] Bypassing: {link_com}")
             rentry_link = await bypass_linkvertise_in_browser(link_com, browser, idx)
             if rentry_link:
                 rentry_links[link_com] = rentry_link
@@ -1999,17 +1884,31 @@ async def main():
             else:
                 print(f"   [FAIL] Failed to bypass")
         
-        # Extract all URLs from rentry pages
-        print(f"\n[EXTRACTION] Opening {len(rentry_links)} rentry pages to extract ALL links...")
-        
+        # Step 3: Scrape the actual rentry pages (from linkvertise bypass) to extract download links
         all_extracted_urls = set()
-        for idx, (linkvertise, rentry) in enumerate(rentry_links.items(), 1):
-            print(f"[{idx}/{len(rentry_links)}] Extracting links from: {rentry}")
-            # Get all URLs, not just mega
-            extracted_links = await extract_links_from_rentry(rentry, browser, idx)
-            for l in extracted_links:
-                all_extracted_urls.add(l)
-                resolved.add(l)
+        
+        # Add direct download links collected from Telegram messages and hub pages
+        for url in direct_links_from_telegram:
+            all_extracted_urls.add(url)
+            resolved.add(url)
+        if direct_links_from_telegram:
+            print(f"\n[INFO] Added {len(direct_links_from_telegram)} direct links from Telegram/hub pages")
+        
+        # Scrape rentry pages (from linkvertise bypass) — these contain the actual download links
+        if rentry_links:
+            print(f"\n[EXTRACTION] Opening {len(rentry_links)} rentry pages to extract download links...")
+            for idx, (linkvertise, rentry) in enumerate(rentry_links.items(), 1):
+                print(f"[{idx}/{len(rentry_links)}] Extracting links from: {rentry}")
+                extracted_links = await extract_links_from_rentry(rentry, browser, idx)
+                for l in extracted_links:
+                    l_lower = l.lower()
+                    # Skip utility/navigation URLs
+                    if any(p in l_lower for p in utility_skip_patterns):
+                        continue
+                    if l_lower in ('https://rentry.co/', 'https://rentry.org/', 'https://rentry.co', 'https://rentry.org'):
+                        continue
+                    all_extracted_urls.add(l)
+                    resolved.add(l)
                 
         # Save all extracted links to file
         all_links_file = os.path.join(OUTPUT_DIR, "all_extracted_links.txt")
@@ -2021,23 +1920,158 @@ async def main():
         # Start the background uploader to run concurrently
         bg_uploader_task = asyncio.create_task(background_katfile_uploader())
         bg_dual_uploader_task = asyncio.create_task(background_dual_uploader())
-        
-        failed_links = []
-        
-        # Now process all found URLs with the Real-Debrid Browser Extension
-        print(f"\n[BROWSER EXTENSION PROCESSING] Opening links to let Real-Debrid auto-unrestrict...")
-        for idx, url in enumerate(sorted(all_extracted_urls), 1):
+
+        # Classify all links first (with deduplication)
+        rd_links = []
+        direct_links = []
+        pyload_links = []
+        seen_normalized = set()
+        for url in sorted(all_extracted_urls):
+            normalized = normalize_url(url)
+            if normalized in seen_normalized:
+                continue
+            seen_normalized.add(normalized)
             action, processed_url = classify_and_filter_url(url)
             if action == 'skip':
-                print(f"\n[{idx}/{len(all_extracted_urls)}] Skipping Link: {url}")
                 continue
             elif action == 'pyload':
-                print(f"\n[{idx}/{len(all_extracted_urls)}] Queueing directly to pyLoad: {processed_url}")
-                failed_links.append(processed_url)
-                continue
-            url = processed_url
-            print(f"\n[{idx}/{len(all_extracted_urls)}] Processing Link: {url}")
+                pyload_links.append(processed_url)
+            elif action == 'direct':
+                direct_links.append(processed_url)
+            elif action == 'rd':
+                rd_links.append(processed_url)
+
+        print(f"\n[CLASSIFICATION] RD: {len(rd_links)} | Direct: {len(direct_links)} | pyLoad: {len(pyload_links)} | Skipped/Duped: {len(all_extracted_urls) - len(rd_links) - len(direct_links) - len(pyload_links)}")
+
+        # Send 20% of pyload-classified links to pyLoad in parallel with cloud uploads
+        pyload_parallel_count = max(1, len(pyload_links) // 5) if pyload_links else 0
+        pyload_parallel_links = pyload_links[:pyload_parallel_count]
+        remaining_pyload_links = pyload_links[pyload_parallel_count:]
+
+        if pyload_parallel_links:
+            print(f"\n[pyLoad] Sending {pyload_parallel_count}/{len(pyload_links)} links to pyLoad in parallel with cloud uploads...")
+            for i in range(0, len(pyload_parallel_links), 5):
+                batch = pyload_parallel_links[i:i+5]
+                batch_idx = (i // 5) + 1
+                queue_links_to_pyload(batch, package_name=f"Parallel Batch {batch_idx}")
+
+        # Write remaining pyload links to txt file (untouched, for manual review)
+        failed_links_file = os.path.join(OUTPUT_DIR, "failed_links.txt")
+        with open(failed_links_file, "w", encoding="utf-8") as f:
+            for link in remaining_pyload_links:
+                f.write(link + "\n")
+        if remaining_pyload_links:
+            print(f"[INFO] Written {len(remaining_pyload_links)} remaining pyLoad links to {failed_links_file}")
+
+        failed_links = []
+
+        # Process direct-download links (balbums.st, cyberfile.me) with site-specific handlers
+        if direct_links:
+            print(f"\n[DIRECT DOWNLOAD] Processing {len(direct_links)} links with site-specific handlers...")
+            for idx, url in enumerate(direct_links, 1):
+                print(f"\n[{idx}/{len(direct_links)}] Direct Download: {url}")
+                handler = get_handler(url)
+                if not handler:
+                    print(f"   [WARN] No handler found for {url}, adding to failed_links")
+                    failed_links.append(url)
+                    continue
+
+                page = await browser.new_page()
+                try:
+                    local_path = await handler.download(page, url, DOWNLOAD_DIR, idx)
+                    if local_path and os.path.exists(local_path):
+                        _current_run_files.add(local_path)
+                        file_size = os.path.getsize(local_path)
+                        file_size_mb = file_size / (1024 ** 2)
+                        file_size_gb = file_size / (1024 ** 3)
+
+                        # Apply same size filter: skip <25MB or >2GB
+                        if file_size < 25 * 1024 * 1024:
+                            print(f"   [SKIP] File too small ({file_size_mb:.2f} MB < 25 MB), deleting")
+                            os.remove(local_path)
+                        elif file_size > 2 * 1024 * 1024 * 1024:
+                            print(f"   [SKIP] File too large ({file_size_gb:.2f} GB > 2 GB), deleting")
+                            os.remove(local_path)
+                        else:
+                            # Upload via cloud fallbacks
+                            print(f"   [OK] Downloaded ({file_size_mb:.1f} MB), uploading to cloud...")
+                            fallback_result = upload_local_with_fallbacks(local_path, idx)
+                            if fallback_result and fallback_result.get('url'):
+                                downloads.append({
+                                    'mega_url': url,
+                                    'filename': os.path.basename(local_path),
+                                    'fallback_url': fallback_result['url'],
+                                    'size': file_size,
+                                    'type': 'direct_download'
+                                })
+                            else:
+                                # Try Google Drive as fallback
+                                drive_service = get_google_drive_service()
+                                if drive_service:
+                                    drive_result = upload_to_google_drive(
+                                        local_path,
+                                        os.path.basename(local_path),
+                                        drive_service,
+                                        idx
+                                    )
+                                    if drive_result:
+                                        downloads.append({
+                                            'mega_url': url,
+                                            'filename': os.path.basename(local_path),
+                                            'drive_url': drive_result.get('drive_url'),
+                                            'size': file_size,
+                                            'type': 'gdrive'
+                                        })
+                                    else:
+                                        print(f"   [WARN] All uploads failed, keeping local file")
+                                else:
+                                    print(f"   [WARN] No Google Drive, keeping local file")
+
+                            # Clean up local copy after successful upload
+                            try:
+                                if downloads and downloads[-1].get('type') in ('direct_download', 'gdrive'):
+                                    os.remove(local_path)
+                            except Exception:
+                                pass
+                    else:
+                        print(f"   [FAIL] Download failed for {url}")
+                        failed_links.append(url)
+                except Exception as e:
+                    print(f"   [FAIL] Handler error: {e}")
+                    failed_links.append(url)
+                finally:
+                    await page.close()
+
+        # Now process RD-classified links with the Real-Debrid Browser Extension
+        # Split mega folder links from individual file links
+        mega_folder_links = [u for u in rd_links if '/folder/' in u.lower()]
+        mega_file_links = [u for u in rd_links if '/folder/' not in u.lower()]
+        
+        # Process mega folders via RD extension automation (unrestrict all files in folder)
+        folder_unrestricted_urls = []
+        if mega_folder_links:
+            print(f"\n[MEGA FOLDER PROCESSING] {len(mega_folder_links)} mega folder(s) to process via RD extension...")
+            for idx, url in enumerate(mega_folder_links, 1):
+                print(f"\n[{idx}/{len(mega_folder_links)}] Processing Mega Folder: {url}")
+                page = await browser.new_page()
+                try:
+                    folder_urls = await mega_folder_rd_extension_automation(page, url, browser, idx)
+                    folder_unrestricted_urls.extend(folder_urls)
+                except Exception as e:
+                    print(f"   [FAIL] Mega folder automation error: {e}")
+                    failed_links.append(url)
+                finally:
+                    await page.close()
             
+            if folder_unrestricted_urls:
+                print(f"\n[MEGA FOLDER] Got {len(folder_unrestricted_urls)} unrestricted URLs from folder(s). Processing each...")
+        
+        # Process individual mega file links and folder-extracted URLs together
+        all_rd_urls = mega_file_links + folder_unrestricted_urls
+        print(f"\n[BROWSER EXTENSION PROCESSING] Opening {len(all_rd_urls)} links to let Real-Debrid auto-unrestrict...")
+        for idx, url in enumerate(all_rd_urls, 1):
+            print(f"\n[{idx}/{len(all_rd_urls)}] Processing Link: {url}")
+
             # Navigate to the link
             page = await browser.new_page()
             
@@ -2066,12 +2100,31 @@ async def main():
             
             unrestricted = None
             
-            if is_interactive:
-                print(f"   [INTERACTIVE] Please check the browser.")
-                print(f"   If Real-Debrid extension hasn't captured it yet, wait or do it manually.")
-                await asyncio.to_thread(input, "   >>> Press ENTER when the extension is done (or download has started) >>> ")
+            # If URL is already an unrestricted RD download URL (from folder automation), skip extension polling
+            if "real-debrid.com/d/" in url.lower():
+                print(f"   [INFO] Already unrestricted RD URL from folder automation, fetching HEAD info...")
+                import requests
+                try:
+                    head_resp = requests.head(url, allow_redirects=True, timeout=10)
+                    filesize = int(head_resp.headers.get("Content-Length", 0))
+                    filename = "unknown_file"
+                    disp = head_resp.headers.get("Content-Disposition", "")
+                    if "filename=" in disp:
+                        filename = disp.split("filename=")[-1].strip('"\'')
+                    elif "filename*" in disp:
+                        filename = disp.split("''")[-1].strip()
+                    if filename == "unknown_file":
+                        filename = url.split("/")[-1]
+                    unrestricted = {
+                        "download_url": url,
+                        "filename": filename,
+                        "filesize": filesize
+                    }
+                    print(f"   ✓ RD URL: {filename} ({filesize / (1024**2):.1f} MB)")
+                except Exception as e:
+                    print(f"   [WARN] Could not fetch HEAD info: {e}")
             else:
-                # Non-interactive polling
+                # Non-interactive polling for Real-Debrid extension capture
                 print(f"   [POLLING] Waiting up to 30 seconds for Real-Debrid extension to capture link...")
                 for poll_sec in range(30):
                     if captured_unrestricted:
@@ -2079,177 +2132,141 @@ async def main():
                     await asyncio.sleep(1)
             
             if captured_unrestricted:
-                rd_url = captured_unrestricted[-1]
-                print(f"   ✓ Extension captured unrestricted URL: {rd_url}")
-                # Get file size and name with HEAD request
-                import requests
-                try:
-                    head_resp = requests.head(rd_url, allow_redirects=True, timeout=10)
-                    filesize = int(head_resp.headers.get("Content-Length", 0))
-                    
-                    filename = "unknown_file"
-                    disp = head_resp.headers.get("Content-Disposition", "")
-                    if "filename=" in disp:
-                        filename = disp.split("filename=")[-1].strip('"\'')
-                    elif "filename*" in disp:
-                        filename = disp.split("''")[-1].strip()
-                    
-                    if filename == "unknown_file":
-                        filename = rd_url.split("/")[-1]
-                        
-                    unrestricted = {
-                        "download_url": rd_url,
-                        "filename": filename,
-                        "filesize": filesize
-                    }
-                except Exception as e:
-                    print(f"   [WARN] Could not fetch HEAD info: {e}")
-            
-            if not unrestricted:
-                # Fallback to API!
-                print(f"   [FALLBACK] Extension did not capture link. Trying Real-Debrid API...")
-                api_result = unrestrict_mega_with_realdebrid(url, idx)
-                if api_result:
-                    unrestricted = api_result
-            
-            if unrestricted:
-                mega_link = url # Just to keep variable names compatible with the downstream logic
+                # Save ALL captured RD URLs to file
+                rd_links_file = os.path.join(OUTPUT_DIR, "rd_unrestricted_links.txt")
+                with open(rd_links_file, 'a', encoding='utf-8') as f:
+                    for rd_url in captured_unrestricted:
+                        f.write(rd_url + '\n')
+                print(f"   ✓ Extension captured {len(captured_unrestricted)} unrestricted URL(s), saved to {rd_links_file}")
                 
-                # Downstream upload/download logic
-                if True:
-                    print(f"\n[{idx}] DOWNLOADING + FILTERING PHASE:")
+                # Process each captured URL for download + upload
+                for rd_url in captured_unrestricted:
+                    print(f"\n   [RD] Processing: {rd_url}")
+                    import requests
+                    try:
+                        head_resp = requests.head(rd_url, allow_redirects=True, timeout=10)
+                        filesize = int(head_resp.headers.get("Content-Length", 0))
+                        filename = "unknown_file"
+                        disp = head_resp.headers.get("Content-Disposition", "")
+                        if "filename=" in disp:
+                            filename = disp.split("filename=")[-1].strip('"\'')
+                        elif "filename*" in disp:
+                            filename = disp.split("''")[-1].strip()
+                        if filename == "unknown_file":
+                            filename = rd_url.split("/")[-1]
+                    except Exception as e:
+                        print(f"   [WARN] Could not fetch HEAD info: {e}")
+                        continue
                     
-                    if unrestricted:
-                        filesize = unrestricted['filesize']
-                        filesize_gb = filesize / (1024 ** 3)
-                        
-                        # Category 1: Normal upload to Katfile (< 3GB)
-                        if filesize <= MAX_FILESIZE_UPLOAD:
-                            uploaded = False
-                            
-                            # Try Katfile first (if within daily quota)
-                            if KATFILE_API_KEY and can_upload_to_katfile(filesize):
-                                print(f"   [OK] Upload to Katfile ({filesize_gb:.2f}GB)...")
-                                katfile_result = upload_to_katfile(
-                                    unrestricted['download_url'],
-                                    unrestricted['filename'],
-                                    idx
+                    filesize_mb = filesize / (1024 ** 2)
+                    filesize_gb = filesize / (1024 ** 3)
+
+                    # Filter: skip files under 25MB or over 2GB
+                    if filesize < 25 * 1024 * 1024:
+                        print(f"   [SKIP] File too small ({filesize_mb:.2f} MB < 25 MB), skipping")
+                        continue
+                    if filesize > 2 * 1024 * 1024 * 1024:
+                        print(f"   [SKIP] File too large ({filesize_gb:.2f} GB > 2 GB), skipping")
+                        continue
+                    
+                    print(f"   [OK] {filename} ({filesize_mb:.1f} MB) — downloading + uploading...")
+                    uploaded = False
+
+                    # 1. Try cloud storage fallbacks (Gofile, K2S/FileBoom, Katfile local)
+                    print(f"   [OK] Trying cloud storage fallbacks ({filesize_gb:.2f}GB)...")
+                    download_path = await download_file_with_browser(
+                        rd_url, filename, browser, idx
+                    )
+                    if download_path and os.path.exists(download_path):
+                        fallback_result = upload_local_with_fallbacks(download_path, idx)
+                        if fallback_result and fallback_result.get('url'):
+                            downloads.append({
+                                'mega_url': url,
+                                'filename': filename,
+                                'fallback_url': fallback_result['url'],
+                                'size': filesize,
+                                'type': 'cloud_fallback'
+                            })
+                            uploaded = True
+                        try:
+                            os.remove(download_path)
+                        except:
+                            pass
+
+                    # 2. If cloud fallbacks failed, try Google Drive
+                    if not uploaded:
+                        print(f"   [WARN] Cloud fallbacks failed, trying Google Drive...")
+                        drive_service = get_google_drive_service()
+                        if drive_service:
+                            download_path = await download_file_with_browser(
+                                rd_url, filename, browser, idx
+                            )
+                            if download_path and os.path.exists(download_path):
+                                drive_result = upload_to_google_drive(
+                                    download_path, filename, drive_service, idx
                                 )
-                                
-                                if katfile_result:
+                                if drive_result:
                                     downloads.append({
-                                        'mega_url': mega_link,
-                                        'filename': unrestricted['filename'],
-                                        'katfile_url': katfile_result.get('katfile_url'),
+                                        'mega_url': url,
+                                        'filename': filename,
+                                        'drive_url': drive_result.get('drive_url'),
                                         'size': filesize,
-                                        'type': 'katfile'
+                                        'type': 'gdrive'
                                     })
                                     uploaded = True
-                            
-                            # If Katfile failed or quota exceeded, try Google Drive
-                            if not uploaded:
-                                print(f"   [WARN] Katfile unavailable/quota exceeded, trying Google Drive...")
-                                drive_service = get_google_drive_service()
-                                
-                                if drive_service:
-                                    # Download file first
-                                    download_path = await download_file_with_browser(
-                                        unrestricted['download_url'],
-                                        unrestricted['filename'],
-                                        browser,
-                                        idx
-                                    )
-                                    
-                                    if download_path and os.path.exists(download_path):
-                                        drive_result = upload_to_google_drive(
-                                            download_path,
-                                            unrestricted['filename'],
-                                            drive_service,
-                                            idx
-                                        )
-                                        
-                                        if drive_result:
-                                            downloads.append({
-                                                'mega_url': mega_link,
-                                                'filename': unrestricted['filename'],
-                                                'drive_url': drive_result.get('drive_url'),
-                                                'size': filesize,
-                                                'type': 'gdrive'
-                                            })
-                                            uploaded = True
-                                        
-                                        # Clean up local copy after upload
-                                        try:
-                                            os.remove(download_path)
-                                        except:
-                                            pass
-                                
-                                # If Google Drive also failed, save to local fallback
-                                if not uploaded:
-                                    print(f"   [WARN] Google Drive failed, saving to {KATFILE_UPLOAD_DIR}...")
-                                    download_path = await download_file_with_browser(
-                                        unrestricted['download_url'],
-                                        unrestricted['filename'],
-                                        browser,
-                                        idx
-                                    )
-                                    
-                                    if download_path:
-                                        overflow_path = os.path.join(KATFILE_UPLOAD_DIR, unrestricted['filename'])
-                                        shutil.move(download_path, overflow_path)
-                                        downloads.append({
-                                            'mega_url': mega_link,
-                                            'filename': unrestricted['filename'],
-                                            'path': overflow_path,
-                                            'size': filesize,
-                                            'type': 'local_overflow'
-                                        })
-                        
-                        # Category 2: Large file download exception (3GB-10GB → G:\TelethonDownloads)
-                        elif filesize <= MAX_FILESIZE_DOWNLOAD:
-                            print(f"   ✓ Large file exception: downloading to {LARGE_FILE_DOWNLOAD_DIR} ({filesize_gb:.2f}GB)...")
-                            download_path = await download_file_with_browser(
-                                unrestricted['download_url'],
-                                unrestricted['filename'],
-                                browser,
-                                idx
-                            )
-                            
-                            if download_path:
-                                # Move to large file directory if not already there
                                 try:
-                                    if not download_path.lower().startswith(LARGE_FILE_DOWNLOAD_DIR.lower()):
-                                        large_file_path = os.path.join(LARGE_FILE_DOWNLOAD_DIR, unrestricted['filename'])
-                                        shutil.move(download_path, large_file_path)
-                                        download_path = large_file_path
+                                    os.remove(download_path)
                                 except:
                                     pass
-                                
-                                downloads.append({
-                                    'mega_url': mega_link,
-                                    'filename': unrestricted['filename'],
-                                    'path': download_path,
-                                    'size': filesize,
-                                    'type': 'large_file'
-                                })
-                        
-                        # Category 3: Too large, skip
-                        else:
-                            print(f"   ✗ File too large ({filesize_gb:.2f}GB), skipping (max 10GB)")
-            else:
-                print(f"   [INFO] No RD link captured. Adding to pyLoad batch queue.")
-                failed_links.append(url)
+
+                    # 3. If Google Drive also failed, try Katfile remote stream
+                    if not uploaded and KATFILE_API_KEY and can_upload_to_katfile(filesize):
+                        print(f"   [WARN] Trying Katfile remote stream ({filesize_gb:.2f}GB)...")
+                        katfile_result = upload_to_katfile(rd_url, filename, idx)
+                        if katfile_result:
+                            downloads.append({
+                                'mega_url': url,
+                                'filename': filename,
+                                'katfile_url': katfile_result.get('katfile_url'),
+                                'size': filesize,
+                                'type': 'katfile'
+                            })
+                            uploaded = True
+
+                    # 4. If everything failed, save to local overflow
+                    if not uploaded:
+                        print(f"   [WARN] All uploads failed, saving to {KATFILE_UPLOAD_DIR}...")
+                        download_path = await download_file_with_browser(
+                            rd_url, filename, browser, idx
+                        )
+                        if download_path:
+                            overflow_path = os.path.join(KATFILE_UPLOAD_DIR, filename)
+                            shutil.move(download_path, overflow_path)
+                            downloads.append({
+                                'mega_url': url,
+                                'filename': filename,
+                                'path': overflow_path,
+                                'size': filesize,
+                                'type': 'local_overflow'
+                            })
+                
+                # Already processed all captured URLs, skip old single-unrestricted path
+                await page.close()
+                continue
+            
+            # Extension didn't capture anything — nothing to process
+            print(f"   [INFO] No RD link captured. Nothing to process.")
+            failed_links.append(url)
             await page.close()
         
         await browser.close()
         
-        # Queue failed links in batches of 50 to pyLoad
+        # Write any failed links (RD couldn't unrestrict) to txt file
         if failed_links:
-            print(f"\n[pyLoad] Found {len(failed_links)} failed links. Queueing to pyLoad in batches of 50...")
-            for i in range(0, len(failed_links), 50):
-                batch = failed_links[i:i+50]
-                batch_idx = (i // 50) + 1
-                queue_links_to_pyload(batch, package_name=f"Failed Links Batch {batch_idx}")
+            with open(failed_links_file, "a", encoding="utf-8") as f:
+                for link in failed_links:
+                    f.write(link + "\n")
+            print(f"\n[INFO] Written {len(failed_links)} failed RD links to {failed_links_file}")
                 
         # Wait for the background uploader to finish
         print("\n[BG Uploader] Waiting for background uploader to complete...")

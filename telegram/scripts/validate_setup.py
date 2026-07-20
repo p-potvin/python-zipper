@@ -29,7 +29,7 @@ print("PYTHON DEPENDENCIES")
 print("-" * 40)
 
 packages_ok = True
-for pkg in ["telethon", "playwright", "requests", "aiohttp", "win10toast"]:
+for pkg in ["telethon", "patchright", "requests", "aiohttp", "win10toast"]:
     try:
         __import__(pkg)
         check(pkg, True)

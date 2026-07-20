@@ -7,7 +7,7 @@ Generated: 2026-05-27
 import os
 import datetime
 
-REPORT_FILE = r"telegram/output/TEST_REPORT.md"
+REPORT_FILE = r"telegram/logs/TEST_REPORT.md"
 
 report = """
 # Katfile Integration Test Report

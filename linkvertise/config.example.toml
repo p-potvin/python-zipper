@@ -1,0 +1,22 @@
+[runtime]
+app_dir = "/opt/vw-linkvertise"
+data_dir = "/srv/vw-linkvertise"
+run_interval_min_minutes = 50
+run_interval_max_minutes = 70
+
+[safety]
+dry_run_default = true
+require_yes_live = true
+require_max_links = true
+require_rate = true
+
+[mullvad]
+profile_source = "C:\\Users\\Administrator\\Desktop\\Backups\\mullvad_wireguard_windows_ca_all"
+remote_profile_dir = "/opt/vw-linkvertise/mullvad-profiles"
+default_wave_a_profile = "ca-mtr-wg-004"
+default_wave_b_profile = "ca-yyc-wg-202"
+
+[flaresolverr]
+enabled_default = false
+endpoint = "http://100.67.25.118:8191"
+request_cap_default = 0

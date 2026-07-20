@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd /opt/vw-linkvertise
+
+POOL_DIR=${MULLVAD_PROFILE_POOL:-/opt/vw-linkvertise/mullvad-profiles}
+ENV_FILE=${MULLVAD_ENV_FILE:-/opt/vw-linkvertise/.env.mullvad}
+STATE_FILE=${MULLVAD_STATE_FILE:-/opt/vw-linkvertise/.mullvad-profile-state}
+DEFAULT_OUTBOUND_SUBNETS=${MULLVAD_FIREWALL_OUTBOUND_SUBNETS:-100.64.0.0/10,172.16.0.0/12,192.168.0.0/16}
+
+usage() {
+  cat >&2 <<USAGE
+Usage:
+  $0 list
+  $0 show <profile.conf|profile-name>
+  $0 use <profile.conf|profile-name>
+
+Profiles live in: ${POOL_DIR}
+The generated secret env file is: ${ENV_FILE}
+USAGE
+}
+
+trim() {
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+require_allowed_profile() {
+  local name
+  name=$(basename "$1" .conf)
+  case "$name" in
+    ca-mtr-wg-004|ca-mtr-wg-201|ca-mtr-wg-202|ca-mtr-wg-30[1-8]|ca-tor-wg-00[1-2]|ca-tor-wg-20[1-7]|ca-van-wg-20[1-2]|ca-van-wg-30[1-2]|ca-yyc-wg-20[1-2]) ;;
+    *) echo "refusing disallowed Mullvad profile: $name" >&2; exit 64 ;;
+  esac
+}
+
+resolve_profile() {
+  local input=${1:-}
+  if [[ -z "$input" ]]; then
+    echo "missing profile" >&2
+    exit 64
+  fi
+  require_allowed_profile "$input"
+  if [[ -f "$input" ]]; then
+    readlink -f "$input"
+    return
+  fi
+  if [[ -f "${POOL_DIR}/${input}" ]]; then
+    readlink -f "${POOL_DIR}/${input}"
+    return
+  fi
+  if [[ -f "${POOL_DIR}/${input}.conf" ]]; then
+    readlink -f "${POOL_DIR}/${input}.conf"
+    return
+  fi
+  echo "profile not found: $input" >&2
+  exit 66
+}
+
+field_value() {
+  local file=$1
+  local key=$2
+  awk -F= -v key="$key" '
+    $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+      idx = index($0, "=")
+      value = substr($0, idx + 1)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+profile_address_v4() {
+  local raw
+  raw=$(field_value "$1" Address)
+  printf '%s\n' "$raw" | tr ',' '\n' | trim | awk '/^[0-9]+\./ {print; exit}'
+}
+
+profile_endpoint_port() {
+  local endpoint
+  endpoint=$(field_value "$1" Endpoint)
+  if [[ "$endpoint" == *:* ]]; then
+    printf '%s\n' "${endpoint##*:}"
+  else
+    printf '%s\n' "51820"
+  fi
+}
+
+profile_hostname() {
+  basename "$1" .conf
+}
+
+list_profiles() {
+  shopt -s nullglob
+  local file address endpoint name
+  for file in "${POOL_DIR}"/*.conf; do
+    name=$(basename "$file")
+    require_allowed_profile "$name"
+    address=$(profile_address_v4 "$file")
+    endpoint=$(field_value "$file" Endpoint)
+    printf '%s address=%s endpoint=%s\n' "$name" "$address" "$endpoint"
+  done
+}
+
+show_profile() {
+  local file=$1
+  printf 'profile=%s\n' "$(basename "$file")"
+  printf 'address=%s\n' "$(profile_address_v4 "$file")"
+  printf 'endpoint=%s\n' "$(field_value "$file" Endpoint)"
+  printf 'hostname=%s\n' "$(profile_hostname "$file")"
+}
+
+write_env() {
+  local file=$1
+  local private address port hostname profile tmp
+
+  require_allowed_profile "$file"
+  private=$(field_value "$file" PrivateKey)
+  address=$(profile_address_v4 "$file")
+  port=$(profile_endpoint_port "$file")
+  hostname=$(profile_hostname "$file")
+  profile=$(basename "$file")
+
+  if [[ -z "$private" || -z "$address" ]]; then
+    echo "profile is missing PrivateKey or IPv4 Address: $file" >&2
+    exit 65
+  fi
+
+  tmp=$(mktemp)
+  umask 077
+  cat >"$tmp" <<ENV
+MULLVAD_PROFILE=${profile}
+MULLVAD_WIREGUARD_PRIVATE_KEY=${private}
+MULLVAD_WIREGUARD_ADDRESSES=${address}
+MULLVAD_SERVER_HOSTNAMES=${hostname}
+MULLVAD_SERVER_CITIES=
+MULLVAD_WIREGUARD_ENDPOINT_PORT=${port}
+MULLVAD_FIREWALL_OUTBOUND_SUBNETS=${DEFAULT_OUTBOUND_SUBNETS}
+ENV
+  sed -i 's/\r$//' "$tmp"
+  sudo install -m 0600 -o root -g root "$tmp" "$ENV_FILE"
+  rm -f "$tmp"
+  printf 'MULLVAD_PROFILE=%s\nMULLVAD_WIREGUARD_ADDRESSES=%s\nMULLVAD_SERVER_HOSTNAMES=%s\nMULLVAD_WIREGUARD_ENDPOINT_PORT=%s\n' "$profile" "$address" "$hostname" "$port" | sudo tee "$STATE_FILE" >/dev/null
+  sudo chmod 0600 "$STATE_FILE"
+  echo "wrote ${ENV_FILE} from ${profile} address=${address} hostname=${hostname}"
+}
+
+cmd=${1:-}
+shift || true
+case "$cmd" in
+  list)
+    list_profiles
+    ;;
+  show)
+    show_profile "$(resolve_profile "${1:-}")"
+    ;;
+  use)
+    write_env "$(resolve_profile "${1:-}")"
+    ;;
+  *)
+    usage
+    exit 64
+    ;;
+esac

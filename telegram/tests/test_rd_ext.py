@@ -1,15 +1,17 @@
 import asyncio
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 async def main():
-    user_data_dir = r"C:\Users\Administrator\AppData\Local\Google\Chrome\User Data"
+    user_data_dir = r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\.browser_profile"
     async with async_playwright() as p:
         print("Launching browser...")
         context = await p.chromium.launch_persistent_context(
-            user_data_dir,
-            executable_path=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            headless=False,
-            args=['--disable-blink-features=AutomationControlled']
+            channel="chrome",                 # Uses your stable Google Chrome app binary
+            headless=False,                  # OPENS THE BROWSER VISUALLY
+            no_viewport=True,
+            user_data_dir=user_data_dir,
+            executable_path=r"C:\Users\Administrator\AppData\Local\ms-playwright\chromium-1228\chrome-win64\chrome.exe",
+            artifacts_dir=r"G:\artifacts"
         )
         print("Browser launched.")
         page = await context.new_page()

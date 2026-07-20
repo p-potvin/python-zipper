@@ -1,0 +1,12 @@
+[Unit]
+Description=Run VaultWares Linkvertise downloader every 50-70 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=50min
+RandomizedDelaySec=20min
+Persistent=true
+Unit=vw-linkvertise.service
+
+[Install]
+WantedBy=timers.target

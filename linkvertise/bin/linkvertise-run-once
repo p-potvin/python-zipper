@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR=${APP_DIR:-/opt/vw-linkvertise}
+RUN_ENV=${RUN_ENV:-/etc/vw-linkvertise/env}
+DATA_DIR=${DATA_DIR:-/srv/vw-linkvertise}
+
+cd "$APP_DIR"
+
+mkdir -p \
+  "$DATA_DIR/input" \
+  "$DATA_DIR/downloads" \
+  "$DATA_DIR/state" \
+  "$DATA_DIR/logs" \
+  "$DATA_DIR/artifacts" \
+  "$DATA_DIR/sessions" \
+  "$DATA_DIR/config/gluetun"
+
+if [[ -f "$RUN_ENV" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$RUN_ENV"
+  set +a
+fi
+
+WAVE_A_PROFILE=${WAVE_A_PROFILE:-ca-mtr-wg-004}
+WAVE_B_PROFILE=${WAVE_B_PROFILE:-ca-yyc-wg-202}
+
+run_for_profile() {
+  local profile=$1
+  "$APP_DIR/bin/mullvad-rotate-profile" use "$profile"
+  sudo docker compose --env-file "$APP_DIR/.env.mullvad" --env-file "$RUN_ENV" -f "$APP_DIR/docker/docker-compose.yml" up -d --force-recreate mullvad-rotation
+  sudo env ACTIVE_PROFILE="$profile" docker compose --env-file "$APP_DIR/.env.mullvad" --env-file "$RUN_ENV" -f "$APP_DIR/docker/docker-compose.yml" run --rm downloader
+}
+
+run_for_profile "$WAVE_A_PROFILE"
+if [[ "$WAVE_B_PROFILE" != "$WAVE_A_PROFILE" ]]; then
+  run_for_profile "$WAVE_B_PROFILE"
+fi

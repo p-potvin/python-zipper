@@ -52,7 +52,8 @@ function Write-Status($msg, $color = "White") {
 
 # Detect script directory if not provided
 if (-not $ScriptPath) {
-    $scriptDir = Split-Path -Parent $PSCommandPath
+    $scriptsDir = Split-Path -Parent $PSCommandPath
+    $scriptDir = Split-Path -Parent $scriptsDir
     $ScriptPath = Join-Path $scriptDir "telethon_link_resolver.py"
 }
 
@@ -75,7 +76,8 @@ if (-not $PythonExe) {
             Write-Status "ERROR: Could not find python.exe" $Red
             exit 1
         }
-    } else {
+    }
+    else {
         $PythonExe = $venvPython
     }
 }
@@ -107,14 +109,15 @@ if ($Unregister) {
     try {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
         Write-Status "Task unregistered successfully" $Green
-    } catch {
+    }
+    catch {
         Write-Status "Task not found or error: $($_.Message)" $Yellow
     }
     exit 0
 }
 
 # Create wrapper script (runs with conhost)
-$wrapperScript = Join-Path $scriptDir "run_pipeline_with_notification.ps1"
+$wrapperScript = Join-Path $scriptsDir "run_pipeline_with_notification.ps1"
 
 $wrapperContent = @"
 # Generated wrapper script for scheduled task
@@ -216,7 +219,8 @@ try {
     Write-Status "  Get-ScheduledTaskInfo -TaskName '$TaskName'"
     Write-Status ""
     
-} catch {
+}
+catch {
     Write-Status "ERROR: Failed to register task: $($_.Message)" $Red
     exit 1
 }

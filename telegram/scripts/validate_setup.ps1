@@ -22,22 +22,23 @@ $Red = [System.ConsoleColor]::Red
 $Yellow = [System.ConsoleColor]::Yellow
 $Cyan = [System.ConsoleColor]::Cyan
 
-$passed = 0
-$failed = 0
-$warnings = 0
+$global:passed = 0
+$global:failed = 0
+$global:warnings = 0
 
 function Check($name, $condition, $remediation = "") {
-    global $passed, $failed, $warnings
-    
+
     if ($condition) {
         Write-Host "[✓] $name" -ForegroundColor $Green
-        $passed++
-    } elseif ($remediation) {
+        $global:passed++
+    }
+    elseif ($remediation) {
         Write-Host "[ !] $name - $remediation" -ForegroundColor $Yellow
-        $warnings++
-    } else {
+        $global:warnings++
+    }
+    else {
         Write-Host "[✗] $name" -ForegroundColor $Red
-        $failed++
+        $global:failed++
     }
 }
 
@@ -50,15 +51,16 @@ Write-Host "`n╔═════════════════════
 Write-Host "║   Telethon Pipeline Setup Validator            ║" -ForegroundColor $Cyan
 Write-Host "╚════════════════════════════════════════════════╝`n" -ForegroundColor $Cyan
 
-$scriptDir = "c:\Users\Administrator\Desktop\Github Repos\python-scripts\telegram"
-$outputDir = Join-Path $scriptDir "output"
+$scriptDir = "c:\Users\Administrator\Desktop\Github Repos\python-zipper\telegram"
+$scriptsDir = Join-Path $scriptDir "scripts"
+$outputDir = Join-Path $scriptDir "logs"
 $accessDir = "c:\Users\Administrator\Desktop\Github Repos\.access"
 
 # Python Environment
 Write-Host "PYTHON ENVIRONMENT" -ForegroundColor $Cyan
 Write-Host "─" * 50
 
-$pythonExe = "$scriptDir\..\..\.venv\Scripts\python.exe"
+$pythonExe = "$scriptDir\..\.venv\Scripts\python.exe"
 Check "Virtual environment exists" (Test-Path $pythonExe)
 
 if (Test-Path $pythonExe) {
@@ -66,7 +68,8 @@ if (Test-Path $pythonExe) {
         $pyVersion = & $pythonExe --version 2>&1
         Check "Python executable works" $true
         Info "Python version: $pyVersion"
-    } Catch {
+    }
+    Catch {
         Check "Python executable works" $false "Reinstall virtual environment"
     }
     
@@ -74,21 +77,24 @@ if (Test-Path $pythonExe) {
     Try {
         & $pythonExe -c "import telethon; import playwright; import requests" 2>&1 | Out-Null
         Check "Core packages (telethon,playwright,requests)" $true
-    } Catch {
+    }
+    Catch {
         Check "Core packages installed" $false "Run: pip install telethon playwright requests"
     }
     
     Try {
         & $pythonExe -c "from win10toast import ToastNotifier" 2>&1 | Out-Null
         Check "win10toast (Windows notifications)" $true
-    } Catch {
+    }
+    Catch {
         Check "win10toast installed" $false "Run: pip install win10toast"
     }
     
     Try {
         & $pythonExe -c "import aiohttp" 2>&1 | Out-Null
         Check "aiohttp (async HTTP)" $true
-    } Catch {
+    }
+    Catch {
         Check "aiohttp installed" $false "Run: pip install aiohttp"
     }
 }
@@ -98,8 +104,10 @@ Write-Host "`nSCRIPT FILES" -ForegroundColor $Cyan
 Write-Host "─" * 50
 
 Check "telethon_link_resolver.py exists" (Test-Path "$scriptDir\telethon_link_resolver.py")
-Check "pipeline_integration.py exists" (Test-Path "$scriptDir\pipeline_integration.py")
-Check "setup_scheduled_task.ps1 exists" (Test-Path "$scriptDir\setup_scheduled_task.ps1")
+Check "uploaders.py exists" (Test-Path "$scriptDir\uploaders.py")
+Check "pipeline_state.py exists" (Test-Path "$scriptDir\pipeline_state.py")
+Check "site_downloaders.py exists" (Test-Path "$scriptDir\site_downloaders.py")
+Check "setup_scheduled_task.ps1 exists" (Test-Path "$scriptsDir\setup_scheduled_task.ps1")
 
 # API Keys
 Write-Host "`nAPI KEYS & CREDENTIALS" -ForegroundColor $Cyan
@@ -109,7 +117,8 @@ if (Test-Path "$accessDir\realdebrid_api.txt") {
     $rd_content = Get-Content "$accessDir\realdebrid_api.txt" -ErrorAction SilentlyContinue
     Check "Real-Debrid API key exists" $true
     if ($Verbose) { Info "Length: $($rd_content.Length) chars" }
-} else {
+}
+else {
     Check "Real-Debrid API key" $false "Create: $accessDir\realdebrid_api.txt"
 }
 
@@ -117,7 +126,8 @@ if (Test-Path "$accessDir\katfiles_api.txt") {
     $kt_content = Get-Content "$accessDir\katfiles_api.txt" -ErrorAction SilentlyContinue
     Check "Katfile API key exists" $true
     if ($Verbose) { Info "Length: $($kt_content.Length) chars" }
-} else {
+}
+else {
     Check "Katfile API key" $false "Create: $accessDir\katfiles_api.txt"
 }
 
@@ -135,7 +145,8 @@ if (Test-Path "G:\") {
         $freeGb = [math]::Round($disk.SizeRemaining / 1GB, 1)
         Check "At least 50GB free on G:\" ($freeGb -gt 50) "Only $freeGb GB available - free up space"
         if ($Verbose) { Info "G: drive has $freeGb GB available" }
-    } Catch {
+    }
+    Catch {
         Info "Could not check G: drive space"
     }
 }
@@ -169,10 +180,12 @@ Try {
             Info "Last Run: $($taskInfo.LastRunTime)"
             Info "Last Result: $($taskInfo.LastTaskResult)"
         }
-    } else {
+    }
+    else {
         Check "Task Scheduler task registered" $false "Run: .\setup_scheduled_task.ps1 (as Administrator)"
     }
-} Catch {
+}
+Catch {
     Check "Task Scheduler task registered" $false "Run: .\setup_scheduled_task.ps1 (as Administrator)"
 }
 
@@ -188,7 +201,8 @@ if ($Verbose) { Info "Windows version: $winVersion.$($osVersion.Minor)" }
 Try {
     $conhost = Join-Path $env:windir "System32\conhost.exe"
     Check "conhost.exe available" (Test-Path $conhost)
-} Catch {
+}
+Catch {
     Check "conhost.exe available" $false "Windows system file missing"
 }
 
@@ -205,10 +219,12 @@ if (Test-Path $stateFile) {
             Info "Last message IDs: $($state.last_first_message_id) to $($state.last_last_message_id)"
             Info "Total files uploaded: $($state.total_files_uploaded)"
         }
-    } Catch {
+    }
+    Catch {
         Check "pipeline_state.json valid JSON" $false "Delete and recreate on first run"
     }
-} else {
+}
+else {
     Info "pipeline_state.json will be created on first run"
 }
 
@@ -217,22 +233,24 @@ Write-Host "`n" + "=" * 50 -ForegroundColor $Cyan
 Write-Host "VALIDATION SUMMARY" -ForegroundColor $Cyan
 Write-Host "=" * 50
 
-$total = $passed + $failed + $warnings
-$percent = if ($total -gt 0) { [math]::Round(($passed / $total) * 100, 0) } else { 0 }
+$total = $global:passed + $global:failed + $global:warnings
+$percent = if ($total -gt 0) { [math]::Round(($global:passed / $total) * 100, 0) } else { 0 }
 
-Write-Host "✓ Passed:  $passed" -ForegroundColor $Green
-Write-Host "! Warnings: $warnings" -ForegroundColor $Yellow
-Write-Host "✗ Failed:  $failed" -ForegroundColor $Red
+Write-Host "✓ Passed:  $global:passed" -ForegroundColor $Green
+Write-Host "! Warnings: $global:warnings" -ForegroundColor $Yellow
+Write-Host "✗ Failed:  $global:failed" -ForegroundColor $Red
 Write-Host "─" * 50
-Write-Host "Score: $percent% ($passed/$total)"
+Write-Host "Score: $percent% ($global:passed/$total)"
 
-if ($failed -eq 0 -and $warnings -eq 0) {
+if ($global:failed -eq 0 -and $global:warnings -eq 0) {
     Write-Host "`n✓ ALL CHECKS PASSED - Ready to run!" -ForegroundColor $Green
     exit 0
-} elseif ($failed -eq 0) {
+}
+elseif ($global:failed -eq 0) {
     Write-Host "`n⚠ All critical items pass, but review warnings above" -ForegroundColor $Yellow
     exit 0
-} else {
+}
+else {
     Write-Host "✗ FAILED ITEMS NEED ATTENTION - See errors above" -ForegroundColor $Red
     exit 1
 }

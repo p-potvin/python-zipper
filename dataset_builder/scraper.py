@@ -34,6 +34,23 @@ def install_dependencies():
 install_dependencies()
 
 import requests
+
+# --- PROXY PATCHING FOR REQUESTS ---
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+try:
+    import proxy_utils
+    _proxy_dict = proxy_utils.get_requests_proxies()
+    if _proxy_dict:
+        _old_request = requests.Session.request
+        def _new_request(self, method, url, **kwargs):
+            if "proxies" not in kwargs and not str(url).startswith("http://127.0.0.1") and not str(url).startswith("http://localhost"):
+                kwargs["proxies"] = _proxy_dict
+            return _old_request(self, method, url, **kwargs)
+        requests.Session.request = _new_request
+except ImportError:
+    pass
+# -----------------------------------
+
 from bs4 import BeautifulSoup
 
 def get_url_slug(url):
@@ -103,31 +120,46 @@ def scrape_with_requests(url, selector_str):
             
     return unique_urls
 
-def scrape_with_playwright(url, selector_str):
+def scrape_with_patchright(url, selector_str):
     try:
-        from playwright.sync_api import sync_playwright
+        from patchright.sync_api import sync_playwright
     except ImportError:
-        print("Playwright is not installed. Installing it now...")
+        print("Patchright is not installed. Installing it now...")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-            subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-            from playwright.sync_api import sync_playwright
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "patchright"])
+            subprocess.check_call([sys.executable, "-m", "patchright", "install", "chromium"])
+            from patchright.sync_api import sync_playwright
         except Exception as e:
-            print(f"Failed to load/install playwright: {e}")
+            print(f"Failed to load/install patchright: {e}")
             sys.exit(1)
 
     unique_urls = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        user_data_dir = r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\.browser_profile"
+        print(f"[INFO] Launching Chrome Persistent Context...")
+        
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+        try:
+            import proxy_utils
+            proxy_config = proxy_utils.get_patchright_proxy()
+        except ImportError:
+            proxy_config = None
+
+        context = p.chromium.launch_persistent_context(
+            channel="chrome",                 # Uses your stable Google Chrome app binary
+            headless=False,                  # OPENS THE BROWSER VISUALLY
+            no_viewport=True,
+            user_data_dir=user_data_dir,
+            executable_path=r"C:\Users\Administrator\AppData\Local\ms-playwright\chromium-1228\chrome-win64\chrome.exe",
+            artifacts_dir=r"G:\artifacts",
+            proxy=proxy_config
         )
         page = context.new_page()
         print(f"Loading page with browser: {url}...")
         try:
             page.goto(url, wait_until="networkidle", timeout=30000)
         except Exception as e:
-            print(f"Playwright navigation warning: {e}. Trying to parse whatever loaded.")
+            print(f"Patchright navigation warning: {e}. Trying to parse whatever loaded.")
 
         # If selector is provided, check if it exists
         if selector_str:
@@ -172,7 +204,7 @@ def main():
     parser.add_argument("--selector", default="", help="Optional CSS selector of the container element.")
     parser.add_argument("--dest", default="", help="Optional destination directory for the downloaded ZIPs (default: project_root/.downloaded/).")
     parser.add_argument("--batch-size", type=int, default=100, help="Number of images per ZIP file (default: 100).")
-    parser.add_argument("--playwright", action="store_true", help="Use browser execution (Playwright) to scrape dynamic websites.")
+    parser.add_argument("--patchright", action="store_true", help="Use browser execution (Patchright) to scrape dynamic websites.")
     args = parser.parse_args()
 
     # Determine default destination
@@ -186,8 +218,8 @@ def main():
     print(f"Target destination directory: {args.dest}")
 
     # Step 1: Scrape image URLs
-    if args.playwright:
-        urls = scrape_with_playwright(args.url, args.selector)
+    if args.patchright:
+        urls = scrape_with_patchright(args.url, args.selector)
     else:
         urls = scrape_with_requests(args.url, args.selector)
 

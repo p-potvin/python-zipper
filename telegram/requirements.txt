@@ -1,9 +1,10 @@
 requests
 telethon
-playwright
-playwright-stealth
+patchright
 win11toast
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 python-dotenv
+pyautogui
+pyperclip

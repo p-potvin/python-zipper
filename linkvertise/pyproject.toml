@@ -1,0 +1,19 @@
+[project]
+name = "vw-linkvertise-downloader"
+version = "0.1.0"
+description = "File-driven Linkvertise downloader scaffold for OVH Mullvad execution"
+requires-python = ">=3.11"
+dependencies = ["playwright"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

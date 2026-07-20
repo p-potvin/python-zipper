@@ -1,0 +1,76 @@
+name: vw-linkvertise
+
+services:
+  mullvad-rotation:
+    image: qmcgaw/gluetun:latest
+    container_name: linkvertise-mullvad-rotation
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      VPN_SERVICE_PROVIDER: mullvad
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${MULLVAD_WIREGUARD_PRIVATE_KEY:?set MULLVAD_WIREGUARD_PRIVATE_KEY in /opt/vw-linkvertise/.env.mullvad}
+      WIREGUARD_ADDRESSES: ${MULLVAD_WIREGUARD_ADDRESSES:?set MULLVAD_WIREGUARD_ADDRESSES in /opt/vw-linkvertise/.env.mullvad}
+      WIREGUARD_ENDPOINT_PORT: ${MULLVAD_WIREGUARD_ENDPOINT_PORT:-51820}
+      SERVER_CITIES: ${MULLVAD_SERVER_CITIES:-}
+      SERVER_HOSTNAMES: ${MULLVAD_SERVER_HOSTNAMES:-}
+      FIREWALL: "on"
+      FIREWALL_OUTBOUND_SUBNETS: ${MULLVAD_FIREWALL_OUTBOUND_SUBNETS:-100.64.0.0/10,172.16.0.0/12,192.168.0.0/16}
+      TZ: America/Toronto
+    volumes:
+      - /srv/vw-linkvertise/config/gluetun:/gluetun
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ip link show tun0 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  downloader:
+    build:
+      context: ..
+      dockerfile: docker/downloader.Dockerfile
+    network_mode: service:mullvad-rotation
+    depends_on:
+      mullvad-rotation:
+        condition: service_healthy
+    environment:
+      LINKVERTISE_INPUT: /srv/vw-linkvertise/input/links.txt
+      LINKVERTISE_STATE: /srv/vw-linkvertise/state/session_state.json
+      LINKVERTISE_DOWNLOAD_DIR: /srv/vw-linkvertise/downloads
+      FLARESOLVERR_ENDPOINT: http://100.67.25.118:8191
+    volumes:
+      - /srv/vw-linkvertise:/srv/vw-linkvertise
+    command:
+      - python
+      - -m
+      - linkvertise_downloader.cli
+      - --input
+      - /srv/vw-linkvertise/input/links.txt
+      - --state
+      - /srv/vw-linkvertise/state/session_state.json
+      - --download-dir
+      - /srv/vw-linkvertise/downloads
+      - --max-download-bytes
+      - ${MAX_DOWNLOAD_BYTES:-53687091200}
+      - --max-links
+      - ${MAX_LINKS:-1}
+      - --rate
+      - ${LINKVERTISE_RATE:-1/10m}
+      - --wave-a-profile
+      - ${WAVE_A_PROFILE:-ca-mtr-wg-004}
+      - --wave-b-profile
+      - ${WAVE_B_PROFILE:-ca-yyc-wg-202}
+      - --only-profile
+      - ${ACTIVE_PROFILE:-ca-mtr-wg-004}
+      - --enable-flaresolverr
+      - --flaresolverr-endpoint
+      - ${FLARESOLVERR_ENDPOINT:-http://100.67.25.118:8191}
+      - --flaresolverr-cap
+      - ${FLARESOLVERR_CAP:-1}
+      - --persist-schedule
+      - --run-due
+      - --yes-live
+    restart: "no"

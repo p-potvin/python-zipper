@@ -22,7 +22,7 @@ DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".down
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
 
 # VaultWares API on OVHCloud (for job tracking, cloud pipeline)
-VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "http://100.67.25.118:9001")
+VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca:9001")
 # Local upscaler models directory
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models")
 NOMOS_MODEL_NAME = "4xNomos8k_atd"
@@ -68,6 +68,11 @@ def create_job(url, links, batch_size, upscale_enabled, upscale_model):
         "source": "local-python-zipper",
     }
     with JOBS_LOCK:
+        # Purge older jobs to prevent accumulation (keep max 30)
+        if len(JOBS) >= 30:
+            sorted_keys = sorted(JOBS.keys(), key=lambda k: JOBS[k].get("created_at", 0))
+            for k in sorted_keys[:(len(JOBS) - 29)]:
+                del JOBS[k]
         JOBS[job_id] = job
     return job_id
 
@@ -88,9 +93,19 @@ def complete_job(job_id, archives=None, rclone_complete=False):
         archives=list(archives or []),
         rclone_complete=bool(rclone_complete),
     )
+    try:
+        from win11toast import toast
+        toast("Python Zipper Job Complete", f"Job {job_id[:12]} completed successfully.", duration="short")
+    except Exception as e:
+        print(f"[Server] Failed to send complete toast: {e}")
 
 def fail_job(job_id, error):
     update_job(job_id, status="failed", error=str(error))
+    try:
+        from win11toast import toast
+        toast("Python Zipper Job Failed", f"Job {job_id[:12]} failed: {error}", duration="short")
+    except Exception as e:
+        print(f"[Server] Failed to send fail toast: {e}")
 
 def get_jobs_snapshot():
     with JOBS_LOCK:
@@ -260,8 +275,11 @@ class ScraperHandler(BaseHTTPRequestHandler):
         elif self.path.startswith('/api/ollama'):
             self._proxy_request("http://127.0.0.1:11434", len("/api/ollama"))
             return True
-        # Proxy vaultwares-api routes to OVHCloud. /api/jobs is served locally so
-        # the browser dashboard can fall back to this server when the API is down.
+        # Proxy vaultwares-api routes to OVHCloud. Exact /api/jobs is served
+        # locally so the browser dashboard can fall back when the API is down.
+        elif self.path.startswith('/api/jobs/'):
+            self._proxy_request(VAULTWARES_API, 0)
+            return True
         elif self.path.startswith('/api/abort'):
             self._proxy_request(VAULTWARES_API, 0)
             return True
@@ -307,20 +325,22 @@ class ScraperHandler(BaseHTTPRequestHandler):
 
     def _handle_open_downloaded(self, data):
         """Open a downloaded file or the downloads folder locally."""
+        import subprocess
+        import os
         try:
             dest = os.path.abspath(DEST_DIR)
             if data.get('folder'):
                 os.makedirs(dest, exist_ok=True)
-                os.startfile(dest)
-                result = {"status": "opened folder"}
+                subprocess.run(['explorer', dest])
+                result = {"status": "opened folder", "path": dest}
             else:
                 filename = data.get('filename', '')
                 filepath = os.path.join(dest, filename)
                 if os.path.exists(filepath):
-                    os.startfile(filepath)
-                    result = {"status": "opened file"}
+                    subprocess.run(['explorer', '/select,', os.path.normpath(filepath)])
+                    result = {"status": "opened file", "path": os.path.normpath(filepath)}
                 else:
-                    result = {"status": "error", "error": f"File not found: {filename}"}
+                    result = {"status": "error", "error": f"File not found: {filename}", "path": os.path.normpath(filepath)}
             body = json.dumps(result).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -392,7 +412,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 data = json.loads(post_data.decode('utf-8'))
                 url = data.get('url')
                 selector = data.get('selector', '')
-                playwright = data.get('playwright', False)
+                patchright = data.get('patchright', False)
                 batch_size = data.get('batch_size', 100)
                 
                 if not url:
@@ -401,7 +421,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b"Missing url parameter")
                     return
                 
-                threading.Thread(target=self._run_scraper, args=(url, selector, playwright, batch_size)).start()
+                threading.Thread(target=self._run_scraper, args=(url, selector, patchright, batch_size)).start()
                 
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -477,11 +497,11 @@ class ScraperHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Endpoint not found")
 
-    def _run_scraper(self, url, selector, playwright, batch_size):
+    def _run_scraper(self, url, selector, patchright, batch_size):
         print(f"\n[Server] Background scraper task started for URL: {url}")
         os.makedirs(DEST_DIR, exist_ok=True)
-        if playwright:
-            urls = scraper.scrape_with_playwright(url, selector)
+        if patchright:
+            urls = scraper.scrape_with_patchright(url, selector)
         else:
             urls = scraper.scrape_with_requests(url, selector)
             
@@ -573,13 +593,46 @@ class ScraperHandler(BaseHTTPRequestHandler):
             "rclone_complete": bool(rclone_results) and all(rclone_results),
         }
 
+    def _download_via_ytdlp(self, url):
+        try:
+            print(f"[Server] Detected HLS/m3u8/streaming content. Downloading via yt-dlp: {url}")
+            import hashlib
+            h = hashlib.md5(url.encode()).hexdigest()[:8]
+            outtmpl = os.path.join(DEST_DIR, f"video_{h}_%(title)s.%(ext)s")
+            
+            cmd = ["yt-dlp", "-o", outtmpl, "--no-warnings", url]
+            print(f"[Server] Running command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            
+            if result.returncode == 0:
+                for f in os.listdir(DEST_DIR):
+                    if f.startswith(f"video_{h}_"):
+                        file_path = os.path.join(DEST_DIR, f)
+                        print(f"[Server] Completed yt-dlp download: {f}")
+                        rclone_complete = handoff_to_rclone(file_path)
+                        return {"filename": f, "rclone_complete": rclone_complete}
+                print(f"[Server] yt-dlp completed successfully but could not locate file starting with video_{h}_ in {DEST_DIR}")
+            else:
+                print(f"[Server] yt-dlp failed: {result.stderr}")
+        except FileNotFoundError:
+            print("[Server] yt-dlp executable was not found. Please install it.")
+        except Exception as e:
+            print(f"[Server] Error during yt-dlp execution: {e}")
+        return {}
+
     def _download_direct_file(self, url, headers):
+        # Detect HLS/m3u8 playlist URLs
+        is_m3u8 = ".m3u8" in url.lower() or "hls" in url.lower()
+        if is_m3u8:
+            return self._download_via_ytdlp(url)
+
         try:
             print(f"[Server] Starting direct download for: {url}")
             resp = requests.get(url, headers=headers, stream=True, timeout=120)
             if resp.status_code != 200:
                 print(f"[Server] Direct download failed for {url}: status {resp.status_code}")
-                return {}
+                # Try falling back to yt-dlp just in case it's a video stream page
+                return self._download_via_ytdlp(url)
                 
             content_disp = resp.headers.get('content-disposition', '')
             filename = ""
@@ -609,7 +662,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return {"filename": filename, "rclone_complete": rclone_complete}
         except Exception as e:
             print(f"[Server] Error downloading {url}: {e}")
-            return {}
+            return self._download_via_ytdlp(url)
 
     def _download_and_zip_images(self, url_slug, page_url, img_urls, batch_size, headers, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME):
         zip_writer = None

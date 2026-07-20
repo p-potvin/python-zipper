@@ -1,0 +1,13 @@
+[Unit]
+Description=VaultWares Linkvertise downloader run
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/vw-linkvertise
+Environment=LINKVERTISE_STATE=/srv/vw-linkvertise/state/session_state.json
+Environment=LINKVERTISE_INPUT=/srv/vw-linkvertise/input/links.txt
+Environment=LINKVERTISE_DOWNLOAD_DIR=/srv/vw-linkvertise/downloads
+EnvironmentFile=-/etc/vw-linkvertise/env
+ExecStart=/opt/vw-linkvertise/bin/linkvertise-run-once

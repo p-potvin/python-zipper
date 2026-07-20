@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zip it - VaultWares
 // @namespace    clopeux-scripts
-// @version      7.2.6
+// @version      8.4.0
 // @description  VaultWares API Download Manager Browser Helper Script Addon Bridge for Media Cloud Management on Local Server (uses pyload :8003 as well as Internet Download Manager and Real-Debrid to download restricted links in bulk and Katfile, Fileboom/k2s API to upload directly to my cloud accounts and Katfile/Linkvertise to wrap these links inside a comfortable linkvertise/katfile PPD link distributed automatically on every tube-sites' link-sharing feature and downloaded by customers around the world)
 
 // @author       Clopeux
@@ -12,11 +12,10 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @connect      127.0.0.1
-// @connect      100.67.25.118
 // @connect      localhost
 // @connect      *
-// @connect      http://api.vaultwares.ca
 // @connect      https://api.vaultwares.ca
 // ==/UserScript==
 
@@ -25,10 +24,80 @@
     let pathname = window.location.pathname;
     let serverOnline = false;
     let activeApiOrigin = null;
+    let abortScraping = false;
+    let logToConsole = (msg, type) => console.log(`[${type}] ${msg}`);
+
+    function isHighlightEnabled() {
+        const toggleBtn = document.querySelector('#zipper-toggle-highlights-btn');
+        if (toggleBtn) {
+            return toggleBtn.classList.contains('active');
+        }
+        return getZipperSetting('highlight-enabled', 'true') !== 'false';
+    }
+
+    function isHighQualityMedia(url) {
+        const lower = url.toLowerCase();
+        const qualityPatterns = [
+            '1080p', '720p', '4k', '2160p', '1440p', '1080', '720', '1920', '3840', '2560',
+            'highres', 'hd', 'full', 'source', 'original', 'origin'
+        ];
+        return qualityPatterns.some(pat => lower.includes(pat));
+    }
+
+    async function resolveBestMediaUrl(url) {
+        let resolved = url;
+        if (url.includes('onlyfans.com') && url.includes('/thumbs/')) {
+            resolved = url.replace('/thumbs/', '/files/');
+        }
+        const ext = url.split('.').pop().split(/[?#]/)[0].toLowerCase();
+        const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mkv', 'mov', 'mp3', 'wav', 'ogg'].includes(ext);
+
+        if (!isDirectMedia && (url.startsWith('http://') || url.startsWith('https://'))) {
+            try {
+                const htmlText = await new Promise((resolve, reject) => {
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: url,
+                        onload: (res) => resolve(res.responseText),
+                        onerror: reject
+                    });
+                });
+                const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+                const ogVideo = doc.querySelector('meta[property="og:video"]');
+                if (ogVideo && ogVideo.content) return ogVideo.content;
+                const ogImage = doc.querySelector('meta[property="og:image"]');
+                if (ogImage && ogImage.content) return ogImage.content;
+                const videoTag = doc.querySelector('video source') || doc.querySelector('video');
+                if (videoTag) {
+                    const src = videoTag.src || videoTag.getAttribute('src');
+                    if (src) return new URL(src, url).href;
+                }
+                const imgTag = doc.querySelector('img#image') || doc.querySelector('img.main-image') || doc.querySelector('div.image-container img');
+                if (imgTag && imgTag.src) return new URL(imgTag.src, url).href;
+            } catch (e) {
+                console.error('[Resolver] Failed background resolution:', e);
+            }
+        }
+        return resolved;
+    }
+
+    function showBrowserNotification(title, body) {
+        if (typeof Notification !== 'undefined') {
+            if (Notification.permission === 'granted') {
+                new Notification(title, { body });
+            } else if (Notification.permission !== 'denied') {
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        new Notification(title, { body });
+                    }
+                });
+            }
+        }
+    }
 
     class Api {
         static endpoints = Object.freeze({
-            primary: "http://100.67.25.118:9001",
+            primary: "http://127.0.0.1:5171",
             local: "http://127.0.0.1:5171",
             localhost: "http://localhost:5171"
         });
@@ -313,8 +382,8 @@
                 position: fixed;
                 bottom: 80px;
                 right: 20px;
-                width: 350px;
-                height: 520px;
+                width: 320px;
+                height: 440px;
                 border-radius: 12px;
                 background: var(--zipper-bg);
                 backdrop-filter: blur(16px) saturate(120%);
@@ -455,10 +524,10 @@
 
             .zipper-content {
                 flex: 1;
-                padding: 16px;
+                padding: 10px;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
+                gap: 8px;
                 overflow-y: auto;
             }
 
@@ -508,7 +577,7 @@
 
             .zipper-textarea {
                 resize: none;
-                height: 80px;
+                height: 50px;
                 font-family: 'Jetbrains Mono', monospace;
             }
 
@@ -543,13 +612,15 @@
             }
 
             #zipper-console {
-                height: 100px;
+                height: 80px;
+                min-height: 40px;
                 background: rgba(0, 0, 0, 0.3);
                 border-top: 1px solid var(--zipper-border);
-                padding: 8px 12px;
+                padding: 6px 10px;
                 overflow-y: auto;
+                resize: vertical;
                 font-family: 'Jetbrains Mono', monospace;
-                font-size: 10px;
+                font-size: 9px;
                 color: var(--zipper-text-muted);
                 display: flex;
                 flex-direction: column;
@@ -858,13 +929,19 @@
         "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
         "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
         "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
-        "x.com", "twitter.com", "fanbox.cc"
+        "x.com", "twitter.com", "fanbox.cc", "bunkr.cr", "balbums.st", "1fichier.com", "gofile.io", "terabytez.org"
     ];
 
     const mediaDomains = [
         "bunkr.la", "bunkrr.su", "onlyfans.com", "fansly.com", "manyvids.com",
         "coomer.st", "coomer.su", "pixiv.net", "subscribestar.com",
-        "subscribestar.adult", "kemono.cr", "kemono.su"
+        "subscribestar.adult", "kemono.cr", "kemono.su", "bunkr.cr", "balbums.st",
+        "linkvertise.com", "rentry.co", "rentry.org", "pasterix.net", "mega.nz",
+        "real-debrid.com", "trw.lat", "direct-link.net", "fileboom.me", "keep2share.cc",
+        "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
+        "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
+        "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
+        "x.com", "twitter.com", "fanbox.cc", "1fichier.com", "gofile.io", "terabytez.org"
     ];
 
     function normalizeUrl(url, baseUrl = window.location.href) {
@@ -917,8 +994,7 @@
         const mediaLinksMetadata = new Map();
 
         function highlightElement(el) {
-            const highlightEnabled = getZipperSetting('highlight-enabled', 'true') !== 'false';
-            if (!highlightEnabled) return;
+            if (!isHighlightEnabled()) return;
 
             let target = el;
             if (el.tagName.toLowerCase() === 'source' && el.parentElement) {
@@ -965,8 +1041,9 @@
         }
 
         function isInterestingMedia(url, el) {
-            const lowerUrl = url.toLowerCase();
+            if (!isHighQualityMedia(url)) return false;
 
+            const lowerUrl = url.toLowerCase();
             const isVideo = videoExtensions.some(ext => lowerUrl.endsWith(ext)) || (el && (el.tagName.toLowerCase() === 'video' || el.tagName.toLowerCase() === 'source'));
             if (isVideo) return true;
 
@@ -999,7 +1076,7 @@
 
             if (tagRegex.test(tagName)) {
                 const url = getElementUrl(el);
-                if (url) {
+                if (url && isMediaUrl(url)) {
                     if (!shouldFilterMedia(url, el)) {
                         mediaLinks.add(url);
                         highlightElement(el);
@@ -1075,6 +1152,303 @@
         };
     }
 
+    function createGalleryUI() {
+        const existing = document.getElementById('zipper-gallery-ui');
+        if (existing) return;
+
+        const uiContainer = document.createElement('div');
+        uiContainer.id = 'zipper-gallery-ui';
+        Object.assign(uiContainer.style, {
+            position: 'fixed',
+            bottom: '0',
+            left: '0',
+            width: '100%',
+            height: '40px',
+            backgroundColor: 'rgba(15, 12, 24, 0.95)',
+            borderTop: '1px solid #3c2a61',
+            zIndex: '9999999',
+            fontFamily: '"Segoe UI", Roboto, Helvetica, monospace',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-end',
+            boxShadow: '0 -5px 25px rgba(0,0,0,0.8)',
+            transition: 'opacity 0.4s ease',
+            opacity: '1'
+        });
+
+        const interfaceRow = document.createElement('div');
+        Object.assign(interfaceRow.style, {
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '0 15px 4px 15px'
+        });
+
+        const statusText = document.createElement('div');
+        statusText.id = 'zipper-gallery-status';
+        Object.assign(statusText.style, {
+            color: '#dcd3ff',
+            fontSize: '12px',
+            fontWeight: '600',
+            letterSpacing: '0.5px',
+            textShadow: '0 2px 4px rgba(0,0,0,0.5)',
+            flexGrow: '1'
+        });
+        statusText.innerHTML = '<span>Initializing Pipeline...</span><span>0%</span>';
+
+        const stopButton = document.createElement('button');
+        stopButton.textContent = 'STOP & DOWNLOAD';
+        Object.assign(stopButton.style, {
+            backgroundColor: '#ef4444',
+            color: '#ffffff',
+            border: 'none',
+            borderRadius: '4px',
+            padding: '4px 12px',
+            fontSize: '11px',
+            fontWeight: '700',
+            cursor: 'pointer',
+            boxShadow: '0 0 8px rgba(239, 68, 68, 0.5)',
+            transition: 'background-color 0.2s',
+            marginLeft: '15px'
+        });
+
+        stopButton.addEventListener('mouseenter', () => stopButton.style.backgroundColor = '#dc2626');
+        stopButton.addEventListener('mouseleave', () => stopButton.style.backgroundColor = '#ef4444');
+        stopButton.addEventListener('click', () => {
+            abortScraping = true;
+            stopButton.disabled = true;
+            stopButton.style.backgroundColor = '#4b5563';
+            stopButton.textContent = 'HALTING...';
+        });
+
+        interfaceRow.appendChild(statusText);
+        interfaceRow.appendChild(stopButton);
+
+        const track = document.createElement('div');
+        Object.assign(track.style, {
+            width: '100%',
+            height: '6px',
+            backgroundColor: '#1b162b',
+            overflow: 'hidden'
+        });
+
+        const progressBar = document.createElement('div');
+        progressBar.id = 'zipper-gallery-progress';
+        Object.assign(progressBar.style, {
+            width: '0%',
+            height: '100%',
+            background: 'linear-gradient(90deg, #6366f1 0%, #a855f7 50%, #ec4899 100%)',
+            boxShadow: '0 0 12px #a855f7',
+            transition: 'width 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+            willChange: 'width'
+        });
+
+        track.appendChild(progressBar);
+        uiContainer.appendChild(interfaceRow);
+        uiContainer.appendChild(track);
+        document.body.appendChild(uiContainer);
+    }
+
+    function updateGalleryUI(percentage, label) {
+        createGalleryUI();
+        const uiContainer = document.getElementById('zipper-gallery-ui');
+        if (uiContainer) uiContainer.style.opacity = '1';
+        const progressBar = document.getElementById('zipper-gallery-progress');
+        if (progressBar) progressBar.style.width = `${percentage}%`;
+        const statusText = document.getElementById('zipper-gallery-status');
+        if (statusText) statusText.innerHTML = `<span>${label}</span><span>${Math.round(percentage)}%</span>`;
+    }
+
+    function removeGalleryUIWithDelay() {
+        const uiContainer = document.getElementById('zipper-gallery-ui');
+        if (!uiContainer) return;
+        setTimeout(() => {
+            uiContainer.style.opacity = '0';
+            setTimeout(() => {
+                if (uiContainer && uiContainer.parentNode) {
+                    uiContainer.parentNode.removeChild(uiContainer);
+                }
+            }, 400);
+        }, 3000);
+    }
+
+    function scrollToBottomSmartForGallery() {
+        return new Promise((resolve) => {
+            createGalleryUI();
+            updateGalleryUI(0, "Scanning timeline and caching pages...");
+
+            let lastMutationTime = Date.now();
+            let checkInterval;
+
+            const observer = new MutationObserver(() => {
+                lastMutationTime = Date.now();
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            const scrollRunner = setInterval(() => {
+                if (abortScraping) {
+                    clearInterval(scrollRunner);
+                    clearInterval(checkInterval);
+                    observer.disconnect();
+                    resolve();
+                    return;
+                }
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            }, 300);
+
+            checkInterval = setInterval(() => {
+                const idleTime = Date.now() - lastMutationTime;
+                const hitBottom = (window.innerHeight + window.scrollY) >= document.body.scrollHeight - 50;
+
+                if ((hitBottom && idleTime > 1500) || abortScraping) {
+                    clearInterval(scrollRunner);
+                    clearInterval(checkInterval);
+                    observer.disconnect();
+                    resolve();
+                }
+            }, 500);
+        });
+    }
+
+    async function processAndZipGallery(urls) {
+        const totalFiles = urls.length;
+        if (totalFiles === 0) {
+            updateGalleryUI(0, "No files collected to pack.");
+            removeGalleryUIWithDelay();
+            return;
+        }
+
+        let zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
+        let count = 0;
+        let batchIndex = 1;
+        const totalBatches = Math.ceil(totalFiles / 50);
+
+        for (let i = 0; i < totalFiles; i++) {
+            if (abortScraping) break;
+            const url = urls[i];
+            if (!url) continue;
+
+            const currentPct = (i / totalFiles) * 100;
+            updateGalleryUI(currentPct, `Batch ${batchIndex}/${totalBatches} — Fetching item ${i + 1}/${totalFiles}`);
+
+            try {
+                const rawBuffer = await fetchAsArrayBuffer(url);
+                let ext = url.split('.').pop().split(/[\?#]/)[0];
+                if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi'].includes(ext.toLowerCase())) ext = 'jpg';
+
+                const blob = new Blob([rawBuffer]);
+                const cleanPath = pathname.replace(/\//g, '_') || 'gallery';
+                const filename = `${cleanPath}_file_${String(i + 1).padStart(4, '0')}.${ext}`;
+                await zipWriter.add(filename, new zip.BlobReader(blob), { level: 0 });
+
+                count++;
+            } catch (err) {
+                console.error(`Fetch execution failed on target file node: ${url}`, err);
+            }
+
+            if (count > 0 && count % 50 === 0) {
+                updateGalleryUI(currentPct, `Packing and downloading ZIP Batch ${batchIndex}...`);
+                try {
+                    const zipBlob = await zipWriter.close();
+                    const cleanPath = pathname.replace(/\//g, '_') || 'gallery';
+                    saveAs(zipBlob, `${cleanPath}_batch_${batchIndex}.zip`);
+                    zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
+                    batchIndex++;
+                } catch (error) {
+                    console.error('Failed processing isolated batch closure:', error);
+                }
+            }
+        }
+
+        if (count % 50 !== 0 || batchIndex === 1) {
+            updateGalleryUI(95, "Wrapping up the remaining files...");
+            try {
+                const zipBlob = await zipWriter.close();
+                const cleanPath = pathname.replace(/\//g, '_') || 'gallery';
+                saveAs(zipBlob, `${cleanPath}_batch_${batchIndex}_final.zip`);
+            } catch (error) {
+                console.error('Final segment cleanup container execution failed:', error);
+            }
+        }
+
+        updateGalleryUI(100, `Done! Downloaded ${count} files.`);
+        removeGalleryUIWithDelay();
+    }
+
+    async function runSmartGalleryZip() {
+        abortScraping = false;
+        const gallerySelectorInput = document.getElementById('zipper-gallery-selector');
+        const customSelector = gallerySelectorInput ? gallerySelectorInput.value.trim() : '';
+
+        let container = document;
+        if (customSelector) {
+            const el = document.querySelector(customSelector);
+            if (el) {
+                container = el;
+                logToConsole(`[SmartZip] Restricting search to container: "${customSelector}"`, 'info');
+            } else {
+                logToConsole(`[SmartZip] Container "${customSelector}" not found, using document`, 'error');
+            }
+        }
+
+        await scrollToBottomSmartForGallery();
+
+        let extractedUrls = [];
+
+        if (container === document && window.location.hostname.includes('onlyfans.com')) {
+            const firstThumbnail = document.querySelector(".user_posts .b-photos__item");
+            if (firstThumbnail) {
+                logToConsole("[SmartZip] OnlyFans timeline item detected. Opening Vue photoswipe viewer...", "info");
+                firstThumbnail.click();
+                await new Promise(r => setTimeout(r, 800));
+                try {
+                    const pswpContainer = document.querySelector("div.photoswipe");
+                    if (pswpContainer) {
+                        const vueInstance = pswpContainer.__vue__ || (typeof unsafeWindow !== 'undefined' && unsafeWindow.document.querySelector("div.photoswipe").__vue__);
+                        const dataSource = vueInstance ? (vueInstance.dataSource || (vueInstance._props && vueInstance._props.dataSource)) : null;
+                        if (dataSource) {
+                            extractedUrls = Array.from(dataSource).map(item => item.src).filter(Boolean);
+                            logToConsole(`[SmartZip] Extracted ${extractedUrls.length} links via Vue Photoswipe`, "success");
+                            const closeBtn = document.querySelector('.pswp__button--close');
+                            if (closeBtn) closeBtn.click();
+                        }
+                    }
+                } catch (e) {
+                    console.error("[SmartZip] Vue photoswipe extraction failed:", e);
+                }
+            }
+        }
+
+        if (extractedUrls.length === 0) {
+            logToConsole("[SmartZip] Scanning DOM for media nodes...", "info");
+            const nodes = container.querySelectorAll('img, video, source, a');
+            const urlSet = new Set();
+            for (const el of nodes) {
+                const url = getElementUrl(el);
+                if (url) {
+                    const resolved = await resolveBestMediaUrl(url);
+                    const ext = resolved.split('.').pop().split(/[?#]/)[0].toLowerCase();
+                    const isMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi'].includes(ext);
+                    if (isMedia) {
+                        urlSet.add(resolved);
+                    }
+                }
+            }
+            extractedUrls = Array.from(urlSet);
+            logToConsole(`[SmartZip] Found ${extractedUrls.length} media links in DOM.`, "success");
+        }
+
+        if (extractedUrls.length === 0) {
+            logToConsole("[SmartZip] No media files found.", "error");
+            removeGalleryUIWithDelay();
+            return;
+        }
+
+        logToConsole(`[SmartZip] Initiating zipping workflow for ${extractedUrls.length} items...`, "info");
+        await processAndZipGallery(extractedUrls);
+        logToConsole("[SmartZip] Zipping workflow complete!", "success");
+    }
+
     function initUI(_pal) {
         // --- 1. Fab Button ---
         const fab = document.createElement('div');
@@ -1107,15 +1481,17 @@
         const panel = document.createElement('div');
         panel.id = 'zipper-panel';
         document.body.appendChild(panel);
+
+        ['keydown', 'keyup', 'keypress'].forEach(evt => {
+            panel.addEventListener(evt, e => e.stopPropagation(), true);
+        });
+
         // Restore saved panel position (after DOM insertion so CSS is resolved first)
         const savedPanelRight = GM_getValue('zipper-panel-right', '');
         const savedPanelBottom = GM_getValue('zipper-panel-bottom', '');
         if (savedPanelRight) panel.style.right = savedPanelRight;
         if (savedPanelBottom) panel.style.bottom = savedPanelBottom;
 
-        panel.addEventListener('keydown', (e) => e.stopPropagation());
-        panel.addEventListener('keyup', (e) => e.stopPropagation());
-        panel.addEventListener('keypress', (e) => e.stopPropagation());
         panel.addEventListener('mousedown', (e) => {
             if (!isDragging) e.stopPropagation();
         });
@@ -1125,28 +1501,37 @@
         panel.addEventListener('click', (e) => e.stopPropagation());
         panel.addEventListener('paste', (e) => e.stopPropagation());
 
-        // --- Header (Draggable) ---
+        // --- Header ---
+        // --- Header ---
         const header = document.createElement('div');
         header.id = 'zipper-header';
-        const isHighlightEnabled = getZipperSetting('highlight-enabled', 'true') !== 'false';
         header.innerHTML = `
             <div style="display: flex; align-items: center; gap: 8px;">
-                <h3 style="font-size: 13px; margin-right: 4px;">Python Zipper</h3>
+                <h3 style="font-size: 13px; margin-right: 4px;">VaultWares Zipper</h3>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                    <button id="zipper-toggle-highlights-btn" class="zipper-icon-toggle ${isHighlightEnabled ? 'active' : ''}" title="Toggle DOM Highlights">
+                    <button id="zipper-toggle-highlights-btn" class="zipper-icon-toggle ${isHighlightEnabled() ? 'active' : ''}" title="Toggle DOM Highlights">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                             <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
                         </svg>
                     </button>
-                    <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" disabled>
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                            <path d="M7.5 5.6L10 7 8.6 4.5 10 2 7.5 3.4 5 2l1.4 2.5L5 7zm12 9.8l-2.5-1.4L14 15.4l1.4-2.5L14 10.4l2.5 1.4 2.5-1.4-1.4 2.5zM20 2l-1.4 2.5L20 7l-2.5-1.4L15 7l1.4-2.5L15 2l2.5 1.4zm-9.5 9.5l-6 6-.7-.7 6-6zm4.2-2.8l-1.4-1.4-1.4 1.4 1.4 1.4z"/>
-                        </svg>
-                    </button>
+                    <div style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; vertical-align: middle;">
+                        <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" disabled style="margin:0;">
+                            <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                <path d="M8 1a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V2a1 1 0 0 1 1-1zm3.293 2.293a1 1 0 0 1 1.414 0l1.414 1.414a1 1 0 1 1-1.414 1.414L11.293 4.707a1 1 0 0 1 0-1.414zM14 8a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V9a1 1 0 0 1 1-1zm-3.293 4.293a1 1 0 0 1 1.414 0l1.414 1.414a1 1 0 1 1-1.414 1.414L11.293 12.293a1 1 0 0 1 0-1.414zM8 14a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1zm-4.707-1.707a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zM1 8a1 1 0 0 1 1-1v2a1 1 0 1 1-2 0V8a1 1 0 0 1 1-1zm2.293-4.707a1 1 0 0 1 0 1.414L1.879 6.121A1 1 0 1 1 .464 4.707l1.414-1.414a1 1 0 0 1 1.414 0zM8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/>
+                            </svg>
+                        </button>
+                        <select id="zipper-upscale-model" style="position: absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;" disabled>
+                            <option value="off">Off</option>
+                            <option value="4xNomos8k_atd">Nomos8k</option>
+                            <option value="pillow-lanczos">Pillow 4x</option>
+                        </select>
+                    </div>
                 </div>
             </div>
-            <button id="zipper-abort-btn">Abort</button>
-            <button id="zipper-close-btn">&times;</button>
+            <div style="display: flex; align-items: center;">
+                <button id="zipper-abort-btn">ABORT</button>
+                <button id="zipper-close-btn">&times;</button>
+            </div>
         `;
         panel.appendChild(header);
 
@@ -1154,9 +1539,10 @@
         const tabs = document.createElement('div');
         tabs.className = 'zipper-tabs';
         tabs.innerHTML = `
-            <button class="zipper-tab-btn active" data-tab="images">Media Pipeline</button>
-            <button class="zipper-tab-btn" data-tab="links">Cloud / Upload</button>
-            <button class="zipper-tab-btn" data-tab="dashboard">Dashboard</button>
+            <button class="zipper-tab-btn active" data-tab="images">Media</button>
+            <button class="zipper-tab-btn" data-tab="links">Cloud</button>
+            <button class="zipper-tab-btn" data-tab="smart-gallery">Smart</button>
+            <button class="zipper-tab-btn" data-tab="dashboard">Jobs</button>
         `;
         panel.appendChild(tabs);
 
@@ -1168,9 +1554,10 @@
         // --- Console ---
         const consolePanel = document.createElement('div');
         consolePanel.id = 'zipper-console';
+        consolePanel.style.display = 'none';
         panel.appendChild(consolePanel);
 
-        function logToConsole(message, type = '') {
+        logToConsole = function (message, type = '') {
             const line = document.createElement('div');
             line.className = `console-line ${type ? 'console-' + type : ''}`;
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1284,25 +1671,13 @@
         imagesSection.className = 'zipper-panel-section active';
         imagesSection.id = 'section-images';
         imagesSection.innerHTML = `
-            <div class="zipper-select-all-group">
+            <div class="zipper-select-all-group" style="display: flex; justify-content: space-between; align-items: center;">
                 <label><input type="checkbox" id="zipper-media-select-all" checked> Media Links (<span id="zipper-media-count">0</span>)</label>
+                <input type="text" id="zipper-selector" class="zipper-input" placeholder="CSS Selector..." style="width: 120px; box-sizing: border-box; height: 20px; padding: 0 4px; font-size: 10px;">
             </div>
             <div id="zipper-media-list" class="zipper-link-list"></div>
-            <div style="display: flex; gap: 8px; align-items: flex-end;">
-                <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
-                    <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Filter / Selector</label>
-                    <input type="text" id="zipper-selector" class="zipper-input" placeholder="Filter or CSS selector..." style="width: 100%; box-sizing: border-box; height: 32px; padding: 4px 8px;">
-                </div>
-                <div class="zipper-input-group" style="width: 110px; margin: 0; flex-shrink: 0;">
-                    <label>AI Model</label>
-                    <select id="zipper-upscale-model" class="zipper-input" style="width: 100%; font-size: 11px; height: 32px; padding: 4px; box-sizing: border-box;">
-                        <option value="4xNomos8k_atd">Nomos8k</option>
-                        <option value="pillow-lanczos">Pillow 4x</option>
-                    </select>
-                </div>
-            </div>
-            <button id="zipper-scrape-btn" class="zipper-btn" style="margin-top: 4px;">
-                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+            <button id="zipper-scrape-btn" class="zipper-btn" style="margin-top: 4px; height: 28px; padding: 4px;">
+                <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
                     <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
                 </svg>
@@ -1315,6 +1690,7 @@
         const linksSection = document.createElement('div');
         linksSection.className = 'zipper-panel-section';
         linksSection.id = 'section-links';
+        linksSection.style.display = 'none';
         linksSection.innerHTML = `
             <div class="zipper-select-all-group">
                 <label><input type="checkbox" id="zipper-cloud-select-all" checked> Cloud Links (<span id="zipper-cloud-count">0</span>)</label>
@@ -1333,10 +1709,29 @@
         `;
         content.appendChild(linksSection);
 
+        // --- Smart Gallery Section ---
+        const smartGallerySection = document.createElement('div');
+        smartGallerySection.className = 'zipper-panel-section';
+        smartGallerySection.id = 'section-smart-gallery';
+        smartGallerySection.style.display = 'none';
+        smartGallerySection.innerHTML = `
+            <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 4px;">
+                <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
+                    <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Gallery Container Selector</label>
+                    <input type="text" id="zipper-gallery-selector" class="zipper-input" placeholder="e.g. .user_posts" style="width: 100%; box-sizing: border-box; height: 26px; padding: 2px 6px; font-size: 11px;">
+                </div>
+                <button id="zipper-smart-gallery-btn" class="zipper-btn" style="height: 26px; padding: 2px 8px; font-size: 11px; flex-shrink: 0; background: var(--zipper-secondary);">
+                    Smart Gallery Zip
+                </button>
+            </div>
+        `;
+        content.appendChild(smartGallerySection);
+
         // --- Dashboard Section ---
         const dashboardSection = document.createElement('div');
         dashboardSection.className = 'zipper-panel-section';
         dashboardSection.id = 'section-dashboard';
+        dashboardSection.style.display = 'none';
         dashboardSection.innerHTML = `
             <div class="zipper-select-all-group">
                 <label>Active Pipeline Jobs</label>
@@ -1348,15 +1743,81 @@
         `;
         content.appendChild(dashboardSection);
 
+        const smartGalleryBtn = smartGallerySection.querySelector('#zipper-smart-gallery-btn');
+        smartGalleryBtn.onclick = async () => {
+            smartGalleryBtn.disabled = true;
+            try {
+                await runSmartGalleryZip();
+            } catch (err) {
+                logToConsole(`[SmartZip] Error: ${err.message || err}`, 'error');
+            }
+            smartGalleryBtn.disabled = false;
+        };
+
         const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
         jobsListContainer.onclick = async (e) => {
             const openFileBtn = e.target.closest('.zipper-open-btn');
             const openFolderBtn = e.target.closest('.zipper-open-folder-btn');
-            if (openFileBtn) {
+            const viewLink = e.target.closest('.zipper-view-link');
+
+            if (viewLink) {
+                e.preventDefault();
+                const filename = viewLink.getAttribute('data-file');
+                const jobOrigin = viewLink.getAttribute('data-origin') || Api.origin;
+                viewLink.style.opacity = '0.5';
+                const response = await Api.send("openDownloaded", "POST", { filename });
+                viewLink.style.opacity = '1';
+                let success = false;
+                let filePath = null;
+                if (response.ok) {
+                    try {
+                        const data = await response.json();
+                        if (data.status === 'opened file') success = true;
+                        if (data.path) filePath = data.path;
+                    } catch (_) { }
+                }
+                if (!success) {
+                    if (filePath) {
+                        window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
+                    } else {
+                        window.open(`${jobOrigin}/downloaded/${encodeURIComponent(filename)}`, '_blank');
+                    }
+                }
+            } else if (openFileBtn) {
+                e.preventDefault();
                 const filename = openFileBtn.getAttribute('data-file');
-                await Api.send("openDownloaded", "POST", { filename });
+                openFileBtn.style.opacity = '0.5';
+                const response = await Api.send("openDownloaded", "POST", { filename });
+                openFileBtn.style.opacity = '1';
+                let success = false;
+                let filePath = null;
+                if (response.ok) {
+                    try {
+                        const data = await response.json();
+                        if (data.status === 'opened file') success = true;
+                        if (data.path) filePath = data.path;
+                    } catch (_) { }
+                }
+                if (!success && filePath) {
+                    window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
+                }
             } else if (openFolderBtn) {
-                await Api.send("openDownloaded", "POST", { folder: true });
+                e.preventDefault();
+                openFolderBtn.style.opacity = '0.5';
+                const response = await Api.send("openDownloaded", "POST", { folder: true });
+                openFolderBtn.style.opacity = '1';
+                let success = false;
+                let folderPath = null;
+                if (response.ok) {
+                    try {
+                        const data = await response.json();
+                        if (data.status === 'opened folder') success = true;
+                        if (data.path) folderPath = data.path;
+                    } catch (_) { }
+                }
+                if (!success && folderPath) {
+                    window.open('file:///' + folderPath.replace(/\\/g, '/'), '_blank');
+                }
             }
         };
 
@@ -1505,7 +1966,6 @@
             links.forEach(url => {
                 url = normalizeUrl(url, window.location.href);
                 if (!url) return;
-                const lower = url.toLowerCase();
                 const isCloud = isCloudUrl(url);
                 const isMedia = isMediaUrl(url);
 
@@ -1586,6 +2046,8 @@
             toggleHighlightsBtn.classList.toggle('active', enabled);
             setZipperSetting('highlight-enabled', String(enabled));
             if (enabled) {
+                lastHarvestedMediaSerialized = "";
+                lastHarvestedCloudSerialized = "";
                 refreshHarvestedLinks();
             } else {
                 document.querySelectorAll('.zipper-captured-highlight').forEach(el => {
@@ -1595,23 +2057,28 @@
         };
 
         const savedUpscaleModel = getZipperSetting('upscale-model', '4xNomos8k_atd') || '4xNomos8k_atd';
+        const savedUpscaleEnabled = getZipperSetting('upscale-enabled', 'false') === 'true';
 
         // Set up upscale button handler synchronously (no timeout needed)
         const upscaleBtnInit = header.querySelector('#zipper-upscale-toggle-btn');
-        if (upscaleBtnInit) {
-            upscaleBtnInit.onclick = () => {
-                if (upscaleBtnInit.hasAttribute('disabled')) return;
-                const enabled = !upscaleBtnInit.classList.contains('active');
-                upscaleBtnInit.classList.toggle('active', enabled);
-                setZipperSetting('upscale-enabled', String(enabled));
-            };
-        }
+        const upscaleModelSelectInit = header.querySelector('#zipper-upscale-model');
 
-        const upscaleModelSelectInit = imagesSection.querySelector('#zipper-upscale-model');
-        if (upscaleModelSelectInit) {
-            upscaleModelSelectInit.value = savedUpscaleModel;
+        if (upscaleModelSelectInit && upscaleBtnInit) {
+            upscaleModelSelectInit.value = savedUpscaleEnabled ? savedUpscaleModel : 'off';
+            if (savedUpscaleEnabled) {
+                upscaleBtnInit.classList.add('active');
+            }
+
             upscaleModelSelectInit.onchange = (e) => {
-                setZipperSetting('upscale-model', e.target.value);
+                const val = e.target.value;
+                if (val === 'off') {
+                    upscaleBtnInit.classList.remove('active');
+                    setZipperSetting('upscale-enabled', 'false');
+                } else {
+                    upscaleBtnInit.classList.add('active');
+                    setZipperSetting('upscale-enabled', 'true');
+                    setZipperSetting('upscale-model', val);
+                }
             };
         }
 
@@ -1633,10 +2100,23 @@
             return { jobs: mergedJobs, origin: jobOrigin };
         }
 
+        let previousJobStatuses = {};
+
         async function refreshJobs() {
             if (!serverOnline) return;
             const { jobs, origin: jobOrigin } = await fetchJobsFromEndpoints();
             const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
+
+            // Notification tracking
+            for (const key in jobs) {
+                const job = jobs[key];
+                const prevStatus = previousJobStatuses[key];
+                if (prevStatus && prevStatus !== 'completed' && job.status === 'completed') {
+                    showBrowserNotification("Job Complete", `Job ${key.substring(0, 12)} completed successfully!`);
+                }
+                previousJobStatuses[key] = job.status;
+            }
+
             const jobKeys = Object.keys(jobs);
             if (jobKeys.length === 0) {
                 jobsListContainer.innerHTML = '<div style="font-size: 11px; padding: 10px; text-align: center; color: var(--zipper-text-muted);">No active or recent jobs found.</div>';
@@ -1674,7 +2154,7 @@
                                 <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
                                     ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
                                         <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
-                                            <a href="${jobOrigin}/downloaded/${encodeURIComponent(arch)}" target="_blank" class="zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
+                                            <a href="#" data-file="${arch}" data-origin="${jobOrigin}" class="zipper-view-link zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
                                                 View ${arch.split('_').pop() || 'File'}
                                             </a>
                                             <button class="zipper-open-btn zipper-btn" data-file="${arch}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
@@ -1702,10 +2182,12 @@
                 btn.classList.add('active');
 
                 const targetTab = btn.getAttribute('data-tab');
-                content.querySelectorAll('.zipper-panel-section').forEach(sec => sec.classList.remove('active'));
-                content.querySelector(`#section-${targetTab}`).classList.add('active');
+                document.querySelectorAll('.zipper-panel-section').forEach(sec => {
+                    sec.style.display = sec.id === `section-${targetTab}` ? 'flex' : 'none';
+                });
 
                 if (targetTab === 'dashboard') {
+                    consolePanel.style.display = 'flex';
                     refreshJobs();
                     if (!dashboardPollInterval) {
                         dashboardPollInterval = setInterval(refreshJobs, 3000);
@@ -1891,10 +2373,14 @@
                             const savedEnabled = getZipperSetting('upscale-enabled', 'false') === 'true';
                             upscaleBtn.classList.toggle('active', savedEnabled);
                             upscaleBtn.title = `Toggle Image Upscaling (4x AI — ${(upscalerData.models || []).join(', ')})`;
+                            const sel = document.getElementById('zipper-upscale-model');
+                            if (sel) sel.removeAttribute('disabled');
                         } else {
                             upscaleBtn.classList.remove('active');
                             upscaleBtn.setAttribute('disabled', 'true');
                             upscaleBtn.title = `Upscaler unavailable: ${upscalerData.error || 'No models found'}`;
+                            const sel = document.getElementById('zipper-upscale-model');
+                            if (sel) sel.setAttribute('disabled', 'true');
                         }
                     }
                 }
@@ -1909,6 +2395,8 @@
                     upscaleBtn.classList.remove('active');
                     upscaleBtn.setAttribute('disabled', 'true');
                     upscaleBtn.title = 'Upscaler unavailable (server offline)';
+                    const sel = document.getElementById('zipper-upscale-model');
+                    if (sel) sel.setAttribute('disabled', 'true');
                 }
             }
         }
@@ -2019,17 +2507,26 @@
             }
 
             scrapeBtn.disabled = true;
-            logToConsole(`[Media] Sending ${urls.length} media files to VaultWares API...`, 'info');
+            logToConsole(`[Media] Resolving quality and gated media links...`, 'info');
+            const resolvedUrls = [];
+            for (const u of urls) {
+                const bestUrl = await resolveBestMediaUrl(u);
+                resolvedUrls.push(bestUrl);
+            }
+            const finalUrls = [...new Set(resolvedUrls.filter(Boolean))];
+
+            logToConsole(`[Media] Sending ${finalUrls.length} media files to local server...`, 'info');
 
             const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
             const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
-            const upscaleModel = document.getElementById('zipper-upscale-model').value;
+            const selectVal = document.getElementById('zipper-upscale-model').value;
+            const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
 
             if (serverOnline) {
                 try {
                     const response = await Api.sendWithFallback("download", "POST", {
                         url: window.location.href,
-                        links: urls,
+                        links: finalUrls,
                         batch_size: 5,
                         upscale_enabled: upscaleEnabled,
                         upscale_model: upscaleModel
@@ -2039,12 +2536,12 @@
                         let data;
                         try {
                             data = await response.json();
-                            logToConsole(`[Server] Success: Sent ${urls.length} media files to pipeline.`, 'success');
+                            logToConsole(`[Server] Success: Sent ${finalUrls.length} media files to pipeline.`, 'success');
                             if (data.correlationId) {
                                 logToConsole(`[Server] Job ID: ${data.correlationId}`, 'info');
                             }
                         } catch (e) {
-                            logToConsole(`[Server] Success: Sent ${urls.length} media files to pipeline.`, 'success');
+                            logToConsole(`[Server] Success: Sent ${finalUrls.length} media files to pipeline.`, 'success');
                         }
                         flashFab();
                     } else {
@@ -2052,10 +2549,10 @@
                     }
                 } catch (err) {
                     logToConsole(`[Server] Failed to send links: ${err.message}`, 'error');
-                    await clientSideFallback(urls, scrapeBtn, logToConsole);
+                    await clientSideFallback(finalUrls, scrapeBtn, logToConsole);
                 }
             } else {
-                await clientSideFallback(urls, scrapeBtn, logToConsole);
+                await clientSideFallback(finalUrls, scrapeBtn, logToConsole);
             }
             scrapeBtn.disabled = false;
         };
@@ -2139,3 +2636,51 @@
         window.addEventListener('DOMContentLoaded', start);
     }
 })();
+
+// --- Menu Command: Regex Link Copier ---
+if (typeof GM_registerMenuCommand !== 'undefined') {
+    GM_registerMenuCommand("Copy Links by Regex", () => {
+        const popup = document.createElement('div');
+        popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1c1c1c;color:#eee;padding:20px;border-radius:8px;z-index:999999;box-shadow:0 0 20px rgba(0,0,0,0.8);font-family:sans-serif;display:flex;flex-direction:column;gap:10px;border:1px solid #333;';
+        popup.innerHTML = `
+                <div style="font-weight:bold;font-size:14px;margin-bottom:5px;">Regex Link Copier (*://...)</div>
+                <input type="text" id="zipper-regex-input" placeholder="e.g. .*mp4$" style="background:#2d2d2d;color:#eee;border:1px solid #444;padding:8px;border-radius:4px;outline:none;">
+                <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:5px;">
+                    <button id="zipper-regex-cancel" style="background:#444;color:#eee;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;">Cancel</button>
+                    <button id="zipper-regex-copy" style="background:#4CAF50;color:#fff;border:none;padding:8px 12px;border-radius:4px;cursor:pointer;">Copy Links</button>
+                </div>
+            `;
+        document.body.appendChild(popup);
+        const input = popup.querySelector('#zipper-regex-input');
+        input.focus();
+
+        ['keydown', 'keyup', 'keypress'].forEach(evt => popup.addEventListener(evt, e => e.stopPropagation(), true));
+
+        popup.querySelector('#zipper-regex-cancel').onclick = () => popup.remove();
+        popup.querySelector('#zipper-regex-copy').onclick = () => {
+            let rxStr = input.value.trim();
+            if (!rxStr) return;
+            try {
+                let rx = new RegExp(rxStr, 'i');
+                let allLinks = Array.from(document.querySelectorAll('a[href], img[src], video[src], source[src]')).map(el => el.href || el.src).filter(Boolean);
+                let htmlText = document.documentElement.innerHTML;
+                let textLinks = (htmlText.match(/(?:https?:\/\/|www\.)[^\s<>"']+/gi) || []);
+                let combinedLinks = [...allLinks, ...textLinks];
+                let matches = combinedLinks.filter(l => {
+                    let withoutProto = l.replace(/^[^:]+:\/\//, '');
+                    return rx.test(withoutProto) || rx.test(l);
+                });
+                if (matches.length > 0) {
+                    navigator.clipboard.writeText(Array.from(new Set(matches)).join('\n')).then(() => {
+                        alert(`Copied ${new Set(matches).size} links to clipboard!`);
+                    });
+                } else {
+                    alert('No links matched the regex.');
+                }
+            } catch (e) {
+                alert('Invalid Regex: ' + e.message);
+            }
+            popup.remove();
+        };
+    });
+}

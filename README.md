@@ -6,7 +6,7 @@ A centralized repository and automated container for all web download/upload man
 
 ## Project Structure
 
-This project consists of two core automation pipelines:
+This project consists of three core automation pipelines:
 
 ### 1. Dataset Builder (`dataset_builder/`)
 
@@ -77,6 +77,10 @@ A background pipeline for parsing links, resolving hosts, and cloud upload orche
 * **Host Uploaders (`k2s_uploader.py`, etc.)**: Handles high-performance multi-threaded uploads to premium hosts like Keep2Share and Katfile.
 * **Task Scheduler (`setup_telegram_task.ps1`)**: Sets up Windows Task Scheduler to automate file retrieval and uploader scripts in the background.
 
+### 3. Linkvertise OVH Mullvad Downloader (`linkvertise/`)
+
+A file-driven, dry-run-first scaffold for authorized Linkvertise-style links. It plans OVH execution through a separate `vw-linkvertise` Docker stack, routes downloader traffic through a dedicated `mullvad-rotation` container, preserves per-link session state, and includes a systemd timer template for a 50-70 minute cadence.
+
 ---
 
 ## Getting Started
@@ -100,3 +104,25 @@ The background server is registered as a Windows Service `vaultwares-api` using 
   ```powershell
   nssm status "vaultwares-api"
   ```
+
+### Proxy & Evasion Configuration (TNLegend Tor Rotator / Web Unlocker)
+
+`python-zipper` now features global proxy integration to bypass IP bans and evade detection using either the TNLegend Portable Tor Proxy Rotator or commercial residential proxies like Web Unlocker.
+
+1. **Configure .env**
+   In the root directory (or inside ../telegram/.env), you can define your PROXY_URL:
+   * **For TNLegend Tor Rotator**: PROXY_URL=socks5://127.0.0.1:20000
+   * **For Web Unlocker / Residential**: PROXY_URL=<http://username:password@proxy.webunlocker.com:12345>
+
+2. **How it Works**
+   * **Requests**: The proxy_utils.py module automatically monkey-patches the Python
+equests library. Any outgoing HTTP request (e.g. fetching an image) is seamlessly routed through your proxy, while internal localhost APIs remain untouched.
+   * **Patchright**: The PROXY_URL is parsed and securely injected into all patchright persistent browser contexts, ensuring that any headless browser scraping inherits the exact same IP rotation.
+
+3. **Running the TNLegend Tor Rotator**
+   If using the TNLegend rotator, you must start it manually before scraping:
+   `ash
+   cd "C:\Users\Administrator\Desktop\Github Repos\Portable-Tor-Proxy-Rotator"
+   run_tor.bat
+   `
+   Wait for the message "Waiting for timer...". It will generate 50 SOCKS5 proxies starting at port 20000 and rotate IPs every 5 minutes.
