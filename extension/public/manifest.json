@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Zip it — Live Stream Grabber (VaultWares)",
+  "version": "1.4.0",
+  "description": "VDH-style live stream (HLS/DASH/MSS) detector that forwards captures — with their real request headers — to the local VaultWares pipeline.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "zipper-vdh@vaultwares",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "storage",
+    "notifications",
+    "downloads",
+    "tabs",
+    "clipboardWrite"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Live Stream Grabber",
+    "default_icon": "icon.svg"
+  },
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  }
+}

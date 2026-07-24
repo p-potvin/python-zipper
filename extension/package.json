@@ -1,0 +1,25 @@
+{
+  "name": "vaultwares-zipper-extension",
+  "version": "1.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Firefox-first (Chrome-compatible) MV3 extension: VDH-style live-stream detector feeding the local VaultWares pipeline.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "start:firefox": "web-ext run --source-dir dist --browser-console",
+    "lint": "web-ext lint --source-dir dist",
+    "xpi": "web-ext build --source-dir dist --artifacts-dir dist-xpi --overwrite-dest"
+  },
+  "dependencies": {
+    "@zip.js/zip.js": "^2.7.52",
+    "file-saver": "^2.0.5"
+  },
+  "devDependencies": {
+    "@types/file-saver": "^2.0.7",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.5.0",
+    "web-ext": "^8.3.0"
+  }
+}

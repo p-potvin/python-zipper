@@ -39,6 +39,51 @@ def create_job(url, links, batch_size, upscale_enabled, upscale_model):
     return job_id
 
 
+def _trim_jobs():
+    if len(JOBS) >= 30:
+        sorted_keys = sorted(JOBS.keys(), key=lambda k: JOBS[k].get("created_at", 0))
+        for k in sorted_keys[:(len(JOBS) - 29)]:
+            del JOBS[k]
+
+
+def create_stream_job(stream_url, page_url=None, title=None, quality=None,
+                      thumbnail=None, duration=None, is_live=False):
+    now = int(time.time() * 1000)
+    job_id = f"stream-{uuid.uuid4().hex[:12]}"
+    job = {
+        "id": job_id,
+        "type": "stream",
+        "status": "queued",
+        "url": page_url or stream_url,
+        "stream_url": stream_url,
+        "title": title,
+        "quality": quality,
+        "thumbnail": thumbnail,
+        "duration": duration,
+        "is_live": bool(is_live),
+        "progress": 0,
+        "speed": None,
+        "eta": None,
+        "downloaded_bytes": 0,
+        "total_bytes": 0,
+        "save_path": None,
+        "save_dir": None,
+        "archives": [],
+        "created_at": now,
+        "updated_at": now,
+        "source": "local-python-zipper",
+    }
+    with JOBS_LOCK:
+        _trim_jobs()
+        JOBS[job_id] = job
+    return job_id
+
+
+def delete_job(job_id):
+    with JOBS_LOCK:
+        return JOBS.pop(job_id, None) is not None
+
+
 def update_job(job_id, **changes):
     if not job_id:
         return

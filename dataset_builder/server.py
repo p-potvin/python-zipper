@@ -9,13 +9,17 @@ from socketserver import ThreadingTCPServer
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import scraper
-from ds_jobs import create_job, update_job, complete_job, fail_job, get_jobs_snapshot, JOBS, JOBS_LOCK
+from ds_jobs import (
+    create_job, create_stream_job, delete_job, update_job, complete_job, fail_job,
+    get_jobs_snapshot, JOBS, JOBS_LOCK,
+)
 from ds_helpers import (
     get_available_upscale_models, handoff_to_rclone, upscale_image_content,
     get_rd_token, unrestrict_link_rd, bypass_linkvertise,
     download_via_ytdlp, download_direct_file, download_and_zip_images,
     NOMOS_MODEL_NAME, IMAGE_EXTENSIONS,
 )
+from ds_streams import probe_stream, download_stream, stop_stream, STREAMS_DIR
 
 PORT = 5171
 DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
@@ -111,31 +115,66 @@ class ScraperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _handle_open_downloaded(self, data):
+    def _read_json(self):
+        length = int(self.headers.get('Content-Length', 0))
+        if length <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length).decode('utf-8'))
+        except Exception:
+            return {}
+
+    def _send_json(self, obj, code=200):
+        body = json.dumps(obj).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _reveal_in_explorer(self, path, select=False):
+        # NON-BLOCKING and never raises. Note: when the server runs as an NSSM
+        # service it lives in Session 0, so any Explorer window it launches is
+        # invisible on the user's desktop — the extension opens the path client
+        # side instead. We still best-effort launch here for interactive runs.
         import subprocess
+        p = os.path.normpath(os.path.abspath(path))
+        try:
+            if select:
+                subprocess.Popen(['explorer', '/select,', p])
+            else:
+                os.startfile(p)  # type: ignore[attr-defined]  (Windows only)
+        except Exception as e:
+            print(f"[Server] reveal best-effort failed (Session 0 service?): {e}")
+        return p
+
+    def _handle_open_downloaded(self, data):
         try:
             dest = os.path.abspath(DEST_DIR)
+            # Absolute path (used by stream jobs saved outside DEST_DIR).
+            abs_path = data.get('path')
+            if abs_path:
+                p = os.path.normpath(os.path.abspath(abs_path))
+                if os.path.exists(p):
+                    self._reveal_in_explorer(p, select=True)
+                    self._send_json({"status": "opened file", "path": p})
+                else:
+                    self._send_json({"status": "error", "error": "File not found", "path": p})
+                return
             if data.get('folder'):
-                os.makedirs(dest, exist_ok=True)
-                subprocess.run(['explorer', dest])
-                result = {"status": "opened folder", "path": dest}
+                target = STREAMS_DIR if data.get('which') == 'streams' else dest
+                os.makedirs(target, exist_ok=True)
+                self._reveal_in_explorer(target, select=False)
+                self._send_json({"status": "opened folder", "path": target})
             else:
                 filename = data.get('filename', '')
-                filepath = os.path.join(dest, filename)
+                filepath = os.path.normpath(os.path.join(dest, filename))
                 if os.path.exists(filepath):
-                    subprocess.run(['explorer', '/select,', os.path.normpath(filepath)])
-                    result = {"status": "opened file", "path": os.path.normpath(filepath)}
+                    self._reveal_in_explorer(filepath, select=True)
+                    self._send_json({"status": "opened file", "path": filepath})
                 else:
-                    result = {"status": "error", "error": f"File not found: {filename}", "path": os.path.normpath(filepath)}
-            body = json.dumps(result).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(body)
+                    self._send_json({"status": "error", "error": f"File not found: {filename}", "path": filepath})
         except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            self._send_json({"error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -224,13 +263,14 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 batch_size = data.get('batch_size', 100)
                 upscale_enabled = bool(data.get('upscale_enabled', False))
                 upscale_model = data.get('upscale_model', NOMOS_MODEL_NAME)
+                stream_headers = data.get('stream_headers', {}) or {}
                 if not url or not links:
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b"Missing url or links parameters")
                     return
                 job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
-                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model)).start()
+                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers)).start()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -239,6 +279,40 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+        elif self.path == '/api/stream/probe':
+            data = self._read_json()
+            url = data.get('url')
+            if not url:
+                self._send_json({"ok": False, "error": "missing url"}, 400)
+                return
+            self._send_json(probe_stream(url, data.get('headers') or {}, data.get('proxy')))
+        elif self.path == '/api/stream/start':
+            data = self._read_json()
+            url = data.get('url')
+            if not url:
+                self._send_json({"ok": False, "error": "missing url"}, 400)
+                return
+            os.makedirs(DEST_DIR, exist_ok=True)
+            job_id = create_stream_job(
+                url, page_url=data.get('page_url'), title=data.get('title'),
+                quality=data.get('quality'), thumbnail=data.get('thumbnail'),
+                duration=data.get('duration'), is_live=data.get('is_live', False),
+            )
+            threading.Thread(
+                target=download_stream,
+                args=(job_id, url, data.get('headers') or {}, data.get('format_id'), data.get('proxy')),
+                daemon=True,
+            ).start()
+            self._send_json({"ok": True, "status": "stream download started", "correlationId": job_id})
+        elif self.path == '/api/stream/stop':
+            data = self._read_json()
+            stopped = stop_stream(data.get('job_id'))
+            self._send_json({"ok": True, "stopped": stopped})
+        elif self.path == '/api/stream/delete':
+            data = self._read_json()
+            job_id = data.get('job_id')
+            stop_stream(job_id)
+            self._send_json({"ok": True, "deleted": delete_job(job_id)})
         elif self.path == '/logs':
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
@@ -283,12 +357,12 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return
         self._download_and_process(url, urls, batch_size)
 
-    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME):
+    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None):
         print(f"\n[Server] Background downloader task started for URL: {url} ({len(links)} links)")
         os.makedirs(DEST_DIR, exist_ok=True)
         update_job(job_id, status="running")
         try:
-            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id)
+            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers)
             complete_job(
                 job_id,
                 archives=result.get("archives", []),
@@ -298,11 +372,18 @@ class ScraperHandler(BaseHTTPRequestHandler):
             fail_job(job_id, e)
             raise
 
-    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None):
+    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None):
         from urllib.parse import urlparse
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
+        # Merge browser-captured headers (Referer/Cookie/User-Agent/Origin) from the
+        # extension so authenticated streams resolve instead of 403'ing. These apply
+        # to every link in the batch — the extension sends one stream per request.
+        if stream_headers:
+            for k, v in stream_headers.items():
+                if v:
+                    headers[k] = v
         url_slug = scraper.get_url_slug(page_url)
         rd_token = get_rd_token()
         unique_urls = []
