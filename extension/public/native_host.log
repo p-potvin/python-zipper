@@ -1,0 +1,8 @@
+Native host invoked.
+Received message: {"folderPath": "c:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\.downloaded\\streams\\pzstream_stream-e6ada1c62878_manifest 2026-07-30 13_20 [manifest].mp4"}
+Normalized path: c:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded\streams\pzstream_stream-e6ada1c62878_manifest 2026-07-30 13_20 [manifest].mp4
+Path is a file. Launching explorer with /select,...
+Native host invoked.
+Received message: {"folderPath": "c:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\.downloaded\\streams\\pzstream_stream-a7b99abcb5bf_manifest 2026-07-30 13_21 [manifest].mp4"}
+Normalized path: c:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded\streams\pzstream_stream-a7b99abcb5bf_manifest 2026-07-30 13_21 [manifest].mp4
+Path is a file. Launching explorer with /select,...
