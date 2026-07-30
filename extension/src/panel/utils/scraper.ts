@@ -8,159 +8,212 @@ import { logToConsole } from './config';
 
 
     export function harvestLinks() {
-        const tagRegex = /^(img|video|source)$/i;
         const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
-
-        const mediaLinks = new Set<string>();
+        const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.bmp'];
+        
+        const mediaCandidates: { url: string; score: number }[] = [];
         const cloudLinks = new Set<string>();
-        const mediaLinksMetadata = new Map<string, boolean>();
 
-        function shouldFilterMedia(url: string, el: any) {
-            const lowerUrl = url.toLowerCase();
-            const filterKeywords = [
-                'avatar', 'profile', 'sprite', 'logo', 'banner', 'button', 'icon',
-                'loading', 'spacer', 'favicon', 'analytics', 'tracker', 'ad-group',
-                'adsense', 'doubleclick', 'pixel', 'advertisement', 'widget'
-            ];
-            if (filterKeywords.some(keyword => lowerUrl.includes(keyword))) {
-                return true;
-            }
-
-            if (el) {
-                const tag = el.tagName.toLowerCase();
-                if (tag === 'img') {
-                    if (el.naturalWidth > 0 && el.naturalWidth < 150) return true;
-                    if (el.naturalHeight > 0 && el.naturalHeight < 150) return true;
-                    if (el.width > 0 && el.width < 150) return true;
-                    if (el.height > 0 && el.height < 150) return true;
-
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden') return true;
-                }
-
-                let parent = el.parentElement;
-                let depth = 0;
-                while (parent && depth < 5) {
-                    const classIdStr = ((parent.className || '') + ' ' + (parent.id || '')).toLowerCase();
-                    if (/(header|footer|nav|sidebar|menu|widget|button|btn)/i.test(classIdStr)) {
-                        return true;
-                    }
-                    parent = parent.parentElement;
-                    depth++;
-                }
-            }
-            return false;
-        }
-
-        function isInterestingMedia(url: string, el: any) {
-            if (!isHighQualityMedia(url)) return false;
-
-            const lowerUrl = url.toLowerCase();
-            const isVideo = videoExtensions.some(ext => lowerUrl.endsWith(ext)) || (el && (el.tagName.toLowerCase() === 'video' || el.tagName.toLowerCase() === 'source'));
-            if (isVideo) return true;
-
-            if (lowerUrl.endsWith('.ico') || lowerUrl.endsWith('.svg') || lowerUrl.includes('favicon')) return false;
-
-            const uninterestingKeywords = [
-                'avatar', 'sprite', 'logo', 'banner', 'button', 'icon',
-                'font', 'loading', 'spacer', 'ad-', 'track', 'analytics', 'pixel',
-                'nav', 'footer', 'header', 'sidebar', 'widget', 'profile', 'thumb_small', 'thumbnail_small'
-            ];
-            if (uninterestingKeywords.some(keyword => lowerUrl.includes(keyword))) {
-                return false;
-            }
-
-            if (el) {
-                const tag = el.tagName.toLowerCase();
-                if (tag === 'img') {
-                    if (el.naturalWidth > 0 && el.naturalWidth < 300) return false;
-                    if (el.naturalHeight > 0 && el.naturalHeight < 300) return false;
-                    if (el.width > 0 && el.width < 300) return false;
-                    if (el.height > 0 && el.height < 300) return false;
-                }
-            }
-
-            return true;
-        }
-
+        // Gather all elements
         document.querySelectorAll('*').forEach(el => {
-            const tagName = el.tagName;
+            const tagName = el.tagName.toLowerCase();
+            let url = '';
+            
+            // Extract URL based on tag type
+            if (tagName === 'img') {
+                url = el.currentSrc || el.src || el.getAttribute('data-src') || '';
+            } else if (tagName === 'video') {
+                url = el.currentSrc || el.src || el.getAttribute('data-src') || el.poster || '';
+            } else if (tagName === 'source') {
+                url = el.srcset || el.src || el.getAttribute('data-src') || '';
+                // Resolve srcset candidates
+                if (url.includes(',')) {
+                    url = url.split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean).pop() || '';
+                }
+            } else if (tagName === 'a') {
+                url = el.href || el.getAttribute('href') || '';
+            }
 
-            if (tagRegex.test(tagName)) {
-                const url = getElementUrl(el);
-                if (url && isMediaUrl(url)) {
-                    if (!shouldFilterMedia(url, el)) {
-                        mediaLinks.add(url);
-                        highlightElement(el);
-                        const interesting = isInterestingMedia(url, el);
-                        if (!mediaLinksMetadata.has(url) || interesting) {
-                            mediaLinksMetadata.set(url, interesting);
-                        }
-                        const isVideoTag = tagName.toLowerCase() === 'video' || tagName.toLowerCase() === 'source';
-                        const isVideoUrl = videoExtensions.some(ext => url.toLowerCase().includes(ext)) || url.toLowerCase().includes("bunkr") || url.toLowerCase().includes("bunkrr");
-                        if (isVideoTag || isVideoUrl) {
-                            cloudLinks.add(url);
-                        }
+            url = getElementUrl(el);
+            if (!url) return;
+
+            const lowerUrl = url.toLowerCase();
+
+            // Cloud links checking
+            if (isCloudUrl(url)) {
+                cloudLinks.add(url);
+                return;
+            }
+
+            // Standard media checking
+            const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lowerUrl);
+            
+            // Check if it is a platform page instead of raw profiles
+            const isPlatformMediaPage = /onlyfans\.com\/posts\/\d+/i.test(lowerUrl) || 
+                                        /coomer\.(st|su)\/onlyfans\/user\/[^/]+\/post\/\w+/i.test(lowerUrl) ||
+                                        /kemono\.(cr|su)\/[^/]+\/user\/[^/]+\/post\/\w+/i.test(lowerUrl);
+
+            // Ignore profiles, status feeds, index pages, generic homepages
+            const isProfileOrFeed = /twitter\.com\/[^/]+$/i.test(lowerUrl) ||
+                                    /x\.com\/[^/]+$/i.test(lowerUrl) ||
+                                    /onlyfans\.com\/[^/]+$/i.test(lowerUrl) ||
+                                    /patreon\.com\/[^/]+$/i.test(lowerUrl) ||
+                                    /fansly\.com\/[^/]+$/i.test(lowerUrl) ||
+                                    (lowerUrl.includes('/status/') && !hasMediaExt);
+
+            if (isProfileOrFeed) {
+                return; // Discard profiles and statuses
+            }
+
+            if (!hasMediaExt && !isPlatformMediaPage && !isMediaUrl(url)) {
+                // If it doesn't have a direct media extension, isn't a platform post page, and isn't a media domain, discard
+                return;
+            }
+
+            // Scoring Algorithm
+            let score = 0;
+
+            // Base score based on extension/type
+            const isVideo = videoExtensions.some(ext => lowerUrl.includes(ext)) || tagName === 'video';
+            const isImage = imageExtensions.some(ext => lowerUrl.includes(ext)) || tagName === 'img';
+
+            if (isVideo) {
+                score += 500;
+            } else if (isImage) {
+                score += 100;
+            }
+
+            // Quality terms in URL
+            const qualityKeywords = ['1080p', '720p', '4k', '2160p', '1440p', '1080', '720', '1920', '3840', '2560', 'hd', 'full', 'source', 'original'];
+            if (qualityKeywords.some(kw => lowerUrl.includes(kw))) {
+                score += 150;
+            }
+
+            // Platform quality boosters
+            if (lowerUrl.includes('/files/')) {
+                score += 200; // OnlyFans full size file vs thumb
+            }
+
+            // Element Dimensions scoring
+            if (tagName === 'img' || tagName === 'video') {
+                const imgEl = el as any;
+                const width = imgEl.naturalWidth || imgEl.videoWidth || imgEl.width || parseInt(el.style.width) || 0;
+                const height = imgEl.naturalHeight || imgEl.videoHeight || imgEl.height || parseInt(el.style.height) || 0;
+                const area = width * height;
+
+                if (area > 0) {
+                    if (area >= 1920 * 1080) {
+                        score += 300;
+                    } else if (area >= 1280 * 720) {
+                        score += 150;
+                    } else if (area < 150 * 150) {
+                        score -= 600; // Trash thumbnails
+                    } else if (area < 300 * 300) {
+                        score -= 300; // Low quality
                     }
+                }
+
+                // Visibility
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') {
+                    score -= 400;
                 }
             }
-            else if (tagName.toLowerCase() === 'a') {
-                const href = getElementUrl(el);
-                if (href) {
-                    const lowerHref = href.toLowerCase();
-                    const isMedia = isMediaUrl(href);
-                    const isCloud = isCloudUrl(href);
 
-                    if (isMedia) {
-                        if (!shouldFilterMedia(href, el)) {
-                            mediaLinks.add(href);
-                            highlightElement(el);
-                            const interesting = isInterestingMedia(href, el);
-                            if (!mediaLinksMetadata.has(href) || interesting) {
-                                mediaLinksMetadata.set(href, interesting);
-                            }
-                            const isVideoUrl = videoExtensions.some(ext => lowerHref.includes(ext)) || lowerHref.includes("bunkr") || lowerHref.includes("bunkrr");
-                            if (isVideoUrl) {
-                                cloudLinks.add(href);
-                            }
-                        }
-                    } else if (isCloud) {
-                        cloudLinks.add(href);
-                    }
+            // Parent layout context checking
+            let parent = el.parentElement;
+            let depth = 0;
+            while (parent && depth < 5) {
+                const classIdStr = ((parent.className || '') + ' ' + (parent.id || '')).toLowerCase();
+                
+                // Header/Footer/Nav are garbage zones
+                if (/(header|footer|nav|sidebar|menu|widget|button|btn|avatar|profile-header)/i.test(classIdStr)) {
+                    score -= 400;
                 }
+                // Post media or main containers are premium zones
+                if (/(post-media|gallery|main-content|article|video-container|content-wrapper)/i.test(classIdStr)) {
+                    score += 100;
+                }
+                parent = parent.parentElement;
+                depth++;
+            }
+
+            // Keyword blacklist check
+            const blacklistKeywords = [
+                'avatar', 'sprite', 'logo', 'banner', 'button', 'icon', 'emoji',
+                'font', 'loading', 'spacer', 'ad-', 'track', 'analytics', 'pixel'
+            ];
+            if (blacklistKeywords.some(kw => lowerUrl.includes(kw))) {
+                score -= 600;
+            }
+
+            // Highlight in UI if score is high enough to be interesting
+            if (score >= 200 && (tagName === 'img' || tagName === 'video' || tagName === 'a')) {
+                highlightElement(el);
+            }
+
+            // Only keep if the net score is interesting (i.e. >= 50)
+            if (score >= 50) {
+                mediaCandidates.push({ url, score });
             }
         });
 
+        // Parse body text for links too
         const text = document.body.innerText || "";
         const textUrls = extractUrlsFromText(text, window.location.href);
         textUrls.forEach(url => {
             const lowerUrl = url.toLowerCase();
-            const isMedia = isMediaUrl(url);
-            const isCloud = isCloudUrl(url);
-
-            if (isMedia) {
-                if (!shouldFilterMedia(url, null)) {
-                    mediaLinks.add(url);
-                    const interesting = isInterestingMedia(url, null);
-                    if (!mediaLinksMetadata.has(url) || interesting) {
-                        mediaLinksMetadata.set(url, interesting);
-                    }
-                    const isVideoUrl = videoExtensions.some(ext => lowerUrl.includes(ext)) || lowerUrl.includes("bunkr") || lowerUrl.includes("bunkrr");
-                    if (isVideoUrl) {
-                        cloudLinks.add(url);
-                    }
-                }
-            } else if (isCloud) {
+            if (isCloudUrl(url)) {
                 cloudLinks.add(url);
+                return;
+            }
+
+            const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lowerUrl);
+            if (!hasMediaExt && !isMediaUrl(url)) return;
+
+            let score = 80; // default medium score for plain text urls
+            if (videoExtensions.some(ext => lowerUrl.includes(ext))) {
+                score += 200;
+            }
+            const qualityKeywords = ['1080p', '720p', '4k', '2160p', '1440p', '1080', '720', '1920', '3840', '2560', 'hd', 'full', 'source', 'original'];
+            if (qualityKeywords.some(kw => lowerUrl.includes(kw))) {
+                score += 100;
+            }
+
+            const blacklistKeywords = ['avatar', 'sprite', 'logo', 'banner', 'button', 'icon', 'emoji', 'font', 'loading', 'spacer'];
+            if (blacklistKeywords.some(kw => lowerUrl.includes(kw))) {
+                score -= 400;
+            }
+
+            if (score >= 50) {
+                mediaCandidates.push({ url, score });
             }
         });
 
+        // Dedup by URL, keeping the highest score
+        const uniqueCandidates = new Map<string, number>();
+        for (const cand of mediaCandidates) {
+            const existing = uniqueCandidates.get(cand.url);
+            if (existing === undefined || cand.score > existing) {
+                uniqueCandidates.set(cand.url, cand.score);
+            }
+        }
+
+        // Convert to sorted list based on score
+        const sortedMedia = Array.from(uniqueCandidates.entries())
+            .map(([url, score]) => ({
+                url: url,
+                isInteresting: score >= 200 // score threshold for showing as pre-selected/interesting
+            }))
+            .sort((a, b) => {
+                const aScore = uniqueCandidates.get(a.url) || 0;
+                const bScore = uniqueCandidates.get(b.url) || 0;
+                return bScore - aScore;
+            });
+
         return {
             cloudLinks: Array.from(cloudLinks),
-            mediaLinks: Array.from(mediaLinks).map(url => ({
-                url: url,
-                isInteresting: mediaLinksMetadata.get(url) ?? true
-            }))
+            mediaLinks: sortedMedia
         };
     }
 

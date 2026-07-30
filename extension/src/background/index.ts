@@ -1,6 +1,7 @@
 import { ext } from '../common/api';
 import {
   installSniffer, getStreams, getStream, removeStream, clearTab, touch,
+  updatePanelOpenTime, setHasActiveDownloads,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
 import { serverGet, serverPost, SERVER_ENDPOINTS } from './server';
@@ -35,7 +36,7 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
   const newQualityHeight = parseQualityHeight(newQualityStr);
 
   // Check if there is already an active job for the same stream URL, or same pageURL
-  for (const job of activeJobs) {
+  for (const job of activeJobs as any[]) {
     const isSameStream = job.stream_url === s.url || job.page_url === s.pageUrl;
     if (isSameStream) {
       const existingQualityHeight = parseQualityHeight(job.quality);
@@ -84,6 +85,7 @@ async function handle(msg: BgMessage, sender: any) {
   const tabId = (msg as any).tabId ?? sender?.tab?.id;
   switch (msg?.kind) {
     case 'streams:get': {
+      updatePanelOpenTime();
       const streams = getStreams(tabId);
       for (const s of streams) enrichIfNeeded(s); // lazy probe while popup is open
       return { streams };
@@ -169,6 +171,11 @@ async function observeCompletedJobs() {
   try {
     const res = await serverGet('/api/jobs');
     const jobs = Object.values(res?.jobs || {});
+    
+    // Track active downloads state in the sniffer
+    const activeStreamJobs = jobs.filter((j: any) => j.type === 'stream' && (j.status === 'running' || j.status === 'queued'));
+    setHasActiveDownloads(activeStreamJobs.length > 0);
+
     for (const job of jobs as any[]) {
       if (job.status === 'completed') {
         if (job.type === 'stream' && job.save_path) {
@@ -177,7 +184,15 @@ async function observeCompletedJobs() {
             downloadedJobIds.add(job.id);
             await saveDownloadedJobs();
             
-            const filename = job.save_path.replace(/\\/g, '/').split('/').pop() || `${job.id}.mp4`;
+            let filename = job.save_path.replace(/\\/g, '/').split('/').pop() || `${job.id}.mp4`;
+            // Strip pzstream_<id>_ prefix
+            const prefixMatch = /^pzstream_[a-zA-Z0-9-]+_(.*)$/.exec(filename);
+            if (prefixMatch) {
+              filename = prefixMatch[1];
+            }
+            // Strip [id] brackets
+            filename = filename.replace(/\s*\[[a-zA-Z0-9_-]+\](?=\.[^.]+$)/, '');
+
             const activeBase = SERVER_ENDPOINTS[0] || 'http://127.0.0.1:5171';
             const downloadUrl = `${activeBase}/api/download-file?path=${encodeURIComponent(job.save_path)}`;
             console.log(`Triggering browser download for completed stream job ${job.id}: ${downloadUrl}`);
@@ -209,25 +224,31 @@ setInterval(observeCompletedJobs, 2000);
 
 
 async function openFolderWithFallback(folderPath: string) {
+  console.log("[Background] openFolderWithFallback target path:", folderPath);
   // Attempt 1: Firefox Native Messaging
   try {
+    console.log("[Background] Trying Native Messaging to com.pythonzipper.flmgr...");
     const response = await (ext as any).runtime.sendNativeMessage(
       "com.pythonzipper.flmgr",
       { folderPath }
     );
-    console.log("Explorer opened via Native Host:", response);
-    return { ok: true, method: 'native' };
+    console.log("[Background] Explorer opened via Native Host, response:", response);
+    return { ok: true, method: 'native', response };
   } catch (err: any) {
-    console.warn("Native Messaging failed, trying local Python server:", err.message);
+    console.warn("[Background] Native Messaging failed:", err.message || err);
   }
 
   // Attempt 2: Local Python Server Fallback
   try {
+    console.log("[Background] Falling back to Local Python Server API /api/open-downloaded...");
     const res = await serverPost('/api/open-downloaded', { path: folderPath });
-    if (!res?.ok) throw new Error(`Server response not ok`);
-    return { ok: true, method: 'server' };
-  } catch (err) {
-    console.error("Both methods failed:", err);
-    return { ok: false, error: String(err) };
+    console.log("[Background] Local Python Server response:", res);
+    if (!res?.ok && res?.status !== 'opened file' && res?.status !== 'opened folder') {
+      throw new Error(`Server response not ok: ${JSON.stringify(res)}`);
+    }
+    return { ok: true, method: 'server', response: res };
+  } catch (err: any) {
+    console.error("[Background] Both opening methods failed:", err);
+    return { ok: false, error: String(err.message || err) };
   }
 }

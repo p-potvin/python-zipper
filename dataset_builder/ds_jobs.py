@@ -99,6 +99,7 @@ def complete_job(job_id, archives=None, rclone_complete=False):
     update_job(
         job_id,
         status="completed",
+        progress=100,
         archives=list(archives or []),
         rclone_complete=bool(rclone_complete),
     )

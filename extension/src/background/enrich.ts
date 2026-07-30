@@ -66,7 +66,12 @@ export async function enrichStream(s: DetectedStream): Promise<void> {
     if (meta) {
       s.meta = meta;
       s.probed = true;
-      if (meta.ok && meta.title) s.title = meta.title;
+      if (meta.ok && meta.title) {
+        const lowerTitle = (s.title || '').toLowerCase().trim();
+        if (!lowerTitle || lowerTitle === 'stream' || lowerTitle === 'video' || lowerTitle === 'audio') {
+          s.title = meta.title;
+        }
+      }
     }
   }
   touch(s.tabId);

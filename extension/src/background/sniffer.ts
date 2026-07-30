@@ -26,6 +26,21 @@ const SKIP_HEADERS = new Set([
 ]);
 const MIN_VIDEO_BYTES = 1024 * 1024;
 
+let lastPanelOpenTime = Date.now();
+let hasActiveDownloads = false;
+
+export function updatePanelOpenTime(): void {
+  lastPanelOpenTime = Date.now();
+}
+
+export function setHasActiveDownloads(active: boolean): void {
+  hasActiveDownloads = active;
+}
+
+export function isSnifferIdle(): boolean {
+  return (Date.now() - lastPanelOpenTime > 120000) && !hasActiveDownloads;
+}
+
 // ---- Identity / dedup -------------------------------------------------------
 
 // Two URLs are "the same stream" when their origin + path match; query strings
@@ -43,12 +58,18 @@ export function isSegmentOrChunkUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const path = u.pathname.toLowerCase();
+
+    // Discard variant playlists and llhls streams
+    if (/(chunklist|llhls|variant-list|stream-inf)/i.test(path) || /(chunklist|llhls|variant-list|stream-inf)/i.test(u.search)) {
+      return true;
+    }
+
     // Discard common media segment extensions
     if (/\.(ts|m4s|mp4|aac|mp3|m4a|m4v|png|jpg|jpeg|webp|css|js)(?:\?|$)/i.test(path)) {
       return true;
     }
     // Discard HLS chunks, segments, fragments, parts, keys
-    const chunkKeywords = /(chunk|segment|fragment|frag|part|sec|index|media|track|layer|level|variant|quality|hls-)[0-9]/i;
+    const chunkKeywords = /(chunk|segment|fragment|frag|part|sec|index|media|track|layer|level|variant|quality|hls-)[_.-]?[0-9]/i;
     if (chunkKeywords.test(path) || chunkKeywords.test(u.search)) {
       return true;
     }
@@ -136,6 +157,7 @@ async function register(
   headers: Record<string, string>,
   contentType?: string,
 ): Promise<void> {
+  if (isSnifferIdle()) return;
   if (tabId < 0) return;
   const key = streamKey(url);
   if (childKeys.get(tabId)?.has(key)) return; // folded under a master
@@ -221,6 +243,7 @@ export function installSniffer(): void {
   if (!IS_FIREFOX) { reqSpec.push('extraHeaders'); resSpec.push('extraHeaders'); }
 
   ext.webRequest.onSendHeaders.addListener((d: any) => {
+    if (isSnifferIdle()) return;
     if (isSegmentOrChunkUrl(d.url)) return;
     const headers = pickHeaders(d.requestHeaders);
     pending.set(d.requestId, { tabId: d.tabId, headers });
@@ -230,6 +253,7 @@ export function installSniffer(): void {
   }, filter, reqSpec);
 
   ext.webRequest.onHeadersReceived.addListener((d: any) => {
+    if (isSnifferIdle()) return;
     if (isSegmentOrChunkUrl(d.url)) return;
     const rh = d.responseHeaders || [];
     const ct = rh.find((h: any) => h.name?.toLowerCase() === 'content-type')?.value || '';

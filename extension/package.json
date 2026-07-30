@@ -1,6 +1,6 @@
 {
   "name": "vaultwares-zipper-extension",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
   "description": "Firefox/Chrome MV3 extension: Live-stream downloader running along a local companion python server",

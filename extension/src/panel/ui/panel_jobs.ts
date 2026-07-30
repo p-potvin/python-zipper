@@ -179,18 +179,48 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
         } else if (openStreamBtn) {
             e.preventDefault();
             openStreamBtn.style.opacity = '0.5';
-            await Api.send("openDownloaded", "POST", { path: openStreamBtn.getAttribute('data-path') });
+            const path = openStreamBtn.getAttribute('data-path');
+            console.log("[Jobs] Opening stream job path:", path);
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (extAPI && extAPI.runtime) {
+                try {
+                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path });
+                    console.log("[Jobs] Native open stream response:", resp);
+                } catch (err) {
+                    console.warn("[Jobs] Native messaging open failed, calling server direct:", err);
+                    await Api.send("openDownloaded", "POST", { path });
+                }
+            } else {
+                await Api.send("openDownloaded", "POST", { path });
+            }
             openStreamBtn.style.opacity = '1';
         } else if (viewLink) {
             e.preventDefault();
             const filename = viewLink.getAttribute('data-file');
             const jobOrigin = viewLink.getAttribute('data-origin') || Api.origin;
             viewLink.style.opacity = '0.5';
+            console.log("[Jobs] Viewing link file:", filename);
             const response = await Api.send("openDownloaded", "POST", { filename });
             viewLink.style.opacity = '1';
             let success = false, filePath = null;
             if (response.ok) {
-                try { const data = await response.json(); if (data.status === 'opened file') success = true; if (data.path) filePath = data.path; } catch (_) { }
+                try {
+                    const data = await response.json();
+                    if (data.status === 'opened file') success = true;
+                    if (data.path) filePath = data.path;
+                } catch (_) { }
+            }
+            console.log("[Jobs] Server response for viewLink:", { success, filePath });
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (filePath && extAPI && extAPI.runtime) {
+                try {
+                    console.log("[Jobs] Requesting background open for file path:", filePath);
+                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: filePath });
+                    console.log("[Jobs] Background open response:", resp);
+                    success = resp?.ok;
+                } catch (err) {
+                    console.error("[Jobs] Background open failed:", err);
+                }
             }
             if (!success) {
                 if (filePath) window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
@@ -200,23 +230,61 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
             e.preventDefault();
             const filename = openFileBtn.getAttribute('data-file');
             openFileBtn.style.opacity = '0.5';
+            console.log("[Jobs] Opening file:", filename);
             const response = await Api.send("openDownloaded", "POST", { filename });
             openFileBtn.style.opacity = '1';
             let success = false, filePath = null;
             if (response.ok) {
-                try { const data = await response.json(); if (data.status === 'opened file') success = true; if (data.path) filePath = data.path; } catch (_) { }
+                try {
+                    const data = await response.json();
+                    if (data.status === 'opened file') success = true;
+                    if (data.path) filePath = data.path;
+                } catch (_) { }
             }
-            if (!success && filePath) window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
+            console.log("[Jobs] Server response for openFile:", { success, filePath });
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (filePath && extAPI && extAPI.runtime) {
+                try {
+                    console.log("[Jobs] Requesting background open for file path:", filePath);
+                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: filePath });
+                    console.log("[Jobs] Background open response:", resp);
+                    success = resp?.ok;
+                } catch (err) {
+                    console.error("[Jobs] Background open failed:", err);
+                }
+            }
+            if (!success && filePath) {
+                window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
+            }
         } else if (openFolderBtn) {
             e.preventDefault();
             openFolderBtn.style.opacity = '0.5';
+            console.log("[Jobs] Opening folder");
             const response = await Api.send("openDownloaded", "POST", { folder: true });
             openFolderBtn.style.opacity = '1';
             let success = false, folderPath = null;
             if (response.ok) {
-                try { const data = await response.json(); if (data.status === 'opened folder') success = true; if (data.path) folderPath = data.path; } catch (_) { }
+                try {
+                    const data = await response.json();
+                    if (data.status === 'opened folder') success = true;
+                    if (data.path) folderPath = data.path;
+                } catch (_) { }
             }
-            if (!success && folderPath) window.open('file:///' + folderPath.replace(/\\/g, '/'), '_blank');
+            console.log("[Jobs] Server response for openFolder:", { success, folderPath });
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (folderPath && extAPI && extAPI.runtime) {
+                try {
+                    console.log("[Jobs] Requesting background open for folder path:", folderPath);
+                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: folderPath });
+                    console.log("[Jobs] Background open response:", resp);
+                    success = resp?.ok;
+                } catch (err) {
+                    console.error("[Jobs] Background open failed:", err);
+                }
+            }
+            if (!success && folderPath) {
+                window.open('file:///' + folderPath.replace(/\\/g, '/'), '_blank');
+            }
         }
     };
 }
