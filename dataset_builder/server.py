@@ -140,7 +140,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
         p = os.path.normpath(os.path.abspath(path))
         try:
             if select:
-                subprocess.Popen(['explorer', '/select,', p])
+                subprocess.Popen(['explorer', f'/select,{p}'])
             else:
                 os.startfile(p)  # type: ignore[attr-defined]  (Windows only)
         except Exception as e:

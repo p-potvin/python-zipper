@@ -195,7 +195,9 @@ function jobCard(job: StreamJob, s?: DetectedStream): string {
       </div>`;
   } else if (running) {
     const isPulse = pct === 0 ? 'pulse' : '';
-    const displayPct = pct === 0 ? 'starting…' : `${pct}%`;
+    const displayPct = pct === 0
+      ? (job.downloaded_bytes ? `${dl} (${speed || '—'})` : 'starting…')
+      : `${pct}%`;
     bottom = `
       <div class="prog"><div class="track"><div class="fill ${isPulse}" style="width:${pct || 5}%"></div></div><span class="pct">${displayPct}</span></div>
       <div class="controls"><span class="spring"></span><div class="dl stop"><button class="main" data-act="stop" data-job="${esc(job.id)}">${icon('stop', 16)}<span>Stop</span></button></div></div>`;

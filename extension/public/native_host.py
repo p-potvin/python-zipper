@@ -44,7 +44,7 @@ if __name__ == "__main__":
             else:
                 if os.path.isfile(path):
                     log("Path is a file. Launching explorer with /select,...")
-                    subprocess.Popen(['explorer', '/select,', path])
+                    subprocess.Popen(['explorer', f'/select,{path}'])
                 else:
                     log("Path is a directory. Launching explorer on directory...")
                     subprocess.Popen(['explorer', path])
