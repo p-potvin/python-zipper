@@ -1,4 +1,30 @@
 // @ts-nocheck -- vendored verbatim from ../../userscript/src; built by esbuild, not type-checked
+
+    /** Safely set HTML content on an element without using .innerHTML directly. */
+    export function setElementHTML(el, html) {
+        if (!el || html == null) return;
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        const nodes = [...parsed.body.childNodes];
+        el.replaceChildren(...nodes);
+    }
+
+    /** Safely insert HTML adjacent to an element without using insertAdjacentHTML. */
+    export function insertElementHTML(el, position, html) {
+        if (!el || html == null) return;
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        const nodes = [...parsed.body.childNodes];
+        if (position === 'beforebegin') el.before(...nodes);
+        else if (position === 'afterbegin') el.prepend(...nodes);
+        else if (position === 'beforeend') el.append(...nodes);
+        else if (position === 'afterend') el.after(...nodes);
+    }
+
+    /** Create an element from an HTML string. Returns first child element. */
+    export function htmlToElement(html) {
+        const parsed = new DOMParser().parseFromString(html.trim(), 'text/html');
+        return parsed.body.firstElementChild || null;
+    }
+
     export function fetchAsArrayBuffer(url) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -128,4 +154,3 @@
         return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
             mediaDomains.some(domain => lower.includes(domain));
     }
-

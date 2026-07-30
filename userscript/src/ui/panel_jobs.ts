@@ -113,6 +113,19 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
             }
             if (!success) {
                 if (filePath) {
+					chrome.runtime.sendNativeMessage(
+						"com.pythonzipper.flmgr",
+				    { folderPath: "C:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded" },
+				    (response) => {
+					if (chrome.runtime.lastError) {
+					  console.warn("Native Messaging failed, falling back to localhost:", chrome.runtime.lastError.message);
+					  triggerPythonFallback("C:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded");
+					} else {
+					  console.log("Explorer opened via Native Messaging:", response);
+					}
+				  }
+				);
+					
                     window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
                 } else {
                     window.open(`${jobOrigin}/downloaded/${encodeURIComponent(filename)}`, '_blank');

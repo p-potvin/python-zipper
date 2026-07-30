@@ -6,7 +6,7 @@
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     body {
-      margin: 0; width: 660px; max-height: 580px; overflow: hidden;
+      margin: 0; width: 530px; max-height: 460px; min-height: 380px; overflow: hidden;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       background: #0f0f10; color: #e6e6e8;
       display: flex; flex-direction: column;
@@ -75,6 +75,8 @@
     .prog { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
     .track { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
     .fill { height: 100%; background: #2563eb; transition: width .3s; }
+    .fill.pulse { background: repeating-linear-gradient(45deg, #2563eb, #2563eb 10px, #1d4ed8 10px, #1d4ed8 20px); background-size: 40px 40px; animation: fillPulse 1.2s linear infinite; }
+    @keyframes fillPulse { from { background-position: 0 0; } to { background-position: 40px 0; } }
     .pct { font-size: 10px; font-weight: 700; min-width: 34px; text-align: right; }
     .err { font-size: 10px; color: #f87171; margin-top: 4px; word-break: break-word; }
 

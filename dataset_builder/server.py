@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import threading
@@ -183,7 +183,31 @@ class ScraperHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self._handle_proxy():
             return
-        if self.path == '/api/upscaler/status':
+        if self.path.startswith('/api/download-file'):
+            from urllib.parse import parse_qs, urlparse
+            query = parse_qs(urlparse(self.path).query)
+            filepath = query.get('path', [''])[0]
+            if filepath:
+                if not os.path.isabs(filepath):
+                    filepath = os.path.normpath(os.path.join(DEST_DIR, filepath))
+                if os.path.exists(filepath):
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Length', str(os.path.getsize(filepath)))
+                    self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
+                    self.end_headers()
+                    with open(filepath, 'rb') as f:
+                        while True:
+                            chunk = f.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    return
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"File not found")
+            return
+        elif self.path == '/api/upscaler/status':
             self._handle_upscaler_status()
         elif self.path == '/api/jobs':
             self.send_response(200)
@@ -440,8 +464,9 @@ class ThreadedHTTPServer(ThreadingTCPServer):
     allow_reuse_address = True
 
 def run_server():
-    server = ThreadedHTTPServer(('0.0.0.0', PORT), ScraperHandler)
-    print(f"Dataset Builder Local HTTP Server running on http://0.0.0.0:{PORT} ...")
+    bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
+    server = ThreadedHTTPServer((bind_host, PORT), ScraperHandler)
+    print(f"Dataset Builder Local HTTP Server running on http://{bind_host}:{PORT} ...")
     server.serve_forever()
 
 if __name__ == '__main__':

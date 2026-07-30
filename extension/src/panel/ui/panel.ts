@@ -4,7 +4,7 @@ import { getZipperSetting, setZipperSetting, logToConsole, setLogToConsole } fro
 import { globalState } from '../utils/state';
 import { harvestLinks, runSmartGalleryZip } from '../utils/scraper';
 import { showBrowserNotification } from '../main';
-import { isCloudUrl, isMediaUrl, clientSideFallback, normalizeUrl, getElementUrl, fetchAsArrayBuffer, extractUrlsFromText } from '../utils/helpers';
+import { isCloudUrl, isMediaUrl, clientSideFallback, normalizeUrl, getElementUrl, fetchAsArrayBuffer, extractUrlsFromText, setElementHTML } from '../utils/helpers';
 import { resolveBestMediaUrl } from '../media/extractor';
 
 import { createHeader, createTabs, createImagesSection, createLinksSection, createSmartGallerySection, createDashboardSection, createDropOverlay, isHighlightEnabled } from './panel_sections';
@@ -16,12 +16,12 @@ export function initUI(_pal: any) {
     // --- 1. Fab Button ---
     const fab = document.createElement('div');
     fab.id = 'zipper-fab';
-    fab.innerHTML = `
+    setElementHTML(fab, `
         <svg viewBox="0 0 24 24">
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
         </svg>
         <div id='zipper-status-dot'></div>
-    `;
+    `);
     document.body.appendChild(fab);
     const savedFabRight = GM_getValue('zipper-fab-right', '');
     const savedFabBottom = GM_getValue('zipper-fab-bottom', '');
@@ -32,11 +32,11 @@ export function initUI(_pal: any) {
     const floatBtn = document.createElement('div');
     floatBtn.id = 'zipper-float-download-btn';
     floatBtn.title = 'Download this item';
-    floatBtn.innerHTML = `
+    setElementHTML(floatBtn, `
         <svg viewBox="0 0 24 24">
             <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
         </svg>
-    `;
+    `);
     document.body.appendChild(floatBtn);
 
     // --- 2. Main Sliding Panel ---

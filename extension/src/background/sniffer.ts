@@ -39,6 +39,40 @@ export function streamKey(url: string): string {
   }
 }
 
+export function isSegmentOrChunkUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.toLowerCase();
+    // Discard common media segment extensions
+    if (/\.(ts|m4s|mp4|aac|mp3|m4a|m4v|png|jpg|jpeg|webp|css|js)(?:\?|$)/i.test(path)) {
+      return true;
+    }
+    // Discard HLS chunks, segments, fragments, parts, keys
+    const chunkKeywords = /(chunk|segment|fragment|frag|part|sec|index|media|track|layer|level|variant|quality|hls-)[0-9]/i;
+    if (chunkKeywords.test(path) || chunkKeywords.test(u.search)) {
+      return true;
+    }
+    // Discard paths with segment index/number at the end
+    const endsWithDigits = /[\-_/]\d+\.m3u8$/i;
+    if (endsWithDigits.test(path)) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function cleanStreamTitle(title: string): string {
+  if (!title) return '';
+  let t = title.trim();
+  t = t.replace(/\s*[-|•·]\s*(pornxp|1porn|fullvideos|xvideos|xhamster|spankbang|pornhub|youtube|vimeo|redtube)[a-z0-9.]*/gi, '');
+  t = t.replace(/\s+[-|•·]\s+.*$/g, '');
+  t = t.replace(/(free porn video|watch online|download mp4)/gi, '');
+  t = t.replace(/[\s\-_|]+$/, '').replace(/^[\s\-_|]+/, '');
+  return t || 'stream';
+}
+
 // Some players fire a placeholder request (e.g. ?key=null) before the real,
 // keyed one. Such a URL must never overwrite a properly-authed URL for the same
 // stream, or the download 401s.
@@ -129,7 +163,7 @@ async function register(
   try {
     const t = await ext.tabs.get(tabId);
     pageUrl = t?.url ?? '';
-    title = t?.title ?? '';
+    title = cleanStreamTitle(t?.title ?? '');
   } catch { /* tab gone */ }
 
   const s: DetectedStream = {
@@ -187,6 +221,7 @@ export function installSniffer(): void {
   if (!IS_FIREFOX) { reqSpec.push('extraHeaders'); resSpec.push('extraHeaders'); }
 
   ext.webRequest.onSendHeaders.addListener((d: any) => {
+    if (isSegmentOrChunkUrl(d.url)) return;
     const headers = pickHeaders(d.requestHeaders);
     pending.set(d.requestId, { tabId: d.tabId, headers });
     for (const p of URL_PATTERNS) {
@@ -195,6 +230,7 @@ export function installSniffer(): void {
   }, filter, reqSpec);
 
   ext.webRequest.onHeadersReceived.addListener((d: any) => {
+    if (isSegmentOrChunkUrl(d.url)) return;
     const rh = d.responseHeaders || [];
     const ct = rh.find((h: any) => h.name?.toLowerCase() === 'content-type')?.value || '';
     for (const c of CT_PATTERNS) {

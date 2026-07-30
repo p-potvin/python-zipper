@@ -1,9 +1,9 @@
 {
   "name": "vaultwares-zipper-extension",
-  "version": "1.4.0",
+  "version": "1.8.0",
   "private": true,
   "type": "module",
-  "description": "Firefox-first (Chrome-compatible) MV3 extension: VDH-style live-stream detector feeding the local VaultWares pipeline.",
+  "description": "Firefox/Chrome MV3 extension: Live-stream downloader running along a local companion python server",
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",

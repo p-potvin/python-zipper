@@ -1,5 +1,6 @@
 // @ts-nocheck -- vendored verbatim from ../../userscript/src; built by esbuild, not type-checked
 import { getZipperSetting } from '../utils/config';
+import { setElementHTML } from '../utils/helpers';
 
 export function isHighlightEnabled() {
     return getZipperSetting('highlight-enabled', 'true') !== 'false';
@@ -9,7 +10,7 @@ export function createImagesSection() {
     const section = document.createElement('div');
     section.className = 'zipper-panel-section active';
     section.id = 'section-images';
-    section.innerHTML = `
+    setElementHTML(section, `
         <div class="zipper-select-all-group" style="display: flex; justify-content: space-between; align-items: center;">
             <label><input type="checkbox" id="zipper-media-select-all" checked> Media Links (<span id="zipper-media-count">0</span>)</label>
             <input type="text" id="zipper-selector" class="zipper-input" placeholder="CSS Selector..." style="width: 120px; box-sizing: border-box; height: 20px; padding: 0 4px; font-size: 10px;">
@@ -22,16 +23,20 @@ export function createImagesSection() {
             </svg>
             <span>Send Selected Media</span>
         </button>
-    `;
+    `);
+    return section;
+}
+
+function makeSection(className: string, id: string, html: string): HTMLElement {
+    const section = document.createElement('div');
+    section.className = className;
+    section.id = id;
+    setElementHTML(section, html);
     return section;
 }
 
 export function createLinksSection() {
-    const section = document.createElement('div');
-    section.className = 'zipper-panel-section';
-    section.id = 'section-links';
-    section.style.display = 'none';
-    section.innerHTML = `
+    const section = makeSection('zipper-panel-section', 'section-links', `
         <div class="zipper-select-all-group">
             <label><input type="checkbox" id="zipper-cloud-select-all" checked> Cloud Links (<span id="zipper-cloud-count">0</span>)</label>
         </div>
@@ -46,16 +51,13 @@ export function createLinksSection() {
             </svg>
             <span>Send Selected to Cloud</span>
         </button>
-    `;
+    `);
+    section.style.display = 'none';
     return section;
 }
 
 export function createSmartGallerySection() {
-    const section = document.createElement('div');
-    section.className = 'zipper-panel-section';
-    section.id = 'section-smart-gallery';
-    section.style.display = 'none';
-    section.innerHTML = `
+    const section = makeSection('zipper-panel-section', 'section-smart-gallery', `
         <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 4px;">
             <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
                 <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Gallery Container Selector</label>
@@ -65,16 +67,13 @@ export function createSmartGallerySection() {
                 Smart Gallery Zip
             </button>
         </div>
-    `;
+    `);
+    section.style.display = 'none';
     return section;
 }
 
 export function createDashboardSection() {
-    const section = document.createElement('div');
-    section.className = 'zipper-panel-section';
-    section.id = 'section-dashboard';
-    section.style.display = 'none';
-    section.innerHTML = `
+    const section = makeSection('zipper-panel-section', 'section-dashboard', `
         <div class="zipper-select-all-group">
             <label>Active Pipeline Jobs</label>
             <button id="zipper-refresh-jobs" class="zipper-btn" style="padding: 2px 6px; font-size: 10px;">Refresh</button>
@@ -82,14 +81,15 @@ export function createDashboardSection() {
         <div id="zipper-jobs-list" class="zipper-link-list" style="max-height: 250px; flex: 1;">
             <div style="font-size: 11px; padding: 10px; text-align: center; color: var(--zipper-text-muted);">No active or recent jobs found.</div>
         </div>
-    `;
+    `);
+    section.style.display = 'none';
     return section;
 }
 
 export function createHeader() {
     const header = document.createElement('div');
     header.id = 'zipper-header';
-    header.innerHTML = `
+    setElementHTML(header, `
         <div style="display: flex; align-items: center; gap: 8px;">
             <h3 style="font-size: 13px; margin-right: 4px;">VaultWares Zipper</h3>
             <div style="display: flex; align-items: center; gap: 6px;">
@@ -116,30 +116,30 @@ export function createHeader() {
             <button id="zipper-abort-btn">ABORT</button>
             <button id="zipper-close-btn">&times;</button>
         </div>
-    `;
+    `);
     return header;
 }
 
 export function createTabs() {
     const tabs = document.createElement('div');
     tabs.className = 'zipper-tabs';
-    tabs.innerHTML = `
+    setElementHTML(tabs, `
         <button class="zipper-tab-btn active" data-tab="images">Media</button>
         <button class="zipper-tab-btn" data-tab="links">Cloud</button>
         <button class="zipper-tab-btn" data-tab="smart-gallery">Smart</button>
         <button class="zipper-tab-btn" data-tab="dashboard">Jobs</button>
-    `;
+    `);
     return tabs;
 }
 
 export function createDropOverlay() {
     const overlay = document.createElement('div');
     overlay.id = 'zipper-drop-overlay';
-    overlay.innerHTML = `
+    setElementHTML(overlay, `
         <svg viewBox="0 0 24 24">
             <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
         </svg>
         <div style="font-weight: bold; font-size: 14px;">Drop links to queue</div>
-    `;
+    `);
     return overlay;
 }

@@ -23,7 +23,13 @@ function icon(name: string, size = 18): string {
 
 // ---- helpers ----------------------------------------------------------------
 function esc(s: any): string {
-  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&', '<': '<', '>': '>', '"': '"' }[c] as string));
+}
+function safeHTML(container: HTMLElement, html: string): void {
+  if (!html) { container.replaceChildren(); return; }
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  const nodes = [...parsed.body.childNodes];
+  container.replaceChildren(...nodes);
 }
 function fmtBytes(n?: number | null): string {
   if (!n || n <= 0) return '';
@@ -107,9 +113,9 @@ async function openLocal(path: string, isFile: boolean) {
 
 // ---- rendering --------------------------------------------------------------
 function emptyState() {
-  cardsEl.innerHTML =
+  safeHTML(cardsEl,
     `<div class="empty">${icon('film', 34)}<div>No streams detected on this tab.</div>` +
-    `<div style="margin-top:6px;font-size:11px;">Play the video, then hit <b>refresh</b> or <b>No video?</b></div></div>`;
+    `<div style="margin-top:6px;font-size:11px;">Play the video, then hit <b>refresh</b> or <b>No video?</b></div></div>`);
 }
 
 function detectedCard(s: DetectedStream): string {
@@ -188,8 +194,10 @@ function jobCard(job: StreamJob, s?: DetectedStream): string {
         <button class="cancel" data-act="stop" data-job="${esc(job.id)}">Cancel</button>
       </div>`;
   } else if (running) {
+    const isPulse = pct === 0 ? 'pulse' : '';
+    const displayPct = pct === 0 ? 'starting…' : `${pct}%`;
     bottom = `
-      <div class="prog"><div class="track"><div class="fill" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>
+      <div class="prog"><div class="track"><div class="fill ${isPulse}" style="width:${pct || 5}%"></div></div><span class="pct">${displayPct}</span></div>
       <div class="controls"><span class="spring"></span><div class="dl stop"><button class="main" data-act="stop" data-job="${esc(job.id)}">${icon('stop', 16)}<span>Stop</span></button></div></div>`;
   } else if (job.status === 'completed') {
     bottom = `
@@ -229,7 +237,7 @@ function render(streams: DetectedStream[], jobs: Record<string, StreamJob>) {
     if (!byStreamJobId.has(j.id)) html += jobCard(j);
   }
 
-  cardsEl.innerHTML = html || '';
+  safeHTML(cardsEl, html || '');
   if (!html) emptyState();
 }
 
@@ -303,9 +311,9 @@ cardsEl.addEventListener('click', async (e) => {
     const s = key;
     const menu = document.createElement('div');
     menu.className = 'menu';
-    menu.innerHTML =
+    safeHTML(menu,
       `<button data-m="copy">${icon('copy', 14)} Copy stream URL</button>` +
-      `<button data-m="open">${icon('external', 14)} Open in new tab</button>`;
+      `<button data-m="open">${icon('external', 14)} Open in new tab</button>`);
     const r = btn.getBoundingClientRect();
     menu.style.top = `${r.bottom + 4}px`;
     menu.style.right = `${window.innerWidth - r.right}px`;
@@ -329,11 +337,11 @@ document.addEventListener('click', (e) => {
 
 // ---- toolbar ----------------------------------------------------------------
 const $ = (id: string) => document.getElementById(id)!;
-$('tb-gear').innerHTML = icon('gear', 18);
-$('tb-refresh').innerHTML = icon('refresh', 18);
-$('tb-folder').innerHTML = icon('folder', 18);
-$('tb-clear').innerHTML = icon('trash', 18);
-$('tb-help').innerHTML = icon('help', 18);
+safeHTML($('tb-gear'), icon('gear', 18));
+safeHTML($('tb-refresh'), icon('refresh', 18));
+safeHTML($('tb-folder'), icon('folder', 18));
+safeHTML($('tb-clear'), icon('trash', 18));
+safeHTML($('tb-help'), icon('help', 18));
 
 let openPop: HTMLElement | null = null;
 function closePop() { openPop?.remove(); openPop = null; }
@@ -341,7 +349,7 @@ function showPop(anchor: HTMLElement, html: string): HTMLElement {
   closePop();
   const pop = document.createElement('div');
   pop.className = 'pop';
-  pop.innerHTML = html;
+  safeHTML(pop, html);
   document.body.appendChild(pop);
   const r = anchor.getBoundingClientRect();
   const left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8));

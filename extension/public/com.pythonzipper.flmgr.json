@@ -1,0 +1,7 @@
+{
+  "name": "com.pythonzipper.flmgr",
+  "description": "Native Host to open Explorer",
+  "path": "C:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\extension\\public\\native_host.bat",
+  "type": "stdio",
+  "allowed_extensions": ["zipper-vdh@vaultwares"]
+}
