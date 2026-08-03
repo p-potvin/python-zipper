@@ -412,32 +412,40 @@ $('tb-gear').addEventListener('click', async () => {
 
   const pop = showPop($('tb-gear'),
     `<h4>Settings</h4>
-     <div class="kv"><span>Server</span><b><span class="dotc" style="background:${dot}"></span> ${serverOnline ? 'online' : 'offline'}</b></div>
-     <div class="kv"><span>Endpoint</span><b>127.0.0.1:5171</b></div>
-     <div class="kv"><span>Version</span><b>${ext.runtime.getManifest().version}</b></div>
-     <div class="kv"><span>Saves to</span><b>.downloaded/streams</b></div>
+     <div style="display:flex;gap:16px;">
+       <div class="kv" style="flex:1;margin:0;"><span>Server</span><b><span class="dotc" style="background:${dot}"></span> ${serverOnline ? 'online' : 'offline'}</b></div>
+       <div class="kv" style="flex:1;margin:0;"><span>Endpoint</span><b>127.0.0.1:5171</b></div>
+     </div>
+     <div style="display:flex;gap:16px;margin-top:4px;">
+       <div class="kv" style="flex:1;margin:0;"><span>Version</span><b>${ext.runtime.getManifest().version}</b></div>
+       <div class="kv" style="flex:1;margin:0;"><span>Saves to</span><b>.downloaded/streams</b></div>
+     </div>
      
-     <div class="kv" style="margin-top:8px;">
-       <span>Cloud Handoff (rclone)</span>
-       <input type="checkbox" id="cfg-rclone" ${rcloneEnabled ? 'checked' : ''} style="cursor:pointer;" />
+     <div style="display:flex;gap:16px;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">
+       <div class="kv" style="flex:1;margin:0;align-items:center;">
+         <span>Cloud Handoff (rclone)</span>
+         <input type="checkbox" id="cfg-rclone" ${rcloneEnabled ? 'checked' : ''} style="cursor:pointer;" />
+       </div>
+       <div class="kv" style="flex:1;margin:0;align-items:center;">
+         <span>DOM Highlights</span>
+         <input type="checkbox" id="cfg-highlights" ${highlightEnabled ? 'checked' : ''} style="cursor:pointer;" />
+       </div>
      </div>
-     <div class="kv">
-       <span>DOM Highlights</span>
-       <input type="checkbox" id="cfg-highlights" ${highlightEnabled ? 'checked' : ''} style="cursor:pointer;" />
-     </div>
-     <div class="kv">
-       <span>AI Upscaling (4x)</span>
-       <input type="checkbox" id="cfg-upscale" ${upscaleEnabled ? 'checked' : ''} style="cursor:pointer;" />
-     </div>
-     <div class="kv" style="align-items:center;">
-       <span>Upscale Model</span>
-       <select id="cfg-upscale-model" style="background:#2a2a2e;color:#e6e6e8;border:1px solid #3f3f46;border-radius:4px;padding:2px 4px;font-size:10px;cursor:pointer;">
-         <option value="4xNomos8k_atd" ${upscaleModel === '4xNomos8k_atd' ? 'selected' : ''}>Nomos8k</option>
-         <option value="pillow-lanczos" ${upscaleModel === 'pillow-lanczos' ? 'selected' : ''}>Pillow 4x</option>
-       </select>
+     <div style="display:flex;gap:16px;margin-top:4px;">
+       <div class="kv" style="flex:1;margin:0;align-items:center;">
+         <span>AI Upscaling (4x)</span>
+         <input type="checkbox" id="cfg-upscale" ${upscaleEnabled ? 'checked' : ''} style="cursor:pointer;" />
+       </div>
+       <div class="kv" style="flex:1;margin:0;align-items:center;">
+         <span>Upscale Model</span>
+         <select id="cfg-upscale-model" style="background:#2a2a2e;color:#e6e6e8;border:1px solid #3f3f46;border-radius:4px;padding:2px 4px;font-size:10px;cursor:pointer;">
+           <option value="4xNomos8k_atd" ${upscaleModel === '4xNomos8k_atd' ? 'selected' : ''}>Nomos8k</option>
+           <option value="pillow-lanczos" ${upscaleModel === 'pillow-lanczos' ? 'selected' : ''}>Pillow 4x</option>
+         </select>
+       </div>
      </div>
 
-     <label style="display:block;margin-top:10px;color:#a1a1aa;">Download proxy (yt-dlp)</label>
+     <label style="display:block;margin-top:10px;color:#a1a1aa;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">Download proxy (yt-dlp)</label>
      <div class="row" style="margin-top:4px;">
        <input id="cfg-proxy" type="text" placeholder="socks5h://10.64.0.1:1080" value="${proxy}"
          style="flex:1;background:#2a2a2e;border:1px solid #3f3f46;color:#e6e6e8;border-radius:7px;padding:6px 8px;font-size:11px;" />

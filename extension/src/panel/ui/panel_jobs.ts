@@ -92,6 +92,8 @@ function renderStreamJob(key, job) {
 function renderBatchJob(key, job, jobOrigin) {
     const color = statusColor(job.status);
     const percent = job.total_links > 0 ? Math.min(100, Math.round((job.processed_links / job.total_links) * 100)) : 0;
+    const running = job.status === 'running' || job.status === 'queued';
+    const finished = !running;
     return `
         <div class="zipper-job-item" style="border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.15); margin-bottom: 6px;">
             <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
@@ -112,8 +114,9 @@ function renderBatchJob(key, job, jobOrigin) {
                 <span>Processed: ${job.processed_links}/${job.total_links}</span>
                 <span>Media zipped: ${job.images_count}</span>
             </div>
-            ${job.status === 'completed' ? `
-                <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
+            <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
+                ${running ? `<button class="zipper-job-abort zipper-btn" data-job="${key}" style="padding:2px 8px;font-size:10px;height:20px;background:#f59e0b;border:none;box-shadow:none;color:#231400;cursor:pointer;">Abort</button>` : ''}
+                ${job.status === 'completed' ? `
                     ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
                         <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
                             <a href="#" data-file="${arch}" data-origin="${jobOrigin}" class="zipper-view-link zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
@@ -127,8 +130,9 @@ function renderBatchJob(key, job, jobOrigin) {
                     <button class="zipper-open-folder-btn zipper-btn" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
                         Open Folder
                     </button>
-                </div>
-            ` : ''}
+                ` : ''}
+                ${finished ? `<button class="zipper-job-delete zipper-btn" data-job="${key}" style="padding:2px 8px;font-size:10px;height:20px;background:#7f1d1d;border:none;box-shadow:none;color:#fecaca;cursor:pointer;">Delete</button>` : ''}
+            </div>
         </div>`;
 }
 
@@ -162,6 +166,8 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
     jobsListContainer.onclick = async (e) => {
         const stopBtn = e.target.closest('.zipper-stream-stop');
         const delBtn = e.target.closest('.zipper-stream-delete');
+        const abortJobBtn = e.target.closest('.zipper-job-abort');
+        const deleteJobBtn = e.target.closest('.zipper-job-delete');
         const openStreamBtn = e.target.closest('.zipper-stream-open');
         const openFileBtn = e.target.closest('.zipper-open-btn');
         const openFolderBtn = e.target.closest('.zipper-open-folder-btn');
@@ -172,10 +178,31 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
             stopBtn.disabled = true; stopBtn.textContent = 'Stopping…';
             await Api.send("streamStop", "POST", { job_id: stopBtn.getAttribute('data-job') });
             logToConsole('[Stream] Stop requested.', 'info');
+        } else if (abortJobBtn) {
+            e.preventDefault();
+            abortJobBtn.disabled = true; abortJobBtn.textContent = 'Aborting…';
+            const jobId = abortJobBtn.getAttribute('data-job');
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (extAPI && extAPI.runtime) {
+                await extAPI.runtime.sendMessage({ kind: 'jobs:stop', jobId });
+            } else {
+                await Api.send("streamStop", "POST", { job_id: jobId });
+            }
+            logToConsole(`[Job] Abort requested for ${jobId}.`, 'info');
         } else if (delBtn) {
             e.preventDefault();
             await Api.send("streamDelete", "POST", { job_id: delBtn.getAttribute('data-job') });
             delBtn.closest('.zipper-job-item')?.remove();
+        } else if (deleteJobBtn) {
+            e.preventDefault();
+            const jobId = deleteJobBtn.getAttribute('data-job');
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (extAPI && extAPI.runtime) {
+                await extAPI.runtime.sendMessage({ kind: 'jobs:delete', jobId });
+            } else {
+                await Api.send("streamDelete", "POST", { job_id: jobId });
+            }
+            deleteJobBtn.closest('.zipper-job-item')?.remove();
         } else if (openStreamBtn) {
             e.preventDefault();
             openStreamBtn.style.opacity = '0.5';

@@ -313,18 +313,7 @@ export function initUI(_pal: any) {
         panel.classList.remove('visible');
     };
 
-    header.querySelector('#zipper-abort-btn').onclick = async () => {
-        if (globalState.serverOnline) {
-            const response = await Api.send("abort", "POST");
-            if (response.ok) {
-                logToConsole("[Server] Cancellation command sent.", "info");
-            } else {
-                logToConsole("[Server] Failed to send abort command.", "error");
-            }
-        } else {
-            logToConsole("[Server] Server offline. Cannot abort remote task.", "warning");
-        }
-    };
+
 
     // --- Toggle Highlights ---
     const toggleHighlightsBtn = header.querySelector('#zipper-toggle-highlights-btn');

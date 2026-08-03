@@ -22,3 +22,7 @@ Native host invoked.
 Received message: {"folderPath": "c:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\.downloaded"}
 Normalized path: c:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded
 Path is a directory. Launching explorer on directory...
+Native host invoked.
+Received message: {"folderPath": "c:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\.downloaded"}
+Normalized path: c:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded
+Path is a directory. Launching explorer on directory...

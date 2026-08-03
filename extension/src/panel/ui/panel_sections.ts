@@ -113,7 +113,6 @@ export function createHeader() {
             </div>
         </div>
         <div style="display: flex; align-items: center;">
-            <button id="zipper-abort-btn">ABORT</button>
             <button id="zipper-close-btn">&times;</button>
         </div>
     `);

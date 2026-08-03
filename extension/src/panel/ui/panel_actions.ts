@@ -39,7 +39,7 @@ export async function handleScrape(
         const bestUrl = await resolveBestMediaUrl(u);
         resolvedUrls.push(bestUrl);
     }
-    const finalUrls = [...new Set(resolvedUrls.filter(Boolean))];
+    const finalUrls = [...new Set(resolvedUrls.filter(Boolean))].filter(u => u !== window.location.href);
 
     logToConsole(`[Media] Sending ${finalUrls.length} media files to local server...`, 'info');
 
@@ -90,33 +90,55 @@ export async function handleSend(
 ) {
     const sendBtn = linksSection.querySelector('#zipper-send-btn') as HTMLButtonElement;
     const checkedBoxes = Array.from(linksSection.querySelectorAll('.zipper-cloud-checkbox:checked'));
-    let links = checkedBoxes.map(cb => normalizeUrl(cb.getAttribute('data-url'), window.location.href)).filter(Boolean);
+    let urls = checkedBoxes.map(cb => normalizeUrl(cb.getAttribute('data-url'), window.location.href)).filter(Boolean);
 
     const rawText = linksInput.value.trim();
     if (rawText) {
         const manualLinks = extractUrlsFromText(rawText, window.location.href);
-        links = [...new Set([...links, ...manualLinks])];
+        urls = [...new Set([...urls, ...manualLinks])];
     }
 
-    if (links.length === 0) {
+    if (urls.length === 0) {
         logToConsole('[Upload] No cloud links selected or manually input.', 'error');
         return;
     }
 
     sendBtn.disabled = true;
-    logToConsole(`[Upload] Sending ${links.length} link(s) to pipeline...`, 'info');
+    logToConsole(`[Upload] Resolving quality and media links for ${urls.length} target(s)...`, 'info');
+
+    const resolvedUrls = [];
+    for (const u of urls) {
+        const bestUrl = await resolveBestMediaUrl(u);
+        resolvedUrls.push(bestUrl);
+    }
+    const finalUrls = [...new Set(resolvedUrls.filter(Boolean))].filter(u => u !== window.location.href);
+
+    if (finalUrls.length === 0) {
+        logToConsole('[Upload] No valid links remaining after resolution.', 'error');
+        sendBtn.disabled = false;
+        return;
+    }
+
+    logToConsole(`[Upload] Sending ${finalUrls.length} link(s) to pipeline...`, 'info');
+
+    const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
+    const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
+    const selectVal = (document.getElementById('zipper-upscale-model') as HTMLSelectElement).value;
+    const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
 
     if (globalState.serverOnline) {
         try {
             const response = await Api.sendWithFallback("download", "POST", {
                 url: window.location.href,
-                links: links,
+                links: finalUrls,
                 batch_size: 100,
+                upscale_enabled: upscaleEnabled,
+                upscale_model: upscaleModel,
                 rclone_enabled: getZipperSetting('rclone-enabled', 'false') === 'true'
             });
 
             if (response.ok) {
-                logToConsole(`[Server] Successfully forwarded links to pipeline!`, 'success');
+                logToConsole(`[Server] Successfully forwarded ${finalUrls.length} links to pipeline!`, 'success');
                 linksInput.value = '';
             } else {
                 throw new Error(`Server error: ${response.status}`);

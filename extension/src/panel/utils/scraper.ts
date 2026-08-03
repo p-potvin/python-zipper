@@ -4,7 +4,8 @@ import { getElementUrl, isMediaUrl, isCloudUrl, extractUrlsFromText, fetchAsArra
 import { highlightElement } from '../ui/highlighter';
 import { globalState } from './state';
 import { updateGalleryUI, removeGalleryUIWithDelay, scrollToBottomSmartForGallery } from '../ui/gallery';
-import { logToConsole } from './config';
+import { logToConsole, getZipperSetting } from './config';
+import { Api } from '../api';
 
 
     export function harvestLinks() {
@@ -196,6 +197,17 @@ import { logToConsole } from './config';
 
 
 
+    function localDownloadBlob(blob: Blob, filename: string) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
+
     export async function processAndZipGallery(urls: string[]) {
         const totalFiles = urls.length;
         if (totalFiles === 0) {
@@ -237,7 +249,7 @@ import { logToConsole } from './config';
                 try {
                     const zipBlob = await zipWriter.close();
                     const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
-                    saveAs(zipBlob, `${cleanPath}_batch_${batchIndex}.zip`);
+                    localDownloadBlob(zipBlob, `${cleanPath}_batch_${batchIndex}.zip`);
                     zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
                     batchIndex++;
                 } catch (error) {
@@ -251,7 +263,7 @@ import { logToConsole } from './config';
             try {
                 const zipBlob = await zipWriter.close();
                 const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
-                saveAs(zipBlob, `${cleanPath}_batch_${batchIndex}_final.zip`);
+                localDownloadBlob(zipBlob, `${cleanPath}_batch_${batchIndex}_final.zip`);
             } catch (error) {
                 console.error('Final segment cleanup container execution failed:', error);
             }
@@ -326,6 +338,30 @@ import { logToConsole } from './config';
 
         if (extractedUrls.length === 0) {
             logToConsole("[SmartZip] No media files found.", "error");
+            removeGalleryUIWithDelay();
+            return;
+        }
+
+        // Filter out the base document page URL
+        extractedUrls = extractedUrls.filter(u => u !== window.location.href);
+
+        const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
+        if (globalState.serverOnline) {
+            logToConsole(`[SmartZip] Forwarding ${extractedUrls.length} media files to local server...`, "info");
+            const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
+            const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
+            const selectVal = (document.getElementById('zipper-upscale-model') as HTMLSelectElement).value;
+            const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
+
+            await Api.sendWithFallback("download", "POST", {
+                url: window.location.href,
+                links: extractedUrls,
+                batch_size: 50,
+                upscale_enabled: upscaleEnabled,
+                upscale_model: upscaleModel,
+                rclone_enabled: rcloneEnabled
+            });
+            logToConsole("[SmartZip] Job successfully queued on local server.", "success");
             removeGalleryUIWithDelay();
             return;
         }

@@ -438,6 +438,27 @@ export function injectStyles(pal) {
                 border-radius: 3px;
             }
 
+            #zipper-panel label,
+            #zipper-panel span:not(.dotc) {
+                color: #e2e8f0 !important;
+            }
+
+            .zipper-select-all-group label,
+            .zipper-select-all-group label span {
+                color: #f1f5f9 !important;
+                font-weight: 600 !important;
+            }
+
+            .zipper-link-item,
+            .zipper-link-item span {
+                color: #cbd5e1 !important;
+            }
+
+            .zipper-link-item:hover,
+            .zipper-link-item:hover span {
+                color: #ffffff !important;
+            }
+
             #zipper-panel ::-webkit-scrollbar {
                 width: 6px;
                 height: 6px;
