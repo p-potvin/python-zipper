@@ -64,7 +64,7 @@ async def background_dual_uploader(current_run_files, output_dir,
     Appends links to logs/uploads_log.txt.
     """
     if not is_token_valid_fn():
-        print("[BG Dual Uploader] ✗ Keep2Share/FileBoom token is invalid or expired. Skipping dual uploader.")
+        print("[BG Dual Uploader] Keep2Share/FileBoom token is invalid or expired. Skipping dual uploader.")
         return
 
     all_files = [f for f in current_run_files if os.path.isfile(f)]

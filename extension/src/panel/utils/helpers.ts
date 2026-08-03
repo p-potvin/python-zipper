@@ -94,24 +94,26 @@
     }
 
     export const cloudDomains = [
-        "linkvertise.com", "rentry.co", "rentry.org", "pasterix.net", "mega.nz",
-        "real-debrid.com", "trw.lat", "direct-link.net", "fileboom.me", "keep2share.cc",
-        "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
-        "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
-        "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
-        "x.com", "twitter.com", "fanbox.cc", "bunkr.cr", "balbums.st", "1fichier.com", "gofile.io", "terabytez.org"
+		"fileboom.me", "keep2share.cc",
+        "k2s.cc", "rg.to", "tezfiles.com", "katfile.com", "1fichier.com", "gofile.io", "terabytez.org",
+		"rapidgator.net", "nitroflare.com", "mediafire.com", "4shared.com", "filefactory.com", "hitfile.net", 
+		"clicknupload.to", "depositfiles.com", "easybytez.com", "file.al", "filerio.in", "gigapeta.com", "dailymotion.com", "drive.google.com",
+		"turbobit.net", "hitfile.net", "uptobox.com", "ddl.to", "alphafile.cc", "drop.download", "filer.net", "wdupload.com"
     ];
 
     export const mediaDomains = [
         "bunkr.la", "bunkrr.su", "onlyfans.com", "fansly.com", "manyvids.com",
-        "coomer.st", "coomer.su", "pixiv.net", "subscribestar.com",
+        "coomer.st", "coomer.su", "subscribestar.com",
         "subscribestar.adult", "kemono.cr", "kemono.su", "bunkr.cr", "balbums.st",
         "linkvertise.com", "rentry.co", "rentry.org", "pasterix.net", "mega.nz",
-        "real-debrid.com", "trw.lat", "direct-link.net", "fileboom.me", "keep2share.cc",
+        "direct-link.net", "fileboom.me", "keep2share.cc",
         "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
         "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
-        "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
-        "x.com", "twitter.com", "fanbox.cc", "1fichier.com", "gofile.io", "terabytez.org"
+        "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", 
+        "1fichier.com", "terabytez.org",
+		"nitroflare.com", "mediafire.com", "4shared.com", "filefactory.com", "hitfile.net", 
+		"clicknupload.to", "depositfiles.com", "easybytez.com", "file.al", "filerio.in", "gigapeta.com", "dailymotion.com", "drive.google.com",
+		"turbobit.net", "hitfile.net", "uptobox.com", "ddl.to", "alphafile.cc", "drop.download", "filer.net", "wdupload.com"
     ];
 
     export function normalizeUrl(url, baseUrl = window.location.href) {

@@ -1,4 +1,4 @@
-﻿import { Api } from '../api';
+import { Api } from '../api';
 import { getZipperSetting, setZipperSetting, logToConsole, setLogToConsole } from '../utils/config';
 import { globalState } from '../utils/state';
 import { harvestLinks, runSmartGalleryZip } from '../utils/scraper';
@@ -100,7 +100,25 @@ export function initUI(_pal: any) {
 
     async function downloadSingleFile(url) {
         try {
-            logToConsole(`[Download] Starting download for: ${url.split('/').pop()}`, 'info');
+            const filename = url.split('/').pop().split('?')[0] || 'download';
+            logToConsole(`[Download] Starting download for: ${filename}`, 'info');
+
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (extAPI && extAPI.runtime) {
+                const resp = await extAPI.runtime.sendMessage({
+                    kind: 'downloads:start',
+                    url: url,
+                    filename: filename,
+                    saveAs: true
+                });
+                if (resp && resp.ok) {
+                    logToConsole(`[Extension] Download started via browser downloads API: ${filename}`, 'success');
+                    setFloatBtnStatus('dl-success');
+                    flashFab();
+                    return;
+                }
+            }
+
             if (globalState.serverOnline) {
                 const response = await Api.sendWithFallback("download", "POST", {
                     url: window.location.href,
@@ -116,7 +134,6 @@ export function initUI(_pal: any) {
             }
             const buffer = await fetchAsArrayBuffer(url);
             const blob = new Blob([buffer]);
-            const filename = url.split('/').pop().split('?')[0] || 'download';
             saveAs(blob, filename);
             logToConsole(`[Local] Downloaded: ${filename}`, 'success');
             setFloatBtnStatus('dl-success');

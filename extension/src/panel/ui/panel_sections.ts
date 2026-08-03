@@ -99,12 +99,12 @@ export function createHeader() {
                     </svg>
                 </button>
                 <div style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; vertical-align: middle;">
-                    <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" disabled style="margin:0;">
+                    <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" style="margin:0;">
                         <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
                             <path d="M8 1a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V2a1 1 0 0 1 1-1zm3.293 2.293a1 1 0 0 1 1.414 0l1.414 1.414a1 1 0 1 1-1.414 1.414L11.293 4.707a1 1 0 0 1 0-1.414zM14 8a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0V9a1 1 0 0 1 1-1zm-3.293 4.293a1 1 0 0 1 1.414 0l1.414 1.414a1 1 0 1 1-1.414 1.414L11.293 12.293a1 1 0 0 1 0-1.414zM8 14a1 1 0 0 1 1 1v2a1 1 0 1 1-2 0v-2a1 1 0 0 1 1-1zm-4.707-1.707a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zM1 8a1 1 0 0 1 1-1v2a1 1 0 1 1-2 0V8a1 1 0 0 1 1-1zm2.293-4.707a1 1 0 0 1 0 1.414L1.879 6.121A1 1 0 1 1 .464 4.707l1.414-1.414a1 1 0 0 1 1.414 0zM8 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/>
                         </svg>
                     </button>
-                    <select id="zipper-upscale-model" style="position: absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;" disabled>
+                    <select id="zipper-upscale-model" style="position: absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
                         <option value="off">Off</option>
                         <option value="4xNomos8k_atd">Nomos8k</option>
                         <option value="pillow-lanczos">Pillow 4x</option>

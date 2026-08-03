@@ -220,7 +220,7 @@ def build_ytdlp_header_args(headers):
     return args
 
 
-def download_via_ytdlp(url, dest_dir, headers=None):
+def download_via_ytdlp(url, dest_dir, headers=None, rclone_enabled=False):
     try:
         print(f"[Server] Detected HLS/m3u8/streaming content. Downloading via yt-dlp: {url}")
         import hashlib
@@ -239,7 +239,7 @@ def download_via_ytdlp(url, dest_dir, headers=None):
                 if f.startswith(f"video_{h}_"):
                     file_path = os.path.join(dest_dir, f)
                     print(f"[Server] Completed yt-dlp download: {f}")
-                    rclone_complete = handoff_to_rclone(file_path)
+                    rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
                     return {"filename": f, "rclone_complete": rclone_complete}
             print(f"[Server] yt-dlp completed but could not locate file starting with video_{h}_ in {dest_dir}")
         else:
@@ -251,20 +251,20 @@ def download_via_ytdlp(url, dest_dir, headers=None):
     return {}
 
 
-def download_direct_file(url, headers, dest_dir):
+def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
     lower = url.lower()
     is_stream = (
         ".m3u8" in lower or ".mpd" in lower or ".f4m" in lower
         or ".ism/" in lower or "/manifest" in lower or "hls" in lower or "dash" in lower
     )
     if is_stream:
-        return download_via_ytdlp(url, dest_dir, headers)
+        return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
     try:
         print(f"[Server] Starting direct download for: {url}")
         resp = requests.get(url, headers=headers, stream=True, timeout=120)
         if resp.status_code != 200:
             print(f"[Server] Direct download failed for {url}: status {resp.status_code}")
-            return download_via_ytdlp(url, dest_dir, headers)
+            return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
         content_disp = resp.headers.get('content-disposition', '')
         filename = ""
         if 'filename=' in content_disp:
@@ -283,16 +283,16 @@ def download_direct_file(url, headers, dest_dir):
                 if chunk:
                     f.write(chunk)
         print(f"[Server] Completed download: {filename}")
-        rclone_complete = handoff_to_rclone(file_path)
+        rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
         return {"filename": filename, "rclone_complete": rclone_complete}
     except Exception as e:
         print(f"[Server] Error downloading {url}: {e}")
-        return download_via_ytdlp(url, dest_dir, headers)
+        return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
 
 
 def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
                             upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, dest_dir=None,
-                            download_image_fn=None):
+                            download_image_fn=None, rclone_enabled=False):
     import zipfile
     zip_writer = None
     zip_path = None
@@ -333,7 +333,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
         if count > 0 and count % batch_size == 0:
             zip_writer.close()
             archives.append(os.path.basename(zip_path))
-            rclone_results.append(handoff_to_rclone(zip_path))
+            rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
             zip_writer = None
             print(f"[Server] Closed zip: {zip_path}")
             count = 0
@@ -341,7 +341,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
     if zip_writer is not None:
         zip_writer.close()
         archives.append(os.path.basename(zip_path))
-        rclone_results.append(handoff_to_rclone(zip_path))
+        rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
         print(f"[Server] Closed final zip: {zip_path}")
 
     print(f"[Server] Finished downloading and zipping task for: {page_url}")

@@ -115,7 +115,9 @@ async function handle(msg: BgMessage, sender: any) {
     case 'downloads:start': {
         const dUrl = (msg as any).url;
         const dFilename = (msg as any).filename || 'file';
-        return await startBrowserDownload(dUrl, dFilename);
+        const dSaveAs = (msg as any).saveAs ?? false;
+        const dReferer = (msg as any).referer;
+        return await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
     }
 
     case 'gm:xhr':            return await gmXhr((msg as any).req);
@@ -150,15 +152,22 @@ async function saveDownloadedJobs() {
   }
 }
 
-async function startBrowserDownload(url: string, filename: string) {
+async function startBrowserDownload(url: string, filename: string, saveAs: boolean = false, referer?: string) {
   try {
     const cleanName = filename.replace(/^[/\\]+/, '').replace(/[?:*|"<>]/g, '_');
-    const downloadId = await ext.downloads.download({
+    const options: any = {
       url: url,
       filename: `python-zipper/${cleanName}`,
       conflictAction: 'uniquify',
-      saveAs: false
-    });
+      saveAs: saveAs
+    };
+    if (referer && url.startsWith('http')) {
+      options.headers = [
+        { name: 'Referer', value: referer },
+        { name: 'User-Agent', value: navigator.userAgent }
+      ];
+    }
+    const downloadId = await ext.downloads.download(options);
     return { ok: true, downloadId };
   } catch (e: any) {
     console.error("Browser download failed:", e);
@@ -203,6 +212,11 @@ async function observeCompletedJobs() {
           if (!downloadedJobIds.has(job.id)) {
             downloadedJobIds.add(job.id);
             await saveDownloadedJobs();
+            
+            if (job.rclone_complete) {
+              console.log(`Job ${job.id} was successfully moved to rclone. Skipping local browser download.`);
+              continue;
+            }
             
             const activeBase = SERVER_ENDPOINTS[0] || 'http://127.0.0.1:5171';
             for (const archiveFilename of job.archives) {

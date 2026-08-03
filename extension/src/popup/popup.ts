@@ -398,12 +398,45 @@ $('tb-gear').addEventListener('click', async () => {
   const dot = serverOnline ? '#22c55e' : '#ef4444';
   const cfg = await send({ kind: 'config:get' });
   const proxy = esc(cfg?.proxy || '');
+
+  const keys = await ext.storage.local.get([
+    'zipper-rclone-enabled',
+    'zipper-highlight-enabled',
+    'zipper-upscale-enabled',
+    'zipper-upscale-model'
+  ]);
+  const rcloneEnabled = keys['zipper-rclone-enabled'] === 'true';
+  const highlightEnabled = keys['zipper-highlight-enabled'] !== 'false';
+  const upscaleEnabled = keys['zipper-upscale-enabled'] === 'true';
+  const upscaleModel = keys['zipper-upscale-model'] || '4xNomos8k_atd';
+
   const pop = showPop($('tb-gear'),
     `<h4>Settings</h4>
      <div class="kv"><span>Server</span><b><span class="dotc" style="background:${dot}"></span> ${serverOnline ? 'online' : 'offline'}</b></div>
      <div class="kv"><span>Endpoint</span><b>127.0.0.1:5171</b></div>
-     <div class="kv"><span>Version</span><b>1.4.0</b></div>
+     <div class="kv"><span>Version</span><b>${ext.runtime.getManifest().version}</b></div>
      <div class="kv"><span>Saves to</span><b>.downloaded/streams</b></div>
+     
+     <div class="kv" style="margin-top:8px;">
+       <span>Cloud Handoff (rclone)</span>
+       <input type="checkbox" id="cfg-rclone" ${rcloneEnabled ? 'checked' : ''} style="cursor:pointer;" />
+     </div>
+     <div class="kv">
+       <span>DOM Highlights</span>
+       <input type="checkbox" id="cfg-highlights" ${highlightEnabled ? 'checked' : ''} style="cursor:pointer;" />
+     </div>
+     <div class="kv">
+       <span>AI Upscaling (4x)</span>
+       <input type="checkbox" id="cfg-upscale" ${upscaleEnabled ? 'checked' : ''} style="cursor:pointer;" />
+     </div>
+     <div class="kv" style="align-items:center;">
+       <span>Upscale Model</span>
+       <select id="cfg-upscale-model" style="background:#2a2a2e;color:#e6e6e8;border:1px solid #3f3f46;border-radius:4px;padding:2px 4px;font-size:10px;cursor:pointer;">
+         <option value="4xNomos8k_atd" ${upscaleModel === '4xNomos8k_atd' ? 'selected' : ''}>Nomos8k</option>
+         <option value="pillow-lanczos" ${upscaleModel === 'pillow-lanczos' ? 'selected' : ''}>Pillow 4x</option>
+       </select>
+     </div>
+
      <label style="display:block;margin-top:10px;color:#a1a1aa;">Download proxy (yt-dlp)</label>
      <div class="row" style="margin-top:4px;">
        <input id="cfg-proxy" type="text" placeholder="socks5h://10.64.0.1:1080" value="${proxy}"
@@ -414,6 +447,28 @@ $('tb-gear').addEventListener('click', async () => {
        <button class="pbtn" data-p="folder">Open downloads</button>
        <button class="pbtn" data-p="clearjobs">Clear finished jobs</button>
      </div>`);
+
+  pop.addEventListener('change', async (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.id === 'cfg-rclone') {
+      const checked = (target as HTMLInputElement).checked;
+      await ext.storage.local.set({ 'zipper-rclone-enabled': String(checked) });
+      toast(checked ? 'RClone handoff enabled' : 'RClone handoff disabled', 'ok');
+    } else if (target.id === 'cfg-highlights') {
+      const checked = (target as HTMLInputElement).checked;
+      await ext.storage.local.set({ 'zipper-highlight-enabled': String(checked) });
+      toast(checked ? 'DOM Highlights enabled' : 'DOM Highlights disabled', 'ok');
+    } else if (target.id === 'cfg-upscale') {
+      const checked = (target as HTMLInputElement).checked;
+      await ext.storage.local.set({ 'zipper-upscale-enabled': String(checked) });
+      toast(checked ? 'Upscaling enabled' : 'Upscaling disabled', 'ok');
+    } else if (target.id === 'cfg-upscale-model') {
+      const val = (target as HTMLSelectElement).value;
+      await ext.storage.local.set({ 'zipper-upscale-model': val });
+      toast(`Upscale model: ${val}`, 'ok');
+    }
+  });
+
   pop.addEventListener('click', async (ev) => {
     const p = (ev.target as HTMLElement).closest('[data-p]')?.getAttribute('data-p');
     if (!p) return;

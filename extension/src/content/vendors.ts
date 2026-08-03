@@ -20,7 +20,9 @@ export function setupVendors(): void {
     ext.runtime.sendMessage({
       kind: 'downloads:start',
       url: url,
-      filename: filename
+      filename: filename,
+      referer: window.location.href,
+      saveAs: false
     });
   };
 

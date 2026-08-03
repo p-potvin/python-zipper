@@ -101,12 +101,32 @@ export function initUI(_pal: any) {
 
     async function downloadSingleFile(url) {
         try {
-            logToConsole(`[Download] Starting download for: ${url.split('/').pop()}`, 'info');
+            const filename = url.split('/').pop().split('?')[0] || 'download';
+            logToConsole(`[Download] Starting download for: ${filename}`, 'info');
+
+            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+            if (extAPI && extAPI.runtime) {
+                const resp = await extAPI.runtime.sendMessage({
+                    kind: 'downloads:start',
+                    url: url,
+                    filename: filename,
+                    referer: window.location.href,
+                    saveAs: false
+                });
+                if (resp && resp.ok) {
+                    logToConsole(`[Extension] Download started via browser downloads API: ${filename}`, 'success');
+                    setFloatBtnStatus('dl-success');
+                    flashFab();
+                    return;
+                }
+            }
+
             if (globalState.serverOnline) {
                 const response = await Api.sendWithFallback("download", "POST", {
                     url: window.location.href,
                     links: [url],
-                    batch_size: 1
+                    batch_size: 1,
+                    rclone_enabled: getZipperSetting('rclone-enabled', 'false') === 'true'
                 });
                 if (response.ok) {
                     logToConsole(`[Server] Success: Sent single file to pipeline.`, 'success');
@@ -117,7 +137,6 @@ export function initUI(_pal: any) {
             }
             const buffer = await fetchAsArrayBuffer(url);
             const blob = new Blob([buffer]);
-            const filename = url.split('/').pop().split('?')[0] || 'download';
             saveAs(blob, filename);
             logToConsole(`[Local] Downloaded: ${filename}`, 'success');
             setFloatBtnStatus('dl-success');
@@ -334,6 +353,17 @@ export function initUI(_pal: any) {
         if (savedUpscaleEnabled) {
             upscaleBtnInit.classList.add('active');
         }
+        upscaleBtnInit.onclick = () => {
+            const enabled = !upscaleBtnInit.classList.contains('active');
+            upscaleBtnInit.classList.toggle('active', enabled);
+            setZipperSetting('upscale-enabled', String(enabled));
+            if (enabled) {
+                const model = getZipperSetting('upscale-model', '4xNomos8k_atd') || '4xNomos8k_atd';
+                upscaleModelSelectInit.value = model;
+            } else {
+                upscaleModelSelectInit.value = 'off';
+            }
+        };
         upscaleModelSelectInit.onchange = (e) => {
             const val = e.target.value;
             if (val === 'off') {

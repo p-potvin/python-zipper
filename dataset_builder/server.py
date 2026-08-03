@@ -294,7 +294,8 @@ class ScraperHandler(BaseHTTPRequestHandler):
                     self.wfile.write(b"Missing url or links parameters")
                     return
                 job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
-                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers)).start()
+                rclone_enabled = bool(data.get('rclone_enabled', False))
+                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled)).start()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -381,12 +382,12 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return
         self._download_and_process(url, urls, batch_size)
 
-    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None):
+    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None, rclone_enabled=False):
         print(f"\n[Server] Background downloader task started for URL: {url} ({len(links)} links)")
         os.makedirs(DEST_DIR, exist_ok=True)
         update_job(job_id, status="running")
         try:
-            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers)
+            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled)
             complete_job(
                 job_id,
                 archives=result.get("archives", []),
@@ -396,7 +397,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
             fail_job(job_id, e)
             raise
 
-    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None):
+    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None, rclone_enabled=False):
         from urllib.parse import urlparse
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -441,19 +442,26 @@ class ScraperHandler(BaseHTTPRequestHandler):
             if is_image:
                 image_urls.append(final_url)
             else:
-                direct_result = download_direct_file(final_url, headers, DEST_DIR)
+                direct_result = download_direct_file(final_url, headers, DEST_DIR, rclone_enabled)
                 if direct_result.get("filename"):
                     archives.append(direct_result["filename"])
                     rclone_results.append(direct_result.get("rclone_complete", False))
             update_job(job_id, processed_links=index, images_count=len(image_urls))
         if image_urls:
-            zip_result = download_and_zip_images(
-                url_slug, page_url, image_urls, batch_size, headers,
-                upscale_enabled, upscale_model, DEST_DIR, scraper.download_image
-            )
-            archives.extend(zip_result.get("archives", []))
-            rclone_results.extend(zip_result.get("rclone_results", []))
-            update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
+            if len(image_urls) == 1 and not upscale_enabled:
+                direct_result = download_direct_file(image_urls[0], headers, DEST_DIR, rclone_enabled)
+                if direct_result.get("filename"):
+                    archives.append(direct_result["filename"])
+                    rclone_results.append(direct_result.get("rclone_complete", False))
+            else:
+                zip_result = download_and_zip_images(
+                    url_slug, page_url, image_urls, batch_size, headers,
+                    upscale_enabled, upscale_model, DEST_DIR, scraper.download_image,
+                    rclone_enabled
+                )
+                archives.extend(zip_result.get("archives", []))
+                rclone_results.extend(zip_result.get("rclone_results", []))
+                update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
         return {
             "archives": archives,
             "rclone_complete": bool(rclone_results) and all(rclone_results),

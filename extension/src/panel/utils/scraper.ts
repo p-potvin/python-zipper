@@ -42,33 +42,10 @@ import { logToConsole } from './config';
             // Cloud links checking
             if (isCloudUrl(url)) {
                 cloudLinks.add(url);
-                return;
             }
 
             // Standard media checking
-            const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lowerUrl);
-            
-            // Check if it is a platform page instead of raw profiles
-            const isPlatformMediaPage = /onlyfans\.com\/posts\/\d+/i.test(lowerUrl) || 
-                                        /coomer\.(st|su)\/onlyfans\/user\/[^/]+\/post\/\w+/i.test(lowerUrl) ||
-                                        /kemono\.(cr|su)\/[^/]+\/user\/[^/]+\/post\/\w+/i.test(lowerUrl);
-
-            // Ignore profiles, status feeds, index pages, generic homepages
-            const isProfileOrFeed = /twitter\.com\/[^/]+$/i.test(lowerUrl) ||
-                                    /x\.com\/[^/]+$/i.test(lowerUrl) ||
-                                    /onlyfans\.com\/[^/]+$/i.test(lowerUrl) ||
-                                    /patreon\.com\/[^/]+$/i.test(lowerUrl) ||
-                                    /fansly\.com\/[^/]+$/i.test(lowerUrl) ||
-                                    (lowerUrl.includes('/status/') && !hasMediaExt);
-
-            if (isProfileOrFeed) {
-                return; // Discard profiles and statuses
-            }
-
-            if (!hasMediaExt && !isPlatformMediaPage && !isMediaUrl(url)) {
-                // If it doesn't have a direct media extension, isn't a platform post page, and isn't a media domain, discard
-                return;
-            }
+            const hasMediaExt = isMediaUrl(lowerUrl);
 
             // Scoring Algorithm
             let score = 0;

@@ -55,7 +55,8 @@ export async function handleScrape(
                 links: finalUrls,
                 batch_size: 5,
                 upscale_enabled: upscaleEnabled,
-                upscale_model: upscaleModel
+                upscale_model: upscaleModel,
+                rclone_enabled: getZipperSetting('rclone-enabled', 'false') === 'true'
             });
 
             if (response.ok) {
@@ -110,7 +111,8 @@ export async function handleSend(
             const response = await Api.sendWithFallback("download", "POST", {
                 url: window.location.href,
                 links: links,
-                batch_size: 100
+                batch_size: 100,
+                rclone_enabled: getZipperSetting('rclone-enabled', 'false') === 'true'
             });
 
             if (response.ok) {
