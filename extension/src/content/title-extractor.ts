@@ -170,19 +170,6 @@ function extractTitleFromNearby(root: Element): string | null {
     ancestor = ancestor.parentElement;
   }
 
-  // 3. Meta tags
-  const ogTitle = document
-    .querySelector('meta[property="og:title"]')
-    ?.getAttribute('content')
-    ?.trim();
-  if (ogTitle && ogTitle.length > 2) return ogTitle;
-
-  const metaTitle = document
-    .querySelector('meta[name="title"]')
-    ?.getAttribute('content')
-    ?.trim();
-  if (metaTitle && metaTitle.length > 2) return metaTitle;
-
   return null;
 }
 
