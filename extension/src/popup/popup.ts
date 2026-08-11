@@ -51,7 +51,7 @@ function badgeFor(s: DetectedStream): { cls: string; label: string } {
   return { cls: 'b-hls', label: 'HLS' };
 }
 function fileName(s: DetectedStream): string {
-  const t = s.meta?.title || s.title;
+  const t = s.title || s.meta?.title;
   if (t) return t;
   try { return decodeURIComponent(s.url.split('/').pop()!.split(/[?#]/)[0]) || s.url; } catch { return s.url; }
 }

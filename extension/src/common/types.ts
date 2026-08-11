@@ -1,5 +1,15 @@
 export type StreamType = 'hls' | 'dash' | 'smooth' | 'video';
 
+/** Provenance of a stream title, used to decide precedence. */
+export type TitleSource =
+  | 'element'        // DOM: media element matching stream URL found, title extracted nearby
+  | 'biggest-video'  // DOM: fell back to biggest <video> on the page
+  | 'ytdlp'          // yt-dlp probe returned a title
+  | 'meta'           // DOM: <meta og:title> / <meta name="title">
+  | 'page-title'     // DOM: document.title
+  | 'tab-title'      // initial: browser tab title
+  | 'not-found';     // no title could be extracted
+
 export interface StreamFormat {
   format_id: string;
   height?: number | null;
@@ -58,6 +68,8 @@ export interface DetectedStream {
   /** Set once the user starts a download; correlates to a Jobs-tab entry. */
   jobId?: string;
   started?: boolean;
+  /** Where `title` came from — controls precedence when multiple sources compete. */
+  titleSource?: TitleSource;
 }
 
 export type BgMessage =

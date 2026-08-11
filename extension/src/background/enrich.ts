@@ -67,12 +67,17 @@ export async function enrichStream(s: DetectedStream): Promise<void> {
       s.meta = meta;
       s.probed = true;
       if (meta.ok && meta.title) {
-        // Strip the [hostname] prefix before checking if the title is generic
-        const lowerTitle = (s.title || '').toLowerCase().trim().replace(/^\[[^\]]+\]\s*/, '');
-        if (!lowerTitle || lowerTitle === 'stream' || lowerTitle === 'video' || lowerTitle === 'audio') {
-          // Preserve the hostname prefix when updating with yt-dlp title
-          const hostnameMatch = /^\[([^\]]+)\]/.exec(s.title || '');
-          s.title = hostnameMatch ? `[${hostnameMatch[1]}] ${meta.title}` : meta.title;
+        // yt-dlp title (priority 4) only overrides weaker title sources.
+        // 'element' (6) and 'biggest-video' (5) are kept — they're more contextual.
+        const currentSrc = s.titleSource || 'tab-title';
+        const PRIORITY: Record<string, number> = {
+          'element': 6, 'biggest-video': 5, 'ytdlp': 4, 'meta': 3, 'page-title': 2, 'tab-title': 1, 'not-found': 0,
+        };
+        if (PRIORITY['ytdlp'] > PRIORITY[currentSrc]) {
+          let hostname = '';
+          try { hostname = new URL(s.pageUrl).hostname; } catch { /* bad url */ }
+          s.title = hostname ? `[${hostname}] ${meta.title}` : meta.title;
+          s.titleSource = 'ytdlp';
         }
       }
     }
