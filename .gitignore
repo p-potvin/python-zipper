@@ -34,3 +34,10 @@ linkvertise/.pytest_cache/
 telegram/links-for-tests.txt
 
 Portable-Tor-Proxy-Rotator/
+temp/
+har/
+video/
+.downloaded
+*.log
+*.logs
+

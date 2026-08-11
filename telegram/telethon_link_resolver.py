@@ -377,8 +377,8 @@ async def main():
         print(f"\n[INFO] Saved {len(all_extracted_urls)} total extracted links to {all_links_file}")
         
         # Start the background uploader to run concurrently
-        bg_uploader_task = asyncio.create_task(background_katfile_uploader())
-        bg_dual_uploader_task = asyncio.create_task(background_dual_uploader())
+        #bg_uploader_task = asyncio.create_task(background_katfile_uploader())
+        #bg_dual_uploader_task = asyncio.create_task(background_dual_uploader())
 
         # Classify all links first (with deduplication)
         rd_links = []
