@@ -67,9 +67,12 @@ export async function enrichStream(s: DetectedStream): Promise<void> {
       s.meta = meta;
       s.probed = true;
       if (meta.ok && meta.title) {
-        const lowerTitle = (s.title || '').toLowerCase().trim();
+        // Strip the [hostname] prefix before checking if the title is generic
+        const lowerTitle = (s.title || '').toLowerCase().trim().replace(/^\[[^\]]+\]\s*/, '');
         if (!lowerTitle || lowerTitle === 'stream' || lowerTitle === 'video' || lowerTitle === 'audio') {
-          s.title = meta.title;
+          // Preserve the hostname prefix when updating with yt-dlp title
+          const hostnameMatch = /^\[([^\]]+)\]/.exec(s.title || '');
+          s.title = hostnameMatch ? `[${hostnameMatch[1]}] ${meta.title}` : meta.title;
         }
       }
     }

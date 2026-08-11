@@ -188,6 +188,11 @@ async function register(
     title = cleanStreamTitle(t?.title ?? '');
   } catch { /* tab gone */ }
 
+  // Prepend hostname to the initial tab-title fallback
+  if (title && pageUrl) {
+    try { title = `[${new URL(pageUrl).hostname}] ${title}`; } catch { /* bad url */ }
+  }
+
   const s: DetectedStream = {
     key, id: key, url, type, tabId, pageUrl, title, headers, contentType,
     firstSeen: Date.now(), lastSeen: Date.now(), hits: 1,
@@ -195,6 +200,47 @@ async function register(
   m.set(key, s);
   notify(tabId);
   onNewStream?.(s);
+
+  // Ask the content script to extract a better title from the DOM.
+  // This runs after the stream is already registered so the popup shows
+  // immediately with the tab title, then updates when the DOM title arrives.
+  if (pageUrl && pageUrl.startsWith('http')) {
+    void enrichTitleFromDOM(tabId, s, url, pageUrl);
+  }
+}
+
+/** Ask the content script to extract a title from the page DOM. */
+async function enrichTitleFromDOM(
+  tabId: number,
+  s: DetectedStream,
+  streamUrl: string,
+  pageUrl: string,
+): Promise<void> {
+  try {
+    const response = await ext.tabs.sendMessage(tabId, {
+      kind: 'title:extract',
+      streamUrl,
+    });
+    if (!response?.title) return;
+
+    const cleaned = cleanStreamTitle(response.title);
+    if (!cleaned || cleaned === 'stream') return;
+
+    let hostname = '';
+    try { hostname = new URL(pageUrl).hostname; } catch { /* bad url */ }
+
+    const newTitle = hostname ? `[${hostname}] ${cleaned}` : cleaned;
+
+    // Only update if the new title is meaningfully different/better.
+    // Skip if the current title already contains the cleaned text.
+    const currentStripped = s.title.replace(/^\[[^\]]+\]\s*/, '');
+    if (currentStripped.toLowerCase() === cleaned.toLowerCase()) return;
+
+    s.title = newTitle;
+    notify(tabId);
+  } catch {
+    // Content script not available (chrome:// pages, PDF viewer, not yet loaded, etc.)
+  }
 }
 
 // ---- Public API for the message router / enrichment ------------------------

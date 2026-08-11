@@ -97,3 +97,11 @@ export interface StreamJob {
 }
 
 export type ContentMessage = { kind: 'streams:updated'; tabId: number; count: number };
+
+// Background → Content script: request DOM-based title extraction for a stream
+export type TitleExtractRequest = { kind: 'title:extract'; streamUrl: string };
+export type TitleExtractResponse = {
+  title: string;
+  source: 'element' | 'biggest-video' | 'meta' | 'page-title' | 'not-found';
+  error?: string;
+};
