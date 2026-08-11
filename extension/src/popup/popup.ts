@@ -51,7 +51,7 @@ function badgeFor(s: DetectedStream): { cls: string; label: string } {
   return { cls: 'b-hls', label: 'HLS' };
 }
 function fileName(s: DetectedStream): string {
-  const t = s.meta?.title || s.title;
+  const t = s.title || s.meta?.title;
   if (t) return t;
   try { return decodeURIComponent(s.url.split('/').pop()!.split(/[?#]/)[0]) || s.url; } catch { return s.url; }
 }
@@ -256,7 +256,7 @@ async function poll() {
 
   const hasRunning = Object.values(jobs).some((j) => j.status === 'running' || j.status === 'queued');
   const sig = JSON.stringify([
-    streams.map((s) => [s.key, s.started, s.jobId, s.probed, (s.meta?.formats || []).length, s.meta?.is_live, !!s.meta?.thumbnail, s.meta?.title, s.hits]),
+    streams.map((s) => [s.key, s.started, s.jobId, s.probed, (s.meta?.formats || []).length, s.meta?.is_live, !!s.meta?.thumbnail, s.meta?.title, s.hits, s.title]),
     Object.values(jobs).map((j) => [j.id, j.status, Math.round(j.progress || 0), j.downloaded_bytes, j.save_path]),
     hasRunning ? Math.floor(Date.now() / 1000) : 0, // tick the live elapsed clock each second
   ]);
@@ -326,7 +326,7 @@ cardsEl.addEventListener('click', async (e) => {
       const streams: DetectedStream[] = (await send({ kind: 'streams:get', tabId }))?.streams ?? [];
       const st = streams.find((x) => x.key === s);
       if (st) {
-        if (m === 'copy') await navigator.clipboard.writeText(st.url).catch(() => {});
+        if (m === 'copy') await navigator.clipboard.writeText(st.url).catch(() => { });
         else if (m === 'open') ext.tabs.create({ url: st.url });
       }
       closeMenu();

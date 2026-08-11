@@ -56,7 +56,7 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     headers: s.headers,
     format_id: formatId || s.selectedFormat || null,
     page_url: s.pageUrl,
-    title: title || s.meta?.title || s.title,
+    title: title || s.title || s.meta?.title,
     thumbnail: s.meta?.thumbnail || null,
     duration: s.meta?.duration ?? null,
     is_live: s.meta?.is_live ?? false,
@@ -90,38 +90,38 @@ async function handle(msg: BgMessage, sender: any) {
       for (const s of streams) enrichIfNeeded(s); // lazy probe while popup is open
       return { streams };
     }
-    case 'streams:clear':     clearTab(tabId); return { ok: true };
-    case 'streams:remove':    removeStream(tabId, (msg as any).key); return { ok: true };
+    case 'streams:clear': clearTab(tabId); return { ok: true };
+    case 'streams:remove': removeStream(tabId, (msg as any).key); return { ok: true };
     case 'streams:recapture': {
       clearTab(tabId);
       try { await ext.tabs.reload(tabId); } catch { /* ignore */ }
       return { ok: true };
     }
-    case 'streams:start':     return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
+    case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
 
     // Jobs / files — proxied to the local server from the popup.
-    case 'jobs:get':          return await serverGet('/api/jobs');
-    case 'jobs:stop':         return await serverPost('/api/stream/stop', { job_id: (msg as any).jobId });
-    case 'jobs:delete':       return await serverPost('/api/stream/delete', { job_id: (msg as any).jobId });
-    case 'open:folder':       return await serverPost('/api/open-downloaded', { folder: true, which: 'streams' });
-    case 'open:path':      {
-        console.log(msg);
-        return await openFolderWithFallback((msg as any).path);
-      }
-
-    case 'config:get':        return { proxy: getProxy() };
-    case 'config:set':        await setProxy((msg as any).proxy || ''); return { ok: true };
-
-    case 'downloads:start': {
-        const dUrl = (msg as any).url;
-        const dFilename = (msg as any).filename || 'file';
-        const dSaveAs = (msg as any).saveAs ?? false;
-        const dReferer = (msg as any).referer;
-        return await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
+    case 'jobs:get': return await serverGet('/api/jobs');
+    case 'jobs:stop': return await serverPost('/api/stream/stop', { job_id: (msg as any).jobId });
+    case 'jobs:delete': return await serverPost('/api/stream/delete', { job_id: (msg as any).jobId });
+    case 'open:folder': return await serverPost('/api/open-downloaded', { folder: true, which: 'streams' });
+    case 'open:path': {
+      console.log(msg);
+      return await openFolderWithFallback((msg as any).path);
     }
 
-    case 'gm:xhr':            return await gmXhr((msg as any).req);
-    default:                  return { ok: false, error: 'unknown message' };
+    case 'config:get': return { proxy: getProxy() };
+    case 'config:set': await setProxy((msg as any).proxy || ''); return { ok: true };
+
+    case 'downloads:start': {
+      const dUrl = (msg as any).url;
+      const dFilename = (msg as any).filename || 'file';
+      const dSaveAs = (msg as any).saveAs ?? false;
+      const dReferer = (msg as any).referer;
+      return await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
+    }
+
+    case 'gm:xhr': return await gmXhr((msg as any).req);
+    default: return { ok: false, error: 'unknown message' };
   }
 }
 
@@ -180,7 +180,7 @@ async function observeCompletedJobs() {
   try {
     const res = await serverGet('/api/jobs');
     const jobs = Object.values(res?.jobs || {});
-    
+
     // Track active downloads state in the sniffer
     const activeStreamJobs = jobs.filter((j: any) => j.type === 'stream' && (j.status === 'running' || j.status === 'queued'));
     setHasActiveDownloads(activeStreamJobs.length > 0);
@@ -192,7 +192,7 @@ async function observeCompletedJobs() {
           if (!downloadedJobIds.has(job.id)) {
             downloadedJobIds.add(job.id);
             await saveDownloadedJobs();
-            
+
             let filename = job.save_path.replace(/\\/g, '/').split('/').pop() || `${job.id}.mp4`;
             // Strip pzstream_<id>_ prefix
             const prefixMatch = /^pzstream_[a-zA-Z0-9-]+_(.*)$/.exec(filename);
@@ -212,12 +212,12 @@ async function observeCompletedJobs() {
           if (!downloadedJobIds.has(job.id)) {
             downloadedJobIds.add(job.id);
             await saveDownloadedJobs();
-            
+
             if (job.rclone_complete) {
               console.log(`Job ${job.id} was successfully moved to rclone. Skipping local browser download.`);
               continue;
             }
-            
+
             const activeBase = SERVER_ENDPOINTS[0] || 'http://127.0.0.1:5171';
             for (const archiveFilename of job.archives) {
               const downloadUrl = `${activeBase}/api/download-file?path=${encodeURIComponent(archiveFilename)}`;

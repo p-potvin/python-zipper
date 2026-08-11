@@ -1,5 +1,5 @@
 import { ext, IS_FIREFOX } from '../common/api';
-import type { DetectedStream, StreamType } from '../common/types';
+import type { DetectedStream, StreamType, TitleSource } from '../common/types';
 
 // ---- Detection tables -------------------------------------------------------
 
@@ -83,6 +83,17 @@ export function isSegmentOrChunkUrl(url: string): boolean {
     return false;
   }
 }
+
+/** Higher number = higher priority. When two title sources compete, the higher one wins. */
+const TITLE_PRIORITY: Record<TitleSource, number> = {
+  'element': 6,
+  'biggest-video': 5,
+  'ytdlp': 4,
+  'meta': 3,
+  'page-title': 2,
+  'tab-title': 1,
+  'not-found': 0,
+};
 
 export function cleanStreamTitle(title: string): string {
   if (!title) return '';
@@ -188,13 +199,63 @@ async function register(
     title = cleanStreamTitle(t?.title ?? '');
   } catch { /* tab gone */ }
 
+  // Prepend hostname to the initial tab-title fallback
+  if (title && pageUrl) {
+    try { title = `[${new URL(pageUrl).hostname}] ${title}`; } catch { /* bad url */ }
+  }
+
   const s: DetectedStream = {
     key, id: key, url, type, tabId, pageUrl, title, headers, contentType,
     firstSeen: Date.now(), lastSeen: Date.now(), hits: 1,
+    titleSource: 'tab-title',
   };
   m.set(key, s);
   notify(tabId);
   onNewStream?.(s);
+
+  // Ask the content script to extract a better title from the DOM.
+  // This runs after the stream is already registered so the popup shows
+  // immediately with the tab title, then updates when the DOM title arrives.
+  if (pageUrl && pageUrl.startsWith('http')) {
+    void enrichTitleFromDOM(tabId, s, url, pageUrl);
+  }
+}
+
+/** Ask the content script to extract a title from the page DOM. */
+async function enrichTitleFromDOM(
+  tabId: number,
+  s: DetectedStream,
+  streamUrl: string,
+  pageUrl: string,
+): Promise<void> {
+  try {
+    const response = await ext.tabs.sendMessage(tabId, {
+      kind: 'title:extract',
+      streamUrl,
+    });
+    if (!response?.title) return;
+
+    const source = (response.source as TitleSource) || 'not-found';
+    if (TITLE_PRIORITY[source] <= TITLE_PRIORITY[s.titleSource || 'tab-title']) return;
+
+    const cleaned = cleanStreamTitle(response.title);
+    if (!cleaned || cleaned === 'stream') return;
+
+    let hostname = '';
+    try { hostname = new URL(pageUrl).hostname; } catch { /* bad url */ }
+
+    const newTitle = hostname ? `[${hostname}] ${cleaned}` : cleaned;
+
+    // Skip if the current title already contains the cleaned text.
+    const currentStripped = s.title.replace(/^\[[^\]]+\]\s*/, '');
+    if (currentStripped.toLowerCase() === cleaned.toLowerCase()) return;
+
+    s.title = newTitle;
+    s.titleSource = source;
+    notify(tabId);
+  } catch {
+    // Content script not available (chrome:// pages, PDF viewer, not yet loaded, etc.)
+  }
 }
 
 // ---- Public API for the message router / enrichment ------------------------
