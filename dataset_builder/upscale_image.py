@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
+import vw_telemetry as telemetry
 
 DEFAULT_SCALE = 4
 DEFAULT_MODEL = "4xNomos8k_atd"
@@ -80,10 +81,37 @@ def upscale_bytes(content, model=DEFAULT_MODEL, scale=DEFAULT_SCALE):
         if image.mode not in ("RGB", "RGBA"):
             image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
 
-        if model == DEFAULT_MODEL and NOMOS_MODEL_PATH.exists():
-            resized = _upscale_with_spandrel(image.convert("RGB"), NOMOS_MODEL_PATH)
-        else:
+        use_model = model == DEFAULT_MODEL and NOMOS_MODEL_PATH.exists()
+
+        # The Lanczos path is a plain resize, not a model, so it is not recorded
+        # as one -- that would put non-model work in the model table and quietly
+        # inflate every volume figure. But falling back because the weights are
+        # missing is exactly the kind of silent degradation telemetry exists to
+        # surface, so it is recorded as `rejected` (a policy outcome, the same
+        # shape as a budget refusal) rather than as a successful upscale.
+        if not use_model:
+            telemetry.record(
+                provider="local", runtime="pillow", model=PILLOW_MODEL, task="image",
+                service="dataset-builder-upscale", status="rejected",
+                error_class="UpscalerModelMissing" if model == DEFAULT_MODEL else "UpscalerNotRequested",
+                error_message=f"{NOMOS_MODEL_PATH} not present" if model == DEFAULT_MODEL else None,
+                width=image.width, height=image.height, image_count=1,
+                duration_ms=0.0,
+            )
             resized = _upscale_with_pillow(image, scale=scale)
+        else:
+            with telemetry.run(
+                model=DEFAULT_MODEL,
+                task="image",
+                runtime="spandrel",
+                service="dataset-builder-upscale",
+                width=image.width,
+                height=image.height,
+                image_count=1,
+                input_bytes=len(content),
+            ) as run:
+                resized = _upscale_with_spandrel(image.convert("RGB"), NOMOS_MODEL_PATH)
+                run.set(output_width=resized.width, output_height=resized.height)
 
         out = io.BytesIO()
         save_format = "JPEG" if original_format.upper() in {"JPG", "JPEG"} else original_format
