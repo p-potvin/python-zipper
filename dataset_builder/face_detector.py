@@ -30,9 +30,15 @@ def install_dependencies():
 
 install_dependencies()
 
+import time
+
 import torch
 from PIL import Image, ImageFile
 from transformers import DetrImageProcessor, DetrForObjectDetection
+
+import vw_telemetry as telemetry
+
+DETR_MODEL = "facebook/detr-resnet-50"
 
 # Prevent PIL from throwing errors or stalling on large images
 Image.MAX_IMAGE_PIXELS = None
@@ -72,13 +78,24 @@ def main():
     print(f"Using device for inference: {device}")
 
     print("Initializing Facebook DETR-ResNet-50 object detection model...")
+    load_started = time.perf_counter()
     try:
-        processor = DetrImageProcessor.from_pretrained("facebook/detr-resnet-50")
-        model = DetrForObjectDetection.from_pretrained("facebook/detr-resnet-50").to(device)
+        processor = DetrImageProcessor.from_pretrained(DETR_MODEL)
+        model = DetrForObjectDetection.from_pretrained(DETR_MODEL).to(device)
         model.eval()
     except Exception as e:
         print(f"Failed to load DETR model from Hugging Face: {e}")
+        # A load failure is the most useful thing to know about and the easiest
+        # to miss, since the process just exits.
+        telemetry.record(
+            provider="huggingface", runtime="transformers", model=DETR_MODEL,
+            task="vision", service="dataset-builder-detect",
+            status="error", error_class=type(e).__name__, error_message=str(e),
+            duration_ms=round((time.perf_counter() - load_started) * 1000, 3),
+        )
+        telemetry.flush()
         sys.exit(1)
+    load_ms = round((time.perf_counter() - load_started) * 1000, 3)
 
     valid_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
     
@@ -92,7 +109,26 @@ def main():
         sys.exit(0)
 
     print(f"Analyzing {len(files)} images for person presence...")
-    
+
+    # One run per BATCH, not per image. A dataset pass is routinely thousands
+    # of files, and the number worth having is throughput across the job --
+    # per-image rows would bury that under their own volume.
+    analysed = 0
+    failed = 0
+    matched = 0
+
+    job = telemetry.run(
+        model=DETR_MODEL,
+        task="vision",
+        provider="huggingface",
+        runtime="transformers",
+        service="dataset-builder-detect",
+        device=str(device),
+        load_ms=load_ms,
+        threshold=args.threshold,
+    )
+    job.start()
+
     # FIXED: Use inference_mode instead of no_grad for better optimization performance on Ampere architecture
     with torch.inference_mode():
         for file_path in files:
@@ -118,13 +154,28 @@ def main():
                         person_count += 1
                         
                 print(f"Image '{os.path.basename(file_path)}': detected {person_count} person(s)")
-                
-                if person_count != 1:
+                analysed += 1
+                if person_count == 1:
+                    matched += 1
+                else:
                     move_file_safe(file_path, args.completed)
-                    
+
             except Exception as e:
                 print(f"Error processing image {file_path}: {e}")
+                failed += 1
                 move_file_safe(file_path, args.completed)
+
+    # A per-image failure does not fail the job -- the file is moved aside and
+    # the pass continues -- so the count is carried on the run rather than
+    # flipping its status. A job where every image failed still reads as `ok`
+    # by status alone, which is why image_failed is recorded next to it.
+    job.set(
+        image_count=analysed + failed,
+        images_matched=matched,
+        image_failed=failed,
+    )
+    job.close()
+    telemetry.flush()
 
     print("Person detection filtering phase complete.")
 
