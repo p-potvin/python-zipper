@@ -103,11 +103,8 @@ async function handle(msg: BgMessage, sender: any) {
     case 'jobs:get': return await serverGet('/api/jobs');
     case 'jobs:stop': return await serverPost('/api/stream/stop', { job_id: (msg as any).jobId });
     case 'jobs:delete': return await serverPost('/api/stream/delete', { job_id: (msg as any).jobId });
-    case 'open:folder': return await serverPost('/api/open-downloaded', { folder: true, which: 'streams' });
-    case 'open:path': {
-      console.log(msg);
-      return await openFolderWithFallback((msg as any).path);
-    }
+    case 'open:folder': return await openFolderWithFallback('');
+    case 'open:path': return await openFolderWithFallback((msg as any).path || '');
 
     case 'config:get': return { proxy: getProxy() };
     case 'config:set': await setProxy((msg as any).proxy || ''); return { ok: true };
@@ -175,61 +172,27 @@ async function startBrowserDownload(url: string, filename: string, saveAs: boole
   }
 }
 
-// Background observer loop for completed jobs (streams and media/scrape jobs)
+// Background observer loop for tracking active download states
 async function observeCompletedJobs() {
   try {
     const res = await serverGet('/api/jobs');
     const jobs = Object.values(res?.jobs || {});
 
-    // Track active downloads state in the sniffer
-    const activeStreamJobs = jobs.filter((j: any) => j.type === 'stream' && (j.status === 'running' || j.status === 'queued'));
-    setHasActiveDownloads(activeStreamJobs.length > 0);
+    // Track active downloads state for toolbar badge across tabs
+    const activeStreamJobs = jobs.filter((j: any) => (j.type === 'stream' || j.stream_url) && (j.status === 'running' || j.status === 'queued'));
+    setHasActiveDownloads(activeStreamJobs.length);
 
     for (const job of jobs as any[]) {
       if (job.status === 'completed') {
-        if (job.type === 'stream' && job.save_path) {
-          // Stream job
-          if (!downloadedJobIds.has(job.id)) {
-            downloadedJobIds.add(job.id);
-            await saveDownloadedJobs();
-
-            let filename = job.save_path.replace(/\\/g, '/').split('/').pop() || `${job.id}.mp4`;
-            // Strip pzstream_<id>_ prefix
-            const prefixMatch = /^pzstream_[a-zA-Z0-9-]+_(.*)$/.exec(filename);
-            if (prefixMatch) {
-              filename = prefixMatch[1];
-            }
-            // Strip [id] brackets
-            filename = filename.replace(/\s*\[[a-zA-Z0-9_-]+\](?=\.[^.]+$)/, '');
-
-            const activeBase = SERVER_ENDPOINTS[0] || 'http://127.0.0.1:5171';
-            const downloadUrl = `${activeBase}/api/download-file?path=${encodeURIComponent(job.save_path)}`;
-            console.log(`Triggering browser download for completed stream job ${job.id}: ${downloadUrl}`);
-            await startBrowserDownload(downloadUrl, filename);
-          }
-        } else if (Array.isArray(job.archives) && job.archives.length > 0) {
-          // Media / Scrape / Batch job
-          if (!downloadedJobIds.has(job.id)) {
-            downloadedJobIds.add(job.id);
-            await saveDownloadedJobs();
-
-            if (job.rclone_complete) {
-              console.log(`Job ${job.id} was successfully moved to rclone. Skipping local browser download.`);
-              continue;
-            }
-
-            const activeBase = SERVER_ENDPOINTS[0] || 'http://127.0.0.1:5171';
-            for (const archiveFilename of job.archives) {
-              const downloadUrl = `${activeBase}/api/download-file?path=${encodeURIComponent(archiveFilename)}`;
-              console.log(`Triggering browser download for completed batch archive ${archiveFilename}: ${downloadUrl}`);
-              await startBrowserDownload(downloadUrl, archiveFilename);
-            }
-          }
+        if (!downloadedJobIds.has(job.id)) {
+          downloadedJobIds.add(job.id);
+          await saveDownloadedJobs();
         }
       }
     }
   } catch (err) {
     // server offline
+    setHasActiveDownloads(0);
   }
 }
 
@@ -239,28 +202,34 @@ setInterval(observeCompletedJobs, 2000);
 
 async function openFolderWithFallback(folderPath: string) {
   console.log("[Background] openFolderWithFallback target path:", folderPath);
-  // Attempt 1: Firefox Native Messaging
+  // Attempt 1: Firefox Native Messaging Host
   try {
     console.log("[Background] Trying Native Messaging to com.pythonzipper.flmgr...");
     const response = await (ext as any).runtime.sendNativeMessage(
       "com.pythonzipper.flmgr",
-      { folderPath }
+      { folderPath: folderPath || '' }
     );
     console.log("[Background] Explorer opened via Native Host, response:", response);
-    return { ok: true, method: 'native', response };
+    if (response && response.ok !== false && response.status !== 'error') {
+      return { ok: true, method: 'native', response };
+    }
   } catch (err: any) {
     console.warn("[Background] Native Messaging failed:", err.message || err);
   }
 
-  // Attempt 2: Local Python Server Fallback
+  // Attempt 2: Local Python Server API Fallback
   try {
     console.log("[Background] Falling back to Local Python Server API /api/open-downloaded...");
-    const res = await serverPost('/api/open-downloaded', { path: folderPath });
+    const res = await serverPost('/api/open-downloaded', {
+      path: folderPath || undefined,
+      folder: !folderPath,
+      which: 'streams'
+    });
     console.log("[Background] Local Python Server response:", res);
-    if (!res?.ok && res?.status !== 'opened file' && res?.status !== 'opened folder') {
-      throw new Error(`Server response not ok: ${JSON.stringify(res)}`);
+    if (res?.ok || res?.status === 'opened file' || res?.status === 'opened folder') {
+      return { ok: true, method: 'server', response: res };
     }
-    return { ok: true, method: 'server', response: res };
+    throw new Error(`Server response not ok: ${JSON.stringify(res)}`);
   } catch (err: any) {
     console.error("[Background] Both opening methods failed:", err);
     return { ok: false, error: String(err.message || err) };

@@ -60,7 +60,6 @@ declare const saveAs: any;
                 logToConsole(`[Local] Final ZIP generation failed: ${error}`, "error");
             }
         }
-
         btn.textContent = 'Send Selected Media';
         btn.disabled = false;
     }
@@ -75,7 +74,7 @@ declare const saveAs: any;
         "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
         "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
         "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
-        "x.com", "twitter.com", "fanbox.cc", "bunkr.cr", "balbums.st", "1fichier.com", "gofile.io", "terabytez.org"
+        "fanbox.cc", "bunkr.cr", "balbums.st", "1fichier.com", "terabytez.org"
     ];
 
     export const mediaDomains = [
@@ -87,7 +86,7 @@ declare const saveAs: any;
         "k2s.cc", "rapidgator.net", "rg.to", "tezfiles.com", "katfile.com",
         "link-center.net", "link-hub.net", "link-target.net", "pastebin.com",
         "fboom.me", "gofile.io", "cyberfile.me", "pixeldrain.com", "patreon.com",
-        "x.com", "twitter.com", "fanbox.cc", "1fichier.com", "gofile.io", "terabytez.org"
+        "fanbox.cc", "1fichier.com", "terabytez.org"
     ];
 
     export function normalizeUrl(url, baseUrl = window.location.href) {
@@ -120,14 +119,28 @@ declare const saveAs: any;
         return normalizeUrl(el.currentSrc || el.src || el.getAttribute('data-src') || el.href || el.getAttribute('href') || '', window.location.href);
     }
 
+    function matchesDomain(url, domainList) {
+        if (!url) return false;
+        let hostname = '';
+        try {
+            const parsed = new URL(url.startsWith('http') ? url : 'http://' + url);
+            hostname = parsed.hostname.toLowerCase();
+        } catch {
+            const m = url.toLowerCase().match(/(?:https?:\/\/)?([a-z0-9.-]+)/i);
+            hostname = m ? m[1] : url.toLowerCase();
+        }
+        return domainList.some(d => {
+            const domain = d.toLowerCase();
+            return hostname === domain || hostname.endsWith('.' + domain);
+        });
+    }
+
     export function isCloudUrl(url) {
-        const lower = url.toLowerCase();
-        return cloudDomains.some(domain => lower.includes(domain));
+        return matchesDomain(url, cloudDomains);
     }
 
     export function isMediaUrl(url) {
         const lower = url.toLowerCase();
         return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
-            mediaDomains.some(domain => lower.includes(domain));
+            matchesDomain(url, mediaDomains);
     }
-

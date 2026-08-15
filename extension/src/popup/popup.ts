@@ -99,16 +99,18 @@ function shortenPath(p?: string): string {
   return p.length > 46 ? '…' + p.slice(-44) : p;
 }
 
-// The server runs as a Session-0 service and can't pop Explorer on the desktop,
-// so open the location from the browser (Session 1) and copy the path as a
-// fallback for when file:// access is restricted.
 async function openLocal(path: string, isFile: boolean) {
-  const norm = path.replace(/\\/g, '/');
-  const url = 'file:///' + (isFile ? norm : norm.replace(/\/?$/, '/'));
   let copied = false;
   try { await navigator.clipboard.writeText(path); copied = true; } catch { /* clipboard blocked */ }
-  try { await ext.tabs.create({ url }); } catch { /* file access blocked */ }
-  toast(`${copied ? 'Path copied · ' : ''}opening ${shortenPath(path)}`, 'ok');
+  const resp = await send({ kind: 'open:path', path });
+  if (resp?.ok) {
+    toast(`${copied ? 'Path copied · ' : ''}opened in Explorer`, 'ok');
+  } else {
+    const norm = path.replace(/\\/g, '/');
+    const url = 'file:///' + (isFile ? norm : norm.replace(/\/?$/, '/'));
+    try { await ext.tabs.create({ url }); } catch { /* file access blocked */ }
+    toast(`${copied ? 'Path copied · ' : ''}${shortenPath(path)}`, 'ok');
+  }
 }
 
 // ---- rendering --------------------------------------------------------------
@@ -307,7 +309,7 @@ cardsEl.addEventListener('click', async (e) => {
   else if (act === 'jobdelete') { await send({ kind: 'jobs:delete', jobId: btn.getAttribute('data-job')! }); lastSig = ''; poll(); }
   else if (act === 'open') {
     const p = btn.getAttribute('data-path')!;
-    openLocal(p.replace(/[\\/][^\\/]*$/, ''), false); // reveal the containing folder
+    openLocal(p, true);
   }
   else if (act === 'menu') {
     const s = key;
@@ -369,11 +371,11 @@ $('tb-refresh').addEventListener('click', () => {
   lastSig = ''; poll();
 });
 
-// Open downloads folder — resolve path from server, open client-side
+// Open downloads folder
 $('tb-folder').addEventListener('click', async () => {
   const r = await send({ kind: 'open:folder' });
-  if (r?.path) openLocal(r.path, false);
-  else toast('Server offline — start python-zipper on :5171', 'err');
+  if (r?.ok || r?.path) toast('Opening downloads folder…', 'ok');
+  else toast('Could not open folder — start python-zipper on :5171', 'err');
 });
 
 // Clear — detections on this tab + finished jobs

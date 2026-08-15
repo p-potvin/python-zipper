@@ -132,49 +132,63 @@ class ScraperHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _reveal_in_explorer(self, path, select=False):
-        # NON-BLOCKING and never raises. Note: when the server runs as an NSSM
-        # service it lives in Session 0, so any Explorer window it launches is
-        # invisible on the user's desktop — the extension opens the path client
-        # side instead. We still best-effort launch here for interactive runs.
         import subprocess
         p = os.path.normpath(os.path.abspath(path))
         try:
-            if select:
-                subprocess.Popen(['explorer', f'/select,{p}'])
+            if select and os.path.isfile(p):
+                subprocess.Popen(f'explorer /select,"{p}"', shell=True)
             else:
-                os.startfile(p)  # type: ignore[attr-defined]  (Windows only)
+                target_dir = p if os.path.isdir(p) else os.path.dirname(p)
+                if not os.path.exists(target_dir):
+                    target_dir = os.path.abspath(DEST_DIR)
+                try:
+                    os.startfile(target_dir)
+                except Exception:
+                    subprocess.Popen(f'explorer "{target_dir}"', shell=True)
         except Exception as e:
-            print(f"[Server] reveal best-effort failed (Session 0 service?): {e}")
+            print(f"[Server] reveal explorer failed: {e}")
         return p
 
     def _handle_open_downloaded(self, data):
         try:
             dest = os.path.abspath(DEST_DIR)
-            # Absolute path (used by stream jobs saved outside DEST_DIR).
+            os.makedirs(dest, exist_ok=True)
+            os.makedirs(STREAMS_DIR, exist_ok=True)
+
             abs_path = data.get('path')
             if abs_path:
                 p = os.path.normpath(os.path.abspath(abs_path))
                 if os.path.exists(p):
-                    self._reveal_in_explorer(p, select=True)
-                    self._send_json({"status": "opened file", "path": p})
+                    self._reveal_in_explorer(p, select=os.path.isfile(p))
+                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(p) else "opened folder", "path": p})
                 else:
-                    self._send_json({"status": "error", "error": "File not found", "path": p})
+                    curr = p
+                    while curr and not os.path.exists(curr):
+                        parent = os.path.dirname(curr)
+                        if parent == curr:
+                            break
+                        curr = parent
+                    if not curr or not os.path.exists(curr):
+                        curr = STREAMS_DIR if 'streams' in p.lower() else dest
+                    self._reveal_in_explorer(curr, select=False)
+                    self._send_json({"ok": True, "status": "opened folder", "path": curr})
                 return
+
             if data.get('folder'):
                 target = STREAMS_DIR if data.get('which') == 'streams' else dest
-                os.makedirs(target, exist_ok=True)
                 self._reveal_in_explorer(target, select=False)
-                self._send_json({"status": "opened folder", "path": target})
+                self._send_json({"ok": True, "status": "opened folder", "path": target})
             else:
                 filename = data.get('filename', '')
-                filepath = os.path.normpath(os.path.join(dest, filename))
+                filepath = os.path.normpath(os.path.join(dest, filename)) if filename else dest
                 if os.path.exists(filepath):
-                    self._reveal_in_explorer(filepath, select=True)
-                    self._send_json({"status": "opened file", "path": filepath})
+                    self._reveal_in_explorer(filepath, select=os.path.isfile(filepath))
+                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(filepath) else "opened folder", "path": filepath})
                 else:
-                    self._send_json({"status": "error", "error": f"File not found: {filename}", "path": filepath})
+                    self._reveal_in_explorer(dest, select=False)
+                    self._send_json({"ok": True, "status": "opened folder", "path": dest})
         except Exception as e:
-            self._send_json({"error": str(e)}, 500)
+            self._send_json({"ok": False, "error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(200)

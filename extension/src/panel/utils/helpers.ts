@@ -146,13 +146,28 @@
         return normalizeUrl(el.currentSrc || el.src || el.getAttribute('data-src') || el.href || el.getAttribute('href') || '', window.location.href);
     }
 
+    function matchesDomain(url, domainList) {
+        if (!url) return false;
+        let hostname = '';
+        try {
+            const parsed = new URL(url.startsWith('http') ? url : 'http://' + url);
+            hostname = parsed.hostname.toLowerCase();
+        } catch {
+            const m = url.toLowerCase().match(/(?:https?:\/\/)?([a-z0-9.-]+)/i);
+            hostname = m ? m[1] : url.toLowerCase();
+        }
+        return domainList.some(d => {
+            const domain = d.toLowerCase();
+            return hostname === domain || hostname.endsWith('.' + domain);
+        });
+    }
+
     export function isCloudUrl(url) {
-        const lower = url.toLowerCase();
-        return cloudDomains.some(domain => lower.includes(domain));
+        return matchesDomain(url, cloudDomains);
     }
 
     export function isMediaUrl(url) {
         const lower = url.toLowerCase();
         return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
-            mediaDomains.some(domain => lower.includes(domain));
+            matchesDomain(url, mediaDomains);
     }
