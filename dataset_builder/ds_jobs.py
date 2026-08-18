@@ -119,6 +119,12 @@ def fail_job(job_id, error):
         print(f"[Server] Failed to send fail toast: {e}")
 
 
+def get_job(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return dict(job) if job else None
+
+
 def get_jobs_snapshot():
     with JOBS_LOCK:
         return {key: dict(value) for key, value in JOBS.items()}

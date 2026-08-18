@@ -66,11 +66,33 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
   if (res?.ok || res?.correlationId) {
     s.jobId = res.correlationId;
     s.started = true;
+    let set = tabJobMap.get(tabId);
+    if (!set) { set = new Set(); tabJobMap.set(tabId, set); }
+    set.add(res.correlationId);
     touch(tabId);
     return { ok: true, jobId: res.correlationId };
   }
   return { ok: false, error: res?.error || 'server offline — is python-zipper running on :5171?' };
 }
+
+const tabJobMap = new Map<number, Set<string>>();
+
+ext.tabs.onRemoved.addListener(async (closedTabId: number) => {
+  const jobs = tabJobMap.get(closedTabId);
+  if (jobs && jobs.size > 0) {
+    try {
+      const jobsRes = await serverGet('/api/jobs');
+      const allJobs = jobsRes?.jobs || {};
+      for (const jobId of jobs) {
+        const job = allJobs[jobId];
+        if (job && (job.status === 'completed' || job.status === 'aborted' || job.status === 'failed')) {
+          await serverPost('/api/stream/delete', { job_id: jobId });
+        }
+      }
+    } catch { /* ignore */ }
+    tabJobMap.delete(closedTabId);
+  }
+});
 
 async function gmXhr(req: { url: string; method?: string; headers?: Record<string, string>; data?: any }) {
   try {

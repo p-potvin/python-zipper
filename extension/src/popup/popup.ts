@@ -225,6 +225,8 @@ function jobCard(job: StreamJob, s?: DetectedStream): string {
   </div>`;
 }
 
+let currentTabUrl = '';
+
 function render(streams: DetectedStream[], jobs: Record<string, StreamJob>) {
   const jobList = Object.values(jobs).filter((j) => j.type === 'stream');
   const byStreamJobId = new Set<string>();
@@ -236,9 +238,15 @@ function render(streams: DetectedStream[], jobs: Record<string, StreamJob>) {
     if (s.jobId && jobs[s.jobId]) { html += jobCard(jobs[s.jobId], s); byStreamJobId.add(s.jobId); }
     else html += detectedCard(s);
   }
-  // Orphan jobs (stream no longer detected, e.g. after navigation) at the bottom.
+  // Active running jobs or jobs belonging to the current page
   for (const j of jobList.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))) {
-    if (!byStreamJobId.has(j.id)) html += jobCard(j);
+    if (!byStreamJobId.has(j.id)) {
+      const isRunning = j.status === 'running' || j.status === 'queued';
+      const isCurrentPage = Boolean(currentTabUrl && j.page_url && (j.page_url === currentTabUrl));
+      if (isRunning || isCurrentPage) {
+        html += jobCard(j);
+      }
+    }
   }
 
   safeHTML(cardsEl, html || '');
@@ -517,6 +525,7 @@ $('tb-help').addEventListener('click', () => {
 (async () => {
   const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
   tabId = tab?.id;
+  currentTabUrl = tab?.url || '';
   await poll();
   setInterval(poll, 1000); // only runs while the popup is open
 })();

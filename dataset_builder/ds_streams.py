@@ -11,18 +11,63 @@ file actually persists somewhere the user can open.
 """
 
 import os
+import re
 import json
 import signal
 import subprocess
 import threading
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
-from ds_jobs import update_job, complete_job, fail_job
+from ds_jobs import update_job, complete_job, fail_job, get_job
 
 STREAMS_DIR = os.environ.get("PYTHON_ZIPPER_STREAMS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded", "streams"
 )
 STREAMS_DIR = os.path.abspath(STREAMS_DIR)
+
+def _sanitize_title(title):
+    if not title:
+        return ""
+    s = re.sub(r'[\\/*?:"<>|]', '_', title)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s[:120]
+
+
+def _finalize_stream_name(path, job_id):
+    if not path or not os.path.exists(path):
+        return path
+    job = get_job(job_id) or {}
+    title = job.get('title') or ''
+    clean_title = _sanitize_title(title)
+    if not clean_title or clean_title.lower() in ('stream', 'master', 'playlist', 'chunklist', 'index'):
+        orig_name = os.path.basename(path)
+        clean_title = orig_name
+        if clean_title.startswith(f"pzstream_{job_id}_"):
+            clean_title = clean_title[len(f"pzstream_{job_id}_"):]
+        clean_title = re.sub(r'\s*\[[^\]]+\](?=\.[^.]+$)', '', clean_title)
+        clean_title = re.sub(r'\.[^.]+$', '', clean_title)
+        clean_title = _sanitize_title(clean_title)
+
+    if not clean_title or clean_title.lower() in ('master', 'index'):
+        clean_title = f"stream_{job_id[:12]}"
+
+    ext = os.path.splitext(path)[1] or '.mp4'
+    parent_dir = os.path.dirname(path)
+    target_path = os.path.join(parent_dir, f"{clean_title}{ext}")
+
+    counter = 1
+    while os.path.exists(target_path) and os.path.abspath(target_path) != os.path.abspath(path):
+        target_path = os.path.join(parent_dir, f"{clean_title} ({counter}){ext}")
+        counter += 1
+
+    try:
+        if os.path.abspath(target_path) != os.path.abspath(path):
+            os.replace(path, target_path)
+            print(f"[Stream] {job_id} renamed -> {os.path.basename(target_path)}")
+            return target_path
+    except Exception as e:
+        print(f"[Stream] {job_id} rename error ({e}); using {path}")
+    return path
 
 # Route yt-dlp through the same proxy the browser uses, e.g.
 #   set PYTHON_ZIPPER_PROXY=http://10.64.0.1:PORT   (Basic auth: http://user:pass@host:port)
@@ -233,6 +278,7 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None):
     # A produced file is a success even on non-zero exit — that's the normal
     # outcome of stopping/losing a live recording.
     if path:
+        path = _finalize_stream_name(path, job_id)
         if os.environ.get("PYTHON_ZIPPER_STREAM_RCLONE") == "1":
             handoff_to_rclone(path)
             path = _find_output(prefix) or path  # may have moved

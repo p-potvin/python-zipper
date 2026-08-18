@@ -50,21 +50,29 @@ export function createLinksSection() {
 }
 
 export function createSmartGallerySection() {
-    const section = document.createElement('div');
-    section.className = 'zipper-panel-section';
-    section.id = 'section-smart-gallery';
-    section.style.display = 'none';
-    section.innerHTML = `
+    const section = makeSection('zipper-panel-section', 'section-smart-gallery', `
         <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 4px;">
             <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
                 <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Gallery Container Selector</label>
-                <input type="text" id="zipper-gallery-selector" class="zipper-input" placeholder="e.g. .user_posts" style="width: 100%; box-sizing: border-box; height: 26px; padding: 2px 6px; font-size: 11px;">
+                <div style="display: flex; gap: 4px; align-items: center;">
+                    <input type="text" id="zipper-gallery-selector" class="zipper-input" placeholder="e.g. .user_posts" style="flex: 1; box-sizing: border-box; height: 26px; padding: 2px 6px; font-size: 11px;">
+                    <button id="zipper-gallery-picker-btn" class="zipper-btn" title="Pick element on page" style="height: 26px; width: 26px; padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border);">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="22" y1="12" x2="18" y2="12"></line>
+                            <line x1="6" y1="12" x2="2" y2="12"></line>
+                            <line x1="12" y1="6" x2="12" y2="2"></line>
+                            <line x1="12" y1="22" x2="12" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
             </div>
             <button id="zipper-smart-gallery-btn" class="zipper-btn" style="height: 26px; padding: 2px 8px; font-size: 11px; flex-shrink: 0; background: var(--zipper-secondary);">
                 Smart Gallery Zip
             </button>
         </div>
-    `;
+    `);
+    section.style.display = 'none';
     return section;
 }
 

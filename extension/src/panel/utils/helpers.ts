@@ -50,7 +50,7 @@
             try {
                 let rawBuffer = await fetchAsArrayBuffer(url);
                 let ext = url.split('.').pop().split(new RegExp('[?#]'))[0];
-                if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi'].includes(ext.toLowerCase())) ext = 'jpg';
+                if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
 
                 blob = new Blob([rawBuffer]);
                 await zipWriter.add(window.location.pathname + `_${String(i + 1).padStart(3, '0')}.${ext}`, new zip.BlobReader(blob), { level: 0 });
@@ -143,7 +143,16 @@
             const candidates = srcset.split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
             if (candidates.length > 0) return normalizeUrl(candidates[candidates.length - 1], window.location.href);
         }
-        return normalizeUrl(el.currentSrc || el.src || el.getAttribute('data-src') || el.href || el.getAttribute('href') || '', window.location.href);
+        let directUrl = el.currentSrc || el.src || el.getAttribute('data-src') || el.poster || el.href || el.getAttribute('href') || '';
+        if (!directUrl && typeof window !== 'undefined' && el instanceof Element) {
+            try {
+                const style = window.getComputedStyle(el);
+                if (style && style.backgroundImage && style.backgroundImage.startsWith("url(")) {
+                    directUrl = style.backgroundImage.slice(4, -1).replace(/['"]/g, '');
+                }
+            } catch (_) { }
+        }
+        return normalizeUrl(directUrl, window.location.href);
     }
 
     function matchesDomain(url, domainList) {
@@ -168,6 +177,6 @@
 
     export function isMediaUrl(url) {
         const lower = url.toLowerCase();
-        return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
+        return /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower) ||
             matchesDomain(url, mediaDomains);
     }

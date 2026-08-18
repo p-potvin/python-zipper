@@ -46,7 +46,7 @@ export function setHasActiveDownloads(countOrActive: boolean | number): void {
 }
 
 export function isSnifferIdle(): boolean {
-  return (Date.now() - lastPanelOpenTime > 120000) && !hasActiveDownloads;
+  return false;
 }
 
 // ---- Identity / dedup -------------------------------------------------------

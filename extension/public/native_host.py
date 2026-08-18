@@ -56,14 +56,14 @@ if __name__ == "__main__":
         if os.path.exists(target_path):
             if os.path.isfile(target_path):
                 log(f"Target is file: {target_path}. Launching explorer /select,...")
-                subprocess.Popen(f'explorer /select,"{target_path}"', shell=True)
+                subprocess.Popen(['explorer.exe', f'/select,{target_path}'])
             else:
                 log(f"Target is directory: {target_path}. Launching explorer...")
-                subprocess.Popen(f'explorer "{target_path}"', shell=True)
+                subprocess.Popen(['explorer.exe', target_path])
             send_message({"ok": True, "status": "success", "path": target_path})
         else:
             log(f"Target does not exist directly, opening nearest parent folder: {curr}")
-            subprocess.Popen(f'explorer "{curr}"', shell=True)
+            subprocess.Popen(['explorer.exe', curr])
             send_message({"ok": True, "status": "success", "path": curr})
     except Exception as e:
         log(f"Exception occurred in native host: {str(e)}")

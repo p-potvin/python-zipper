@@ -1,6 +1,6 @@
 {
   "name": "vaultwares-zipper",
-  "version": "8.4.1",
+  "version": "8.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
