@@ -116,18 +116,48 @@
 		"turbobit.net", "hitfile.net", "uptobox.com", "ddl.to", "alphafile.cc", "drop.download", "filer.net", "wdupload.com"
     ];
 
-    export function normalizeUrl(url, baseUrl = window.location.href) {
+    export function extractUrlFromBg(bgStr) {
+        if (!bgStr || bgStr === 'none' || typeof bgStr !== 'string') return '';
+        // 1. Quoted url("...") or url('...')
+        const quotedMatch = bgStr.match(/url\(\s*(["'])(.+?)\1\s*\)/i);
+        if (quotedMatch && quotedMatch[2]) {
+            return quotedMatch[2].trim();
+        }
+        // 2. Unquoted url(...)
+        const unquotedMatch = bgStr.match(/url\(\s*([^"')\s]+)\s*\)/i);
+        if (unquotedMatch && unquotedMatch[1]) {
+            return unquotedMatch[1].trim();
+        }
+        // 3. Fallback anything inside url(...)
+        const generalMatch = bgStr.match(/url\((.+?)\)/i);
+        if (generalMatch && generalMatch[1]) {
+            return generalMatch[1].replace(/^["']|["']$/g, '').trim();
+        }
+        return '';
+    }
+
+    export function normalizeUrl(url, baseUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
         if (!url) return "";
         let value = String(url).trim();
-        if (!value || value.startsWith("data:") || value.startsWith("blob:")) return "";
-        if (value.includes(",")) {
-            value = value.split(",").pop().trim().split(/\s+/)[0];
+        if (!value || value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("javascript:")) return "";
+
+        // Strip surrounding quotes or angle brackets if present
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1).trim();
         }
-        value = value.replace(/[)\].,;'"<>]+$/g, "");
+        if (value.startsWith('<') && value.endsWith('>')) {
+            value = value.slice(1, -1).trim();
+        }
+
         try {
-            return new URL(value, baseUrl).href;
+            return new URL(value, baseUrl || undefined).href;
         } catch (_e) {
-            return "";
+            if (value.startsWith('//') && typeof window !== 'undefined') {
+                try {
+                    return new URL(window.location.protocol + value).href;
+                } catch { }
+            }
+            return value;
         }
     }
 
@@ -155,18 +185,14 @@
                 const style = window.getComputedStyle(el);
                 const bg = style ? style.backgroundImage : '';
                 if (bg && bg !== 'none') {
-                    const match = bg.match(/url\(['"]?([^'")]+)['"]?\)/i);
-                    if (match && match[1]) {
-                        directUrl = match[1];
-                    }
+                    directUrl = extractUrlFromBg(bg);
                 }
             } catch (_) { }
 
             if (!directUrl) {
                 const inlineStyle = el.getAttribute('style') || '';
-                const match = inlineStyle.match(/background(?:-image)?\s*:\s*[^;]*url\(['"]?([^'")]+)['"]?\)/i);
-                if (match && match[1]) {
-                    directUrl = match[1];
+                if (inlineStyle) {
+                    directUrl = extractUrlFromBg(inlineStyle);
                 }
             }
         }
