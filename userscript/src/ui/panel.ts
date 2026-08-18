@@ -160,9 +160,12 @@ export function initUI(_pal: any) {
             floatBtn.style.display = 'none';
             return;
         }
-        const target = e.target.closest('.zipper-captured-highlight') || (
-            (e.target.tagName && /^(img|video|audio|picture)$/i.test(e.target.tagName)) ? e.target : null
-        );
+        let target = e.target.closest('.zipper-captured-highlight');
+        if (!target && e.target.tagName && /^(img|video|audio|picture|div|span|a)$/i.test(e.target.tagName)) {
+            if (getElementUrl(e.target)) {
+                target = e.target;
+            }
+        }
         if (target && !target.closest('#zipper-panel') && !target.closest('#zipper-fab') && !target.closest('#zipper-float-download-btn')) {
             activeHoveredElement = target;
             let url = getElementUrl(target);

@@ -19,7 +19,7 @@ export function harvestLinks() {
     const cloudLinks = new Set<string>();
 
     // Gather media elements
-    document.querySelectorAll('img, video, audio, source, a, picture, [style*="background-image"]').forEach(el => {
+    document.querySelectorAll('img, video, audio, source, a, picture, div, span, [style*="background"], [data-src], [data-image], [data-bg]').forEach(el => {
         const tagName = el.tagName.toLowerCase();
         const url = getElementUrl(el);
         if (!url) return;
@@ -65,11 +65,11 @@ export function harvestLinks() {
             score -= 200;
         }
 
-        // Element Dimensions scoring
-        if (tagName === 'img' || tagName === 'video') {
+        // Element Dimensions scoring (supports img, video, and background-image divs/spans)
+        if (tagName === 'img' || tagName === 'video' || tagName === 'div' || tagName === 'span') {
             const imgEl = el as any;
-            const width = imgEl.naturalWidth || imgEl.videoWidth || imgEl.width || parseInt(el.style?.width) || 0;
-            const height = imgEl.naturalHeight || imgEl.videoHeight || imgEl.height || parseInt(el.style?.height) || 0;
+            const width = imgEl.naturalWidth || imgEl.videoWidth || imgEl.offsetWidth || imgEl.clientWidth || parseInt(el.style?.width) || 0;
+            const height = imgEl.naturalHeight || imgEl.videoHeight || imgEl.offsetHeight || imgEl.clientHeight || parseInt(el.style?.height) || 0;
             const area = width * height;
 
             if (area > 0) {
@@ -119,7 +119,7 @@ export function harvestLinks() {
         }
 
         // Highlight in UI if element is media and score is positive
-        if (score >= 100 && (tagName === 'img' || tagName === 'video' || tagName === 'audio' || tagName === 'source' || tagName === 'a' || tagName === 'picture')) {
+        if (score >= 100 && (tagName === 'img' || tagName === 'video' || tagName === 'audio' || tagName === 'source' || tagName === 'a' || tagName === 'picture' || tagName === 'div' || tagName === 'span')) {
             highlightElement(el);
             if (el.parentElement && (el.parentElement.tagName.toLowerCase() === 'a' || el.parentElement.tagName.toLowerCase() === 'picture' || el.parentElement.tagName.toLowerCase() === 'audio')) {
                 highlightElement(el.parentElement);
@@ -318,7 +318,7 @@ export async function runSmartGalleryZip() {
 
     if (extractedUrls.length === 0) {
         logToConsole("[SmartZip] Scanning DOM for media nodes...", "info");
-        const nodes = container.querySelectorAll('img, video, audio, source, a, picture, [style*="background-image"]');
+        const nodes = container.querySelectorAll('img, video, audio, source, a, picture, div, span, [style*="background"], [data-src], [data-image], [data-bg]');
         const urlSet = new Set();
         for (const el of nodes) {
             const url = getElementUrl(el);

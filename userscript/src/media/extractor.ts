@@ -44,6 +44,19 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
             }
             const imgTag = doc.querySelector('img#image') as HTMLImageElement || doc.querySelector('img.main-image') as HTMLImageElement || doc.querySelector('div.image-container img') as HTMLImageElement;
             if (imgTag && imgTag.src) return new URL(imgTag.src, url).href;
+
+            const bgEl = doc.querySelector('div[style*="background"], span[style*="background"], div[data-src], span[data-src], div[data-image], span[data-image], div[data-bg], span[data-bg], [style*="background-image"]') as HTMLElement;
+            if (bgEl) {
+                const styleAttr = bgEl.getAttribute('style') || '';
+                const match = styleAttr.match(/url\(['"]?([^'")]+)['"]?\)/i);
+                if (match && match[1]) {
+                    return new URL(match[1], url).href;
+                }
+                const dataSrc = bgEl.getAttribute('data-src') || bgEl.getAttribute('data-image') || bgEl.getAttribute('data-url') || bgEl.getAttribute('data-bg') || bgEl.getAttribute('data-original');
+                if (dataSrc) {
+                    return new URL(dataSrc, url).href;
+                }
+            }
         } catch (e) {
             console.error('[Resolver] Failed background resolution:', e);
         }

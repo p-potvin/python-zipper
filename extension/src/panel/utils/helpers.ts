@@ -143,14 +143,32 @@
             const candidates = srcset.split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
             if (candidates.length > 0) return normalizeUrl(candidates[candidates.length - 1], window.location.href);
         }
-        let directUrl = el.currentSrc || el.src || el.getAttribute('data-src') || el.poster || el.href || el.getAttribute('href') || '';
+        let directUrl = el.currentSrc || el.src ||
+            el.getAttribute('data-src') || el.getAttribute('data-url') ||
+            el.getAttribute('data-bg') || el.getAttribute('data-background') ||
+            el.getAttribute('data-image') || el.getAttribute('data-original') ||
+            el.getAttribute('data-highres') || el.getAttribute('data-full') ||
+            el.poster || el.href || el.getAttribute('href') || '';
+
         if (!directUrl && typeof window !== 'undefined' && el instanceof Element) {
             try {
                 const style = window.getComputedStyle(el);
-                if (style && style.backgroundImage && style.backgroundImage.startsWith("url(")) {
-                    directUrl = style.backgroundImage.slice(4, -1).replace(/['"]/g, '');
+                const bg = style ? style.backgroundImage : '';
+                if (bg && bg !== 'none') {
+                    const match = bg.match(/url\(['"]?([^'")]+)['"]?\)/i);
+                    if (match && match[1]) {
+                        directUrl = match[1];
+                    }
                 }
             } catch (_) { }
+
+            if (!directUrl) {
+                const inlineStyle = el.getAttribute('style') || '';
+                const match = inlineStyle.match(/background(?:-image)?\s*:\s*[^;]*url\(['"]?([^'")]+)['"]?\)/i);
+                if (match && match[1]) {
+                    directUrl = match[1];
+                }
+            }
         }
         return normalizeUrl(directUrl, window.location.href);
     }
