@@ -99,16 +99,18 @@ function shortenPath(p?: string): string {
   return p.length > 46 ? '…' + p.slice(-44) : p;
 }
 
-// The server runs as a Session-0 service and can't pop Explorer on the desktop,
-// so open the location from the browser (Session 1) and copy the path as a
-// fallback for when file:// access is restricted.
 async function openLocal(path: string, isFile: boolean) {
-  const norm = path.replace(/\\/g, '/');
-  const url = 'file:///' + (isFile ? norm : norm.replace(/\/?$/, '/'));
   let copied = false;
   try { await navigator.clipboard.writeText(path); copied = true; } catch { /* clipboard blocked */ }
-  try { await ext.tabs.create({ url }); } catch { /* file access blocked */ }
-  toast(`${copied ? 'Path copied · ' : ''}opening ${shortenPath(path)}`, 'ok');
+  const resp = await send({ kind: 'open:path', path });
+  if (resp?.ok) {
+    toast(`${copied ? 'Path copied · ' : ''}opened in Explorer`, 'ok');
+  } else {
+    const norm = path.replace(/\\/g, '/');
+    const url = 'file:///' + (isFile ? norm : norm.replace(/\/?$/, '/'));
+    try { await ext.tabs.create({ url }); } catch { /* file access blocked */ }
+    toast(`${copied ? 'Path copied · ' : ''}${shortenPath(path)}`, 'ok');
+  }
 }
 
 // ---- rendering --------------------------------------------------------------
@@ -223,6 +225,8 @@ function jobCard(job: StreamJob, s?: DetectedStream): string {
   </div>`;
 }
 
+let currentTabUrl = '';
+
 function render(streams: DetectedStream[], jobs: Record<string, StreamJob>) {
   const jobList = Object.values(jobs).filter((j) => j.type === 'stream');
   const byStreamJobId = new Set<string>();
@@ -234,9 +238,15 @@ function render(streams: DetectedStream[], jobs: Record<string, StreamJob>) {
     if (s.jobId && jobs[s.jobId]) { html += jobCard(jobs[s.jobId], s); byStreamJobId.add(s.jobId); }
     else html += detectedCard(s);
   }
-  // Orphan jobs (stream no longer detected, e.g. after navigation) at the bottom.
+  // Active running jobs or jobs belonging to the current page
   for (const j of jobList.sort((a, b) => (b.created_at || 0) - (a.created_at || 0))) {
-    if (!byStreamJobId.has(j.id)) html += jobCard(j);
+    if (!byStreamJobId.has(j.id)) {
+      const isRunning = j.status === 'running' || j.status === 'queued';
+      const isCurrentPage = Boolean(currentTabUrl && j.page_url && (j.page_url === currentTabUrl));
+      if (isRunning || isCurrentPage) {
+        html += jobCard(j);
+      }
+    }
   }
 
   safeHTML(cardsEl, html || '');
@@ -307,7 +317,7 @@ cardsEl.addEventListener('click', async (e) => {
   else if (act === 'jobdelete') { await send({ kind: 'jobs:delete', jobId: btn.getAttribute('data-job')! }); lastSig = ''; poll(); }
   else if (act === 'open') {
     const p = btn.getAttribute('data-path')!;
-    openLocal(p.replace(/[\\/][^\\/]*$/, ''), false); // reveal the containing folder
+    openLocal(p, true);
   }
   else if (act === 'menu') {
     const s = key;
@@ -369,11 +379,11 @@ $('tb-refresh').addEventListener('click', () => {
   lastSig = ''; poll();
 });
 
-// Open downloads folder — resolve path from server, open client-side
+// Open downloads folder
 $('tb-folder').addEventListener('click', async () => {
   const r = await send({ kind: 'open:folder' });
-  if (r?.path) openLocal(r.path, false);
-  else toast('Server offline — start python-zipper on :5171', 'err');
+  if (r?.ok || r?.path) toast('Opening downloads folder…', 'ok');
+  else toast('Could not open folder — start python-zipper on :5171', 'err');
 });
 
 // Clear — detections on this tab + finished jobs
@@ -515,6 +525,7 @@ $('tb-help').addEventListener('click', () => {
 (async () => {
   const [tab] = await ext.tabs.query({ active: true, currentWindow: true });
   tabId = tab?.id;
+  currentTabUrl = tab?.url || '';
   await poll();
   setInterval(poll, 1000); // only runs while the popup is open
 })();

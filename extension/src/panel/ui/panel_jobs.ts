@@ -55,6 +55,9 @@ function renderStreamJob(key, job) {
     const speed = job.speed ? `${fmtBytes(job.speed)}/s` : '';
     const eta = (job.eta && job.status === 'running') ? `ETA ${fmtDuration(job.eta)}` : '';
     const running = job.status === 'running' || job.status === 'queued';
+    const isStarting = running && percent === 0;
+    const barWidth = isStarting ? 8 : percent;
+    const displayPercent = isStarting ? (job.downloaded_bytes ? `${dl}` : 'Starting…') : `${percent}%`;
     const title = esc(job.title || job.stream_url || key);
     const thumb = job.thumbnail
         ? `<img src="${esc(job.thumbnail)}" referrerpolicy="no-referrer" style="width:72px;height:40px;object-fit:cover;border-radius:4px;flex:0 0 auto;background:#000;" onerror="this.style.display='none'">`
@@ -75,9 +78,9 @@ function renderStreamJob(key, job) {
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
                     <div style="flex:1;height:5px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
-                        <div style="width:${percent}%;height:100%;background:${color};transition:width .3s;"></div>
+                        <div style="width:${barWidth}%;height:100%;background:${color};transition:width .3s;"></div>
                     </div>
-                    <span style="font-size:10px;font-weight:bold;min-width:30px;text-align:right;">${percent}%</span>
+                    <span style="font-size:10px;font-weight:bold;min-width:30px;text-align:right;">${displayPercent}</span>
                 </div>
             </div>
         </div>
@@ -93,6 +96,9 @@ function renderBatchJob(key, job, jobOrigin) {
     const color = statusColor(job.status);
     const percent = job.total_links > 0 ? Math.min(100, Math.round((job.processed_links / job.total_links) * 100)) : 0;
     const running = job.status === 'running' || job.status === 'queued';
+    const isStarting = running && percent === 0;
+    const barWidth = isStarting ? 8 : percent;
+    const displayPercent = isStarting ? 'Starting…' : `${percent}%`;
     const finished = !running;
     return `
         <div class="zipper-job-item" style="border: 1px solid rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; background: rgba(0,0,0,0.15); margin-bottom: 6px;">
@@ -106,9 +112,9 @@ function renderBatchJob(key, job, jobOrigin) {
             ${job.upscale_enabled ? `<div style="font-size: 9px; color: var(--zipper-accent); margin-bottom: 4px;"><strong>Upscaling:</strong> ${job.upscale_model}</div>` : ''}
             <div style="display: flex; align-items: center; gap: 8px;">
                 <div style="flex: 1; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;">
-                    <div style="width: ${percent}%; height: 100%; background: ${color}; transition: width 0.3s;"></div>
+                    <div style="width: ${barWidth}%; height: 100%; background: ${color}; transition: width 0.3s;"></div>
                 </div>
-                <span style="font-size: 10px; font-weight: bold; min-width: 24px; text-align: right;">${percent}%</span>
+                <span style="font-size: 10px; font-weight: bold; min-width: 24px; text-align: right;">${displayPercent}</span>
             </div>
             <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--zipper-text-muted); margin-top: 4px; align-items: center;">
                 <span>Processed: ${job.processed_links}/${job.total_links}</span>

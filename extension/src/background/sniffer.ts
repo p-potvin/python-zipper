@@ -28,17 +28,25 @@ const MIN_VIDEO_BYTES = 1024 * 1024;
 
 let lastPanelOpenTime = Date.now();
 let hasActiveDownloads = false;
+let activeDownloadsCount = 0;
 
 export function updatePanelOpenTime(): void {
   lastPanelOpenTime = Date.now();
 }
 
-export function setHasActiveDownloads(active: boolean): void {
-  hasActiveDownloads = active;
+export function setHasActiveDownloads(countOrActive: boolean | number): void {
+  if (typeof countOrActive === 'number') {
+    activeDownloadsCount = countOrActive;
+    hasActiveDownloads = countOrActive > 0;
+  } else {
+    hasActiveDownloads = countOrActive;
+    activeDownloadsCount = countOrActive ? (activeDownloadsCount || 1) : 0;
+  }
+  refreshAllBadges();
 }
 
 export function isSnifferIdle(): boolean {
-  return (Date.now() - lastPanelOpenTime > 120000) && !hasActiveDownloads;
+  return false;
 }
 
 // ---- Identity / dedup -------------------------------------------------------
@@ -48,7 +56,8 @@ export function isSnifferIdle(): boolean {
 export function streamKey(url: string): string {
   try {
     const u = new URL(url);
-    return u.origin + u.pathname;
+    let p = u.pathname.replace(/\/+$/, '');
+    return u.origin + p;
   } catch {
     return url;
   }
@@ -58,19 +67,21 @@ export function isSegmentOrChunkUrl(url: string): boolean {
   try {
     const u = new URL(url);
     const path = u.pathname.toLowerCase();
+    const search = u.search.toLowerCase();
 
     // Discard variant playlists and llhls streams
-    if (/(chunklist|llhls|variant-list|stream-inf)/i.test(path) || /(chunklist|llhls|variant-list|stream-inf)/i.test(u.search)) {
+    if (/(chunklist|llhls|variant-list|stream-inf|rendition|subtitles|audio-track|video-track)/i.test(path) ||
+        /(chunklist|llhls|variant-list|stream-inf|rendition|subtitles|audio-track|video-track)/i.test(search)) {
       return true;
     }
 
     // Discard common media segment extensions
-    if (/\.(ts|m4s|mp4|aac|mp3|m4a|m4v|png|jpg|jpeg|webp|css|js)(?:\?|$)/i.test(path)) {
+    if (/\.(ts|m4s|aac|mp3|m4a|m4v|png|jpg|jpeg|webp|css|js|vtt|srt)(?:\?|$)/i.test(path)) {
       return true;
     }
     // Discard HLS chunks, segments, fragments, parts, keys
     const chunkKeywords = /(chunk|segment|fragment|frag|part|sec|index|media|track|layer|level|variant|quality|hls-)[_.-]?[0-9]/i;
-    if (chunkKeywords.test(path) || chunkKeywords.test(u.search)) {
+    if (chunkKeywords.test(path) || chunkKeywords.test(search)) {
       return true;
     }
     // Discard paths with segment index/number at the end
@@ -98,7 +109,7 @@ const TITLE_PRIORITY: Record<TitleSource, number> = {
 export function cleanStreamTitle(title: string): string {
   if (!title) return '';
   let t = title.trim();
-  t = t.replace(/\s*[-|•·]\s*(pornxp|1porn|fullvideos|xvideos|xhamster|spankbang|pornhub|youtube|vimeo|redtube)[a-z0-9.]*/gi, '');
+  t = t.replace(/\s*[-|•·]\s*\b(pornxp|1porn|fullvideos|xvideos|xhamster|spankbang|pornhub|youtube|vimeo|redtube)\b[a-z0-9.]*/gi, '');
   t = t.replace(/\s+[-|•·]\s+.*$/g, '');
   t = t.replace(/(free porn video|watch online|download mp4)/gi, '');
   t = t.replace(/[\s\-_|]+$/, '').replace(/^[\s\-_|]+/, '');
@@ -146,18 +157,39 @@ function pickHeaders(list: any[] = []): Record<string, string> {
   return out;
 }
 
-function updateBadge(tabId: number): void {
-  const n = store.get(tabId)?.size ?? 0;
+export function updateBadge(tabId: number): void {
   try {
-    ext.action.setBadgeText({ tabId, text: n ? String(n) : '' });
-    ext.action.setBadgeBackgroundColor?.({ tabId, color: '#e11d48' });
+    if (hasActiveDownloads) {
+      const text = activeDownloadsCount > 1 ? `DL${activeDownloadsCount}` : 'DL';
+      ext.action.setBadgeText({ text });
+      ext.action.setBadgeText({ tabId, text });
+      ext.action.setBadgeBackgroundColor?.({ color: '#2563eb' });
+      ext.action.setBadgeBackgroundColor?.({ tabId, color: '#2563eb' });
+    } else {
+      const n = store.get(tabId)?.size ?? 0;
+      ext.action.setBadgeText({ text: '' });
+      ext.action.setBadgeText({ tabId, text: n ? String(n) : '' });
+      ext.action.setBadgeBackgroundColor?.({ tabId, color: '#e11d48' });
+    }
   } catch { /* action unavailable on some pages */ }
 }
 
+export function refreshAllBadges(): void {
+  try {
+    if (hasActiveDownloads) {
+      const text = activeDownloadsCount > 1 ? `DL${activeDownloadsCount}` : 'DL';
+      ext.action.setBadgeText({ text });
+      ext.action.setBadgeBackgroundColor?.({ color: '#2563eb' });
+    }
+    ext.tabs.query({}, (tabs: any[]) => {
+      for (const t of tabs || []) {
+        if (t.id !== undefined) updateBadge(t.id);
+      }
+    });
+  } catch { /* ignore */ }
+}
+
 function notify(tabId: number): void {
-  // The popup polls for stream state, so there is no content-script listener to
-  // push to — just refresh the toolbar badge. (Messaging the tab here caused an
-  // unhandled "Receiving end does not exist" rejection on every detection.)
   updateBadge(tabId);
 }
 
@@ -337,5 +369,8 @@ export function installSniffer(): void {
   ext.tabs.onRemoved.addListener((tabId: number) => clearTab(tabId));
   ext.tabs.onUpdated.addListener((tabId: number, info: any) => {
     if (info.status === 'loading' && info.url) clearTab(tabId);
+  });
+  ext.tabs.onActivated.addListener((activeInfo: any) => {
+    if (activeInfo?.tabId) updateBadge(activeInfo.tabId);
   });
 }

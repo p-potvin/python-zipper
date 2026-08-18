@@ -39,8 +39,9 @@ import { initUI } from './ui/panel';
 
 
     function harvestLinks() {
-        const tagRegex = /^(img|video|source)$/i;
+        const tagRegex = /^(img|video|audio|source)$/i;
         const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
+        const audioExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg'];
 
         const mediaLinks = new Set();
         const cloudLinks = new Set();
@@ -89,7 +90,8 @@ import { initUI } from './ui/panel';
 
             const lowerUrl = url.toLowerCase();
             const isVideo = videoExtensions.some(ext => lowerUrl.endsWith(ext)) || (el && (el.tagName.toLowerCase() === 'video' || el.tagName.toLowerCase() === 'source'));
-            if (isVideo) return true;
+            const isAudio = audioExtensions.some(ext => lowerUrl.endsWith(ext)) || (el && el.tagName.toLowerCase() === 'audio');
+            if (isVideo || isAudio) return true;
 
             if (lowerUrl.endsWith('.ico') || lowerUrl.endsWith('.svg') || lowerUrl.includes('favicon')) return false;
 

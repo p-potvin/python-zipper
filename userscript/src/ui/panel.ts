@@ -10,6 +10,7 @@ import { createHeader, createTabs, createImagesSection, createLinksSection, crea
 import { refreshJobs, setupJobsListClickHandler } from './panel_jobs';
 import { createRefreshHarvestedLinks, addDroppedLinks } from './panel_harvest';
 import { handleScrape, handleSend, handleDrop } from './panel_actions';
+import { startElementPicker } from './gallery';
 
 export function initUI(_pal: any) {
     // --- 1. Fab Button ---
@@ -159,11 +160,20 @@ export function initUI(_pal: any) {
             floatBtn.style.display = 'none';
             return;
         }
-        const target = e.target.closest('.zipper-captured-highlight');
-        if (target) {
+        let target = e.target.closest('.zipper-captured-highlight');
+        if (!target && e.target.tagName && /^(img|video|audio|picture|div|span|a)$/i.test(e.target.tagName)) {
+            if (getElementUrl(e.target)) {
+                target = e.target;
+            }
+        }
+        if (target && !target.closest('#zipper-panel') && !target.closest('#zipper-fab') && !target.closest('#zipper-float-download-btn')) {
             activeHoveredElement = target;
             let url = getElementUrl(target);
-            if (!url && target.tagName.toLowerCase() === 'video') {
+            if (!url && target.tagName.toLowerCase() === 'picture') {
+                const imgOrSrc = target.querySelector('img') || target.querySelector('source');
+                if (imgOrSrc) url = getElementUrl(imgOrSrc);
+            }
+            if (!url && (target.tagName.toLowerCase() === 'video' || target.tagName.toLowerCase() === 'audio')) {
                 const srcEl = target.querySelector('source');
                 if (srcEl) url = getElementUrl(srcEl);
             }
@@ -214,8 +224,30 @@ export function initUI(_pal: any) {
     const dashboardSection = createDashboardSection();
     content.appendChild(dashboardSection);
 
-    // --- Smart Gallery Button ---
+    // --- Smart Gallery Button & Element Picker ---
     const smartGalleryBtn = smartGallerySection.querySelector('#zipper-smart-gallery-btn');
+    const gallerySelectorInput = smartGallerySection.querySelector('#zipper-gallery-selector');
+    const galleryPickerBtn = smartGallerySection.querySelector('#zipper-gallery-picker-btn');
+
+    if (galleryPickerBtn && gallerySelectorInput) {
+        galleryPickerBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            startElementPicker((selector) => {
+                gallerySelectorInput.value = selector;
+                gallerySelectorInput.dispatchEvent(new Event('input', { bubbles: true }));
+                gallerySelectorInput.dispatchEvent(new Event('change', { bubbles: true }));
+                logToConsole(`[Gallery] Selected container: ${selector}`, 'success');
+                gallerySelectorInput.style.borderColor = '#22c55e';
+                gallerySelectorInput.style.boxShadow = '0 0 6px #22c55e';
+                setTimeout(() => {
+                    gallerySelectorInput.style.borderColor = '';
+                    gallerySelectorInput.style.boxShadow = '';
+                }, 1200);
+            });
+        };
+    }
+
     smartGalleryBtn.onclick = async () => {
         smartGalleryBtn.disabled = true;
         try {

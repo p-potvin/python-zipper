@@ -50,7 +50,7 @@
             try {
                 let rawBuffer = await fetchAsArrayBuffer(url);
                 let ext = url.split('.').pop().split(new RegExp('[?#]'))[0];
-                if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi'].includes(ext.toLowerCase())) ext = 'jpg';
+                if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
 
                 blob = new Blob([rawBuffer]);
                 await zipWriter.add(window.location.pathname + `_${String(i + 1).padStart(3, '0')}.${ext}`, new zip.BlobReader(blob), { level: 0 });
@@ -116,18 +116,48 @@
 		"turbobit.net", "hitfile.net", "uptobox.com", "ddl.to", "alphafile.cc", "drop.download", "filer.net", "wdupload.com"
     ];
 
-    export function normalizeUrl(url, baseUrl = window.location.href) {
+    export function extractUrlFromBg(bgStr) {
+        if (!bgStr || bgStr === 'none' || typeof bgStr !== 'string') return '';
+        // 1. Quoted url("...") or url('...')
+        const quotedMatch = bgStr.match(/url\(\s*(["'])(.+?)\1\s*\)/i);
+        if (quotedMatch && quotedMatch[2]) {
+            return quotedMatch[2].trim();
+        }
+        // 2. Unquoted url(...)
+        const unquotedMatch = bgStr.match(/url\(\s*([^"')\s]+)\s*\)/i);
+        if (unquotedMatch && unquotedMatch[1]) {
+            return unquotedMatch[1].trim();
+        }
+        // 3. Fallback anything inside url(...)
+        const generalMatch = bgStr.match(/url\((.+?)\)/i);
+        if (generalMatch && generalMatch[1]) {
+            return generalMatch[1].replace(/^["']|["']$/g, '').trim();
+        }
+        return '';
+    }
+
+    export function normalizeUrl(url, baseUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
         if (!url) return "";
         let value = String(url).trim();
-        if (!value || value.startsWith("data:") || value.startsWith("blob:")) return "";
-        if (value.includes(",")) {
-            value = value.split(",").pop().trim().split(/\s+/)[0];
+        if (!value || value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("javascript:")) return "";
+
+        // Strip surrounding quotes or angle brackets if present
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1).trim();
         }
-        value = value.replace(/[)\].,;'"<>]+$/g, "");
+        if (value.startsWith('<') && value.endsWith('>')) {
+            value = value.slice(1, -1).trim();
+        }
+
         try {
-            return new URL(value, baseUrl).href;
+            return new URL(value, baseUrl || undefined).href;
         } catch (_e) {
-            return "";
+            if (value.startsWith('//') && typeof window !== 'undefined') {
+                try {
+                    return new URL(window.location.protocol + value).href;
+                } catch { }
+            }
+            return value;
         }
     }
 
@@ -143,16 +173,54 @@
             const candidates = srcset.split(',').map(part => part.trim().split(/\s+/)[0]).filter(Boolean);
             if (candidates.length > 0) return normalizeUrl(candidates[candidates.length - 1], window.location.href);
         }
-        return normalizeUrl(el.currentSrc || el.src || el.getAttribute('data-src') || el.href || el.getAttribute('href') || '', window.location.href);
+        let directUrl = el.currentSrc || el.src ||
+            el.getAttribute('data-src') || el.getAttribute('data-url') ||
+            el.getAttribute('data-bg') || el.getAttribute('data-background') ||
+            el.getAttribute('data-image') || el.getAttribute('data-original') ||
+            el.getAttribute('data-highres') || el.getAttribute('data-full') ||
+            el.poster || el.href || el.getAttribute('href') || '';
+
+        if (!directUrl && typeof window !== 'undefined' && el instanceof Element) {
+            try {
+                const style = window.getComputedStyle(el);
+                const bg = style ? style.backgroundImage : '';
+                if (bg && bg !== 'none') {
+                    directUrl = extractUrlFromBg(bg);
+                }
+            } catch (_) { }
+
+            if (!directUrl) {
+                const inlineStyle = el.getAttribute('style') || '';
+                if (inlineStyle) {
+                    directUrl = extractUrlFromBg(inlineStyle);
+                }
+            }
+        }
+        return normalizeUrl(directUrl, window.location.href);
+    }
+
+    function matchesDomain(url, domainList) {
+        if (!url) return false;
+        let hostname = '';
+        try {
+            const parsed = new URL(url.startsWith('http') ? url : 'http://' + url);
+            hostname = parsed.hostname.toLowerCase();
+        } catch {
+            const m = url.toLowerCase().match(/(?:https?:\/\/)?([a-z0-9.-]+)/i);
+            hostname = m ? m[1] : url.toLowerCase();
+        }
+        return domainList.some(d => {
+            const domain = d.toLowerCase();
+            return hostname === domain || hostname.endsWith('.' + domain);
+        });
     }
 
     export function isCloudUrl(url) {
-        const lower = url.toLowerCase();
-        return cloudDomains.some(domain => lower.includes(domain));
+        return matchesDomain(url, cloudDomains);
     }
 
     export function isMediaUrl(url) {
         const lower = url.toLowerCase();
-        return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv)(?:[?#].*)?$/i.test(lower) ||
-            mediaDomains.some(domain => lower.includes(domain));
+        return /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower) ||
+            matchesDomain(url, mediaDomains);
     }

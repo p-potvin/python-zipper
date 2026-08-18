@@ -4,18 +4,19 @@ import json
 import struct
 import subprocess
 
-LOG_FILE = r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\extension\public\native_host.log"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(SCRIPT_DIR, "native_host.log")
 
 def log(msg):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
+            f.write(f"{msg}\n")
     except Exception:
         pass
 
 def read_message():
     raw_length = sys.stdin.buffer.read(4)
-    if not raw_length:
+    if not raw_length or len(raw_length) < 4:
         return None
     message_length = struct.unpack('@I', raw_length)[0]
     message = sys.stdin.buffer.read(message_length).decode('utf-8')
@@ -32,26 +33,38 @@ if __name__ == "__main__":
     try:
         msg = read_message()
         log(f"Received message: {json.dumps(msg)}")
-        if msg and "folderPath" in msg:
-            raw_path = msg["folderPath"]
-            # Normalize path
-            path = os.path.normpath(raw_path)
-            log(f"Normalized path: {path}")
+        raw_path = (msg or {}).get("folderPath") or (msg or {}).get("path") or ""
+        
+        default_dir = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".downloaded", "streams"))
+        if not os.path.exists(default_dir):
+            default_dir = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "..", ".downloaded"))
+        if not os.path.exists(default_dir):
+            default_dir = os.path.expanduser("~/Downloads")
 
-            if not os.path.exists(path):
-                log(f"Path does not exist: {path}")
-                send_message({"status": "error", "error": "Path does not exist", "path": path})
+        target_path = os.path.normpath(raw_path) if raw_path else default_dir
+        log(f"Normalized target path: {target_path}")
+
+        curr = target_path
+        while curr and not os.path.exists(curr):
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+        if not curr or not os.path.exists(curr):
+            curr = default_dir
+
+        if os.path.exists(target_path):
+            if os.path.isfile(target_path):
+                log(f"Target is file: {target_path}. Launching explorer /select,...")
+                subprocess.Popen(['explorer.exe', f'/select,{target_path}'])
             else:
-                if os.path.isfile(path):
-                    log("Path is a file. Launching explorer with /select,...")
-                    subprocess.Popen(['explorer', f'/select,{path}'])
-                else:
-                    log("Path is a directory. Launching explorer on directory...")
-                    subprocess.Popen(['explorer', path])
-                send_message({"status": "success", "path": path})
+                log(f"Target is directory: {target_path}. Launching explorer...")
+                subprocess.Popen(['explorer.exe', target_path])
+            send_message({"ok": True, "status": "success", "path": target_path})
         else:
-            log("No folderPath in message or message is empty")
-            send_message({"status": "error", "error": "Invalid message format"})
+            log(f"Target does not exist directly, opening nearest parent folder: {curr}")
+            subprocess.Popen(['explorer.exe', curr])
+            send_message({"ok": True, "status": "success", "path": curr})
     except Exception as e:
         log(f"Exception occurred in native host: {str(e)}")
-        send_message({"status": "error", "error": str(e)})
+        send_message({"ok": False, "status": "error", "error": str(e)})
