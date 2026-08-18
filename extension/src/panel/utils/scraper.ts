@@ -11,7 +11,7 @@ import { Api } from '../api';
 export function harvestLinks() {
     const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
     const audioExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg'];
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.ico'];
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg'];
 
     const mediaCandidates: { url: string; score: number }[] = [];
     const cloudLinks = new Set<string>();
@@ -143,7 +143,7 @@ export function harvestLinks() {
             cloudLinks.add(url);
         }
 
-        const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lowerUrl);
+        const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lowerUrl);
         if (!hasMediaExt && !isMediaUrl(url)) return;
 
         let score = 120; // default medium score for plain text urls
@@ -231,7 +231,7 @@ export async function processAndZipGallery(urls: string[]) {
         try {
             const rawBuffer = await fetchAsArrayBuffer(url);
             let ext = url.split('.').pop()?.split(/[\?#]/)[0] || 'jpg';
-            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
+            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
 
             const blob = new Blob([rawBuffer as any]);
             const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
@@ -325,7 +325,7 @@ export async function runSmartGalleryZip() {
             if (url) {
                 const resolved = await resolveBestMediaUrl(url);
                 const ext = resolved.split('.').pop().split(/[?#]/)[0].toLowerCase();
-                const isMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext);
+                const isMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext);
                 if (isMedia) {
                     urlSet.add(resolved);
                 }

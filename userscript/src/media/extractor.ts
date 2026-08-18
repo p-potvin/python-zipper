@@ -15,7 +15,7 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
         resolved = url.replace('/thumbs/', '/files/');
     }
     const ext = url.split('.').pop()?.split(/[?#]/)[0].toLowerCase() || '';
-    const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'mkv', 'mov', 'm4v', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(ext);
+    const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mkv', 'mov', 'm4v', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(ext);
 
     if (!isDirectMedia && (url.startsWith('http://') || url.startsWith('https://'))) {
         try {

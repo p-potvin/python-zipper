@@ -27,7 +27,7 @@ export async function clientSideFallback(urls, btn, logToConsole) {
         try {
             let rawBuffer = await fetchAsArrayBuffer(url);
             let ext = url.split('.').pop().split(new RegExp('[?#]'))[0];
-            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
+            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
 
             blob = new Blob([rawBuffer]);
             await zipWriter.add(window.location.pathname + `_${String(i + 1).padStart(3, '0')}.${ext}`, new zip.BlobReader(blob), { level: 0 });
@@ -195,6 +195,6 @@ export function isCloudUrl(url) {
 
 export function isMediaUrl(url) {
     const lower = url.toLowerCase();
-    return /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower) ||
+    return /\.(jpg|jpeg|png|gif|webp|svg|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower) ||
         matchesDomain(url, mediaDomains);
 }
