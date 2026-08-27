@@ -121,12 +121,12 @@ async function handle(msg: BgMessage, sender: any) {
     }
     case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
 
-    // Jobs / files — proxied to the local server from the popup.
+    // Jobs remain server-backed; File Explorer actions use Firefox native messaging only.
     case 'jobs:get': return await serverGet('/api/jobs');
     case 'jobs:stop': return await serverPost('/api/stream/stop', { job_id: (msg as any).jobId });
     case 'jobs:delete': return await serverPost('/api/stream/delete', { job_id: (msg as any).jobId });
-    case 'open:folder': return await openFolderWithFallback('');
-    case 'open:path': return await openFolderWithFallback((msg as any).path || '');
+    case 'open:folder': return await revealDefaultDownloadFolder();
+    case 'open:path': return await revealPath((msg as any).path || '');
 
     case 'config:get': return { proxy: getProxy() };
     case 'config:set': await setProxy((msg as any).proxy || ''); return { ok: true };
@@ -222,38 +222,29 @@ async function observeCompletedJobs() {
 setInterval(observeCompletedJobs, 2000);
 
 
-async function openFolderWithFallback(folderPath: string) {
-  console.log("[Background] openFolderWithFallback target path:", folderPath);
-  // Attempt 1: Firefox Native Messaging Host
+async function revealPath(path: string) {
+  if (!path) return { ok: false, code: 'path_required', error: 'No path was supplied' };
   try {
-    console.log("[Background] Trying Native Messaging to com.pythonzipper.flmgr...");
     const response = await (ext as any).runtime.sendNativeMessage(
       "com.pythonzipper.flmgr",
-      { folderPath: folderPath || '' }
+      { action: 'reveal', path }
     );
-    console.log("[Background] Explorer opened via Native Host, response:", response);
-    if (response && response.ok !== false && response.status !== 'error') {
-      return { ok: true, method: 'native', response };
+    if (response?.ok === true && response?.status === 'revealed') {
+      return response;
     }
+    return { ok: false, code: response?.code || 'native_host_error',
+      error: response?.error || 'The native host did not confirm the Explorer reveal' };
   } catch (err: any) {
-    console.warn("[Background] Native Messaging failed:", err.message || err);
+    return { ok: false, code: 'native_host_unavailable',
+      error: String(err?.message || err || 'Firefox could not reach the native host') };
   }
+}
 
-  // Attempt 2: Local Python Server API Fallback
-  try {
-    console.log("[Background] Falling back to Local Python Server API /api/open-downloaded...");
-    const res = await serverPost('/api/open-downloaded', {
-      path: folderPath || undefined,
-      folder: !folderPath,
-      which: 'streams'
-    });
-    console.log("[Background] Local Python Server response:", res);
-    if (res?.ok || res?.status === 'opened file' || res?.status === 'opened folder') {
-      return { ok: true, method: 'server', response: res };
-    }
-    throw new Error(`Server response not ok: ${JSON.stringify(res)}`);
-  } catch (err: any) {
-    console.error("[Background] Both opening methods failed:", err);
-    return { ok: false, error: String(err.message || err) };
+async function revealDefaultDownloadFolder() {
+  const jobData = await serverGet('/api/jobs');
+  const path = jobData?.streams_dir || jobData?.download_dir;
+  if (!path) {
+    return { ok: false, code: 'download_folder_unknown', error: 'The download folder is unavailable' };
   }
+  return await revealPath(path);
 }

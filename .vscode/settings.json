@@ -1,3 +1,4 @@
 {
-  "python.languageServer": "Default"
+  "python.languageServer": "Default",
+  "sqliteViewer.instantCommit": "never"
 }

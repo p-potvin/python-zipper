@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Zip it — Live Stream Grabber (VaultWares)",
-  "version": "1.31.0",
-  "description": "Live stream (HLS/DASH/MSS) detector that forwards captures — with their real request headers — to the local python-zipper server.",
+  "version": "1.33.0",
+  "description": "Media (Videos, Images, HLS/DASH/MSS Streams) downloader used with a local python server.",
   "browser_specific_settings": {
     "gecko": {
       "id": "zipper-vdh@vaultwares",

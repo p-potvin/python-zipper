@@ -4,6 +4,14 @@ export function isHighlightEnabled() {
     return getZipperSetting('highlight-enabled', 'true') !== 'false';
 }
 
+export function isServerDownloadEnabled() {
+    return getZipperSetting('server-download-enabled', 'false') === 'true';
+}
+
+export function isRcloneEnabled() {
+    return getZipperSetting('rclone-enabled', 'false') === 'true';
+}
+
 export function createImagesSection() {
     const section = document.createElement('div');
     section.className = 'zipper-panel-section active';
@@ -103,6 +111,16 @@ export function createHeader() {
                 <button id="zipper-toggle-highlights-btn" class="zipper-icon-toggle ${isHighlightEnabled() ? 'active' : ''}" title="Toggle DOM Highlights">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                         <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                    </svg>
+                </button>
+                <button id="zipper-server-toggle-btn" class="zipper-icon-toggle ${isServerDownloadEnabled() ? 'active' : ''}" title="Toggle Server Downloads (Off: Browser Standalone / On: Local Server)">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M4 1h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm0 8h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm0 8h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zM6 4h2v1H6V4zm0 8h2v1H6v-1zm0 8h2v1H6v-1z"/>
+                    </svg>
+                </button>
+                <button id="zipper-rclone-toggle-btn" class="zipper-icon-toggle ${isRcloneEnabled() ? 'active' : ''}" title="Toggle RClone Cloud Handoff (Off: Local Storage / On: Cloud Remotes)">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                        <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-1.41-1.41L14.17 13H7v-2h7.17l-3.58-3.59L12 6l5 5v2z"/>
                     </svg>
                 </button>
                 <div style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; vertical-align: middle;">

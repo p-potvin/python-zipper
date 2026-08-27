@@ -357,19 +357,47 @@ export function initUI(_pal: any) {
 
     // --- Toggle Highlights ---
     const toggleHighlightsBtn = header.querySelector('#zipper-toggle-highlights-btn');
-    toggleHighlightsBtn.onclick = () => {
-        const enabled = !toggleHighlightsBtn.classList.contains('active');
-        toggleHighlightsBtn.classList.toggle('active', enabled);
-        setZipperSetting('highlight-enabled', String(enabled));
-        if (enabled) {
-            resetHarvestCache();
-            refreshHarvestedLinks();
-        } else {
-            document.querySelectorAll('.zipper-captured-highlight').forEach(el => {
-                el.classList.remove('zipper-captured-highlight');
-            });
-        }
-    };
+    if (toggleHighlightsBtn) {
+        toggleHighlightsBtn.onclick = () => {
+            const enabled = !toggleHighlightsBtn.classList.contains('active');
+            toggleHighlightsBtn.classList.toggle('active', enabled);
+            setZipperSetting('highlight-enabled', String(enabled));
+            if (enabled) {
+                resetHarvestCache();
+                refreshHarvestedLinks();
+            } else {
+                document.querySelectorAll('.zipper-captured-highlight').forEach(el => {
+                    el.classList.remove('zipper-captured-highlight');
+                });
+            }
+        };
+    }
+
+    // --- Toggle Server Downloads ---
+    const toggleServerBtn = header.querySelector('#zipper-server-toggle-btn');
+    if (toggleServerBtn) {
+        const savedServerDownload = getZipperSetting('server-download-enabled', 'false') === 'true';
+        toggleServerBtn.classList.toggle('active', savedServerDownload);
+        toggleServerBtn.onclick = () => {
+            const enabled = !toggleServerBtn.classList.contains('active');
+            toggleServerBtn.classList.toggle('active', enabled);
+            setZipperSetting('server-download-enabled', String(enabled));
+            logToConsole(`Server download route: ${enabled ? 'ENABLED (Forward to local server)' : 'DISABLED (Direct browser standalone)'}`, 'info');
+        };
+    }
+
+    // --- Toggle RClone Handoff ---
+    const toggleRcloneBtn = header.querySelector('#zipper-rclone-toggle-btn');
+    if (toggleRcloneBtn) {
+        const savedRclone = getZipperSetting('rclone-enabled', 'false') === 'true';
+        toggleRcloneBtn.classList.toggle('active', savedRclone);
+        toggleRcloneBtn.onclick = () => {
+            const enabled = !toggleRcloneBtn.classList.contains('active');
+            toggleRcloneBtn.classList.toggle('active', enabled);
+            setZipperSetting('rclone-enabled', String(enabled));
+            logToConsole(`RClone handoff: ${enabled ? 'ENABLED (Upload to remote)' : 'DISABLED (Keep files local)'}`, 'info');
+        };
+    }
 
     // --- Upscale toggle ---
     const savedUpscaleModel = getZipperSetting('upscale-model', '4xNomos8k_atd') || '4xNomos8k_atd';
@@ -661,11 +689,18 @@ export function initUI(_pal: any) {
         const isTyping = activeElement && (
             activeElement.tagName === 'INPUT' ||
             activeElement.tagName === 'TEXTAREA' ||
-            activeElement.isContentEditable
+            (activeElement as HTMLElement).isContentEditable
         );
         if (isTyping) return;
         if (e.shiftKey && (e.key === "Q" || e.key === "q")) {
             fab.click();
+        }
+        if (e.altKey && (e.code === "KeyQ" || e.key === "q" || e.key === "Q")) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (smartGalleryBtn) {
+                (smartGalleryBtn as HTMLButtonElement).click();
+            }
         }
     }, true);
 }

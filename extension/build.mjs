@@ -2,9 +2,10 @@ import { build, context } from 'esbuild';
 import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
+const noVersionBump = process.argv.includes('--no-version-bump');
 const outdir = 'dist';
 
-if (!watch) {
+if (!watch && !noVersionBump) {
   try {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
     const versionParts = pkg.version.split('.').map(Number);

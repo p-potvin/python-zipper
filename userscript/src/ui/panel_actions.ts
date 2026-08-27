@@ -40,21 +40,24 @@ export async function handleScrape(
     }
     const finalUrls = [...new Set(resolvedUrls.filter(Boolean))];
 
-    logToConsole(`[Media] Sending ${finalUrls.length} media files to local server...`, 'info');
+    const serverDownloadEnabled = getZipperSetting('server-download-enabled', 'false') === 'true';
+    const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
 
     const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
     const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
     const selectVal = (document.getElementById('zipper-upscale-model') as HTMLSelectElement).value;
     const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
 
-    if (globalState.serverOnline) {
+    if (serverDownloadEnabled && globalState.serverOnline) {
+        logToConsole(`[Media] Sending ${finalUrls.length} media files to local server...`, 'info');
         try {
             const response = await Api.sendWithFallback("download", "POST", {
                 url: window.location.href,
                 links: finalUrls,
                 batch_size: 5,
                 upscale_enabled: upscaleEnabled,
-                upscale_model: upscaleModel
+                upscale_model: upscaleModel,
+                rclone_enabled: rcloneEnabled
             });
 
             if (response.ok) {
@@ -77,6 +80,7 @@ export async function handleScrape(
             await clientSideFallback(finalUrls, scrapeBtn, logToConsole);
         }
     } else {
+        logToConsole(`[Media] Downloading ${finalUrls.length} media files directly in browser...`, 'info');
         await clientSideFallback(finalUrls, scrapeBtn, logToConsole);
     }
     scrapeBtn.disabled = false;
@@ -104,12 +108,15 @@ export async function handleSend(
     sendBtn.disabled = true;
     logToConsole(`[Upload] Sending ${links.length} link(s) to pipeline...`, 'info');
 
+    const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
+
     if (globalState.serverOnline) {
         try {
             const response = await Api.sendWithFallback("download", "POST", {
                 url: window.location.href,
                 links: links,
-                batch_size: 100
+                batch_size: 100,
+                rclone_enabled: rcloneEnabled
             });
 
             if (response.ok) {

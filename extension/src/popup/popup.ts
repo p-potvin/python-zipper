@@ -94,23 +94,26 @@ function toast(text: string, kind: '' | 'ok' | 'err' = '') {
   (toast as any)._t = window.setTimeout(() => el.classList.remove('show'), 2600);
 }
 
-function shortenPath(p?: string): string {
-  if (!p) return '';
-  return p.length > 46 ? '…' + p.slice(-44) : p;
+function flashRevealError(element: Element | null) {
+  if (!element) return;
+  element.classList.remove('reveal-error');
+  void (element as HTMLElement).offsetWidth;
+  element.classList.add('reveal-error');
+  window.setTimeout(() => element.classList.remove('reveal-error'), 1600);
 }
 
-async function openLocal(path: string, isFile: boolean) {
-  let copied = false;
-  try { await navigator.clipboard.writeText(path); copied = true; } catch { /* clipboard blocked */ }
-  const resp = await send({ kind: 'open:path', path });
+async function requestReveal(message: any, trigger: Element | null) {
+  const resp = await send(message);
   if (resp?.ok) {
-    toast(`${copied ? 'Path copied · ' : ''}opened in Explorer`, 'ok');
+    toast('Revealed in File Explorer', 'ok');
   } else {
-    const norm = path.replace(/\\/g, '/');
-    const url = 'file:///' + (isFile ? norm : norm.replace(/\/?$/, '/'));
-    try { await ext.tabs.create({ url }); } catch { /* file access blocked */ }
-    toast(`${copied ? 'Path copied · ' : ''}${shortenPath(path)}`, 'ok');
+    flashRevealError(trigger);
   }
+  return resp;
+}
+
+async function openLocal(path: string, trigger: Element | null) {
+  return await requestReveal({ kind: 'open:path', path }, trigger);
 }
 
 // ---- rendering --------------------------------------------------------------
@@ -317,7 +320,7 @@ cardsEl.addEventListener('click', async (e) => {
   else if (act === 'jobdelete') { await send({ kind: 'jobs:delete', jobId: btn.getAttribute('data-job')! }); lastSig = ''; poll(); }
   else if (act === 'open') {
     const p = btn.getAttribute('data-path')!;
-    openLocal(p, true);
+    await openLocal(p, btn);
   }
   else if (act === 'menu') {
     const s = key;
@@ -381,9 +384,7 @@ $('tb-refresh').addEventListener('click', () => {
 
 // Open downloads folder
 $('tb-folder').addEventListener('click', async () => {
-  const r = await send({ kind: 'open:folder' });
-  if (r?.ok || r?.path) toast('Opening downloads folder…', 'ok');
-  else toast('Could not open folder — start python-zipper on :5171', 'err');
+  await requestReveal({ kind: 'open:folder' }, $('tb-folder'));
 });
 
 // Clear — detections on this tab + finished jobs
@@ -410,12 +411,14 @@ $('tb-gear').addEventListener('click', async () => {
   const proxy = esc(cfg?.proxy || '');
 
   const keys = await ext.storage.local.get([
+    'zipper-server-download-enabled',
     'zipper-rclone-enabled',
     'zipper-highlight-enabled',
     'zipper-upscale-enabled',
     'zipper-upscale-model'
   ]);
   const rcloneEnabled = keys['zipper-rclone-enabled'] === 'true';
+  const serverDownloadEnabled = keys['zipper-server-download-enabled'] === 'true';
   const highlightEnabled = keys['zipper-highlight-enabled'] !== 'false';
   const upscaleEnabled = keys['zipper-upscale-enabled'] === 'true';
   const upscaleModel = keys['zipper-upscale-model'] || '4xNomos8k_atd';
@@ -433,19 +436,25 @@ $('tb-gear').addEventListener('click', async () => {
      
      <div style="display:flex;gap:16px;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">
        <div class="kv" style="flex:1;margin:0;align-items:center;">
-         <span>Cloud Handoff (rclone)</span>
-         <input type="checkbox" id="cfg-rclone" ${rcloneEnabled ? 'checked' : ''} style="cursor:pointer;" />
+         <span>Server Downloads</span>
+         <input type="checkbox" id="cfg-server-download" ${serverDownloadEnabled ? 'checked' : ''} style="cursor:pointer;" />
        </div>
        <div class="kv" style="flex:1;margin:0;align-items:center;">
-         <span>DOM Highlights</span>
-         <input type="checkbox" id="cfg-highlights" ${highlightEnabled ? 'checked' : ''} style="cursor:pointer;" />
+         <span>Cloud Handoff (rclone)</span>
+         <input type="checkbox" id="cfg-rclone" ${rcloneEnabled ? 'checked' : ''} style="cursor:pointer;" />
        </div>
      </div>
      <div style="display:flex;gap:16px;margin-top:4px;">
        <div class="kv" style="flex:1;margin:0;align-items:center;">
+         <span>DOM Highlights</span>
+         <input type="checkbox" id="cfg-highlights" ${highlightEnabled ? 'checked' : ''} style="cursor:pointer;" />
+       </div>
+       <div class="kv" style="flex:1;margin:0;align-items:center;">
          <span>AI Upscaling (4x)</span>
          <input type="checkbox" id="cfg-upscale" ${upscaleEnabled ? 'checked' : ''} style="cursor:pointer;" />
        </div>
+     </div>
+     <div style="display:flex;gap:16px;margin-top:4px;">
        <div class="kv" style="flex:1;margin:0;align-items:center;">
          <span>Upscale Model</span>
          <select id="cfg-upscale-model" style="background:#2a2a2e;color:#e6e6e8;border:1px solid #3f3f46;border-radius:4px;padding:2px 4px;font-size:10px;cursor:pointer;">
@@ -453,6 +462,7 @@ $('tb-gear').addEventListener('click', async () => {
            <option value="pillow-lanczos" ${upscaleModel === 'pillow-lanczos' ? 'selected' : ''}>Pillow 4x</option>
          </select>
        </div>
+       <div style="flex:1;"></div>
      </div>
 
      <label style="display:block;margin-top:10px;color:#a1a1aa;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">Download proxy (yt-dlp)</label>
@@ -468,7 +478,11 @@ $('tb-gear').addEventListener('click', async () => {
 
   pop.addEventListener('change', async (ev) => {
     const target = ev.target as HTMLElement;
-    if (target.id === 'cfg-rclone') {
+    if (target.id === 'cfg-server-download') {
+      const checked = (target as HTMLInputElement).checked;
+      await ext.storage.local.set({ 'zipper-server-download-enabled': String(checked) });
+      toast(checked ? 'Server downloads enabled' : 'Server downloads disabled (Standalone)', 'ok');
+    } else if (target.id === 'cfg-rclone') {
       const checked = (target as HTMLInputElement).checked;
       await ext.storage.local.set({ 'zipper-rclone-enabled': String(checked) });
       toast(checked ? 'RClone handoff enabled' : 'RClone handoff disabled', 'ok');
@@ -497,7 +511,10 @@ $('tb-gear').addEventListener('click', async () => {
       closePop();
       return;
     }
-    if (p === 'folder') { const r = await send({ kind: 'open:folder' }); if (r?.path) openLocal(r.path, false); else toast('Server offline', 'err'); }
+    if (p === 'folder') {
+      const trigger = (ev.target as HTMLElement).closest('[data-p]');
+      await requestReveal({ kind: 'open:folder' }, trigger);
+    }
     else if (p === 'clearjobs') {
       const finished = Object.values(lastJobs).filter((j) => j.type === 'stream' && ['completed', 'failed', 'aborted'].includes(j.status));
       for (const j of finished) await send({ kind: 'jobs:delete', jobId: j.id });

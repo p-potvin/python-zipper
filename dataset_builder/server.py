@@ -21,6 +21,34 @@ from ds_helpers import (
 )
 from ds_streams import probe_stream, download_stream, stop_stream, STREAMS_DIR
 
+
+def build_jobs_payload():
+    return {
+        "jobs": get_jobs_snapshot(),
+        "source": "local-python-zipper",
+        "download_dir": os.path.abspath(DEST_DIR),
+        "streams_dir": os.path.abspath(STREAMS_DIR),
+    }
+
+
+def resolve_archive_paths(archives):
+    return [os.path.abspath(os.path.join(DEST_DIR, name)) for name in archives]
+
+
+def resolve_legacy_reveal_path(data):
+    """Resolve v1.32 reveal input without performing a desktop side effect."""
+    if data.get("path"):
+        path = os.path.normpath(os.path.abspath(data["path"]))
+    elif data.get("folder"):
+        path = os.path.abspath(STREAMS_DIR if data.get("which") == "streams" else DEST_DIR)
+    elif data.get("filename"):
+        path = os.path.normpath(os.path.abspath(os.path.join(DEST_DIR, data["filename"])))
+    else:
+        raise ValueError("A path, filename, or folder request is required")
+    if not os.path.exists(path):
+        raise FileNotFoundError("The requested path does not exist")
+    return path
+
 PORT = 5171
 DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
 VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca:9001")
@@ -131,154 +159,6 @@ class ScraperHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _reveal_in_explorer(self, path, select=False):
-        import subprocess
-        p = os.path.normpath(os.path.abspath(path))
-        target_dir = p if os.path.isdir(p) else os.path.dirname(p)
-        if not os.path.exists(target_dir):
-            target_dir = os.path.abspath(DEST_DIR)
-
-        # 1. Check if running in Session 0 (e.g. Windows Service) and bridge to interactive desktop
-        if os.name == 'nt':
-            try:
-                import ctypes
-                from ctypes import wintypes
-                kernel32 = ctypes.windll.kernel32
-                process_session_id = wintypes.DWORD()
-                if kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(process_session_id)):
-                    if process_session_id.value == 0:
-                        wtsapi32 = ctypes.windll.wtsapi32
-                        advapi32 = ctypes.windll.advapi32
-                        active_session_id = kernel32.WTSGetActiveConsoleSessionId()
-                        if active_session_id == 0xFFFFFFFF:
-                            active_session_id = 1
-
-                        user_token = wintypes.HANDLE()
-                        if wtsapi32.WTSQueryUserToken(active_session_id, ctypes.byref(user_token)):
-                            dup_token = wintypes.HANDLE()
-                            advapi32.DuplicateTokenEx(
-                                user_token,
-                                0x02000000 | 0x000F0000 | 0x003F,
-                                None,
-                                2,
-                                1,
-                                ctypes.byref(dup_token)
-                            )
-
-                            class STARTUPINFO(ctypes.Structure):
-                                _fields_ = [
-                                    ('cb', wintypes.DWORD),
-                                    ('lpReserved', wintypes.LPWSTR),
-                                    ('lpDesktop', wintypes.LPWSTR),
-                                    ('lpTitle', wintypes.LPWSTR),
-                                    ('dwX', wintypes.DWORD),
-                                    ('dwY', wintypes.DWORD),
-                                    ('dwXSize', wintypes.DWORD),
-                                    ('dwYSize', wintypes.DWORD),
-                                    ('dwXCountChars', wintypes.DWORD),
-                                    ('dwYCountChars', wintypes.DWORD),
-                                    ('dwFillAttribute', wintypes.DWORD),
-                                    ('dwFlags', wintypes.DWORD),
-                                    ('wShowWindow', wintypes.WORD),
-                                    ('cbReserved2', wintypes.WORD),
-                                    ('lpReserved2', ctypes.c_char_p),
-                                    ('hStdInput', wintypes.HANDLE),
-                                    ('hStdOutput', wintypes.HANDLE),
-                                    ('hStdError', wintypes.HANDLE)
-                                ]
-
-                            class PROCESS_INFORMATION(ctypes.Structure):
-                                _fields_ = [
-                                    ('hProcess', wintypes.HANDLE),
-                                    ('hThread', wintypes.HANDLE),
-                                    ('dwProcessId', wintypes.DWORD),
-                                    ('dwThreadId', wintypes.DWORD)
-                                ]
-
-                            si = STARTUPINFO()
-                            si.cb = ctypes.sizeof(STARTUPINFO)
-                            si.lpDesktop = "winsta0\\default"
-                            pi = PROCESS_INFORMATION()
-
-                            cmd = f'explorer.exe /select,"{p}"' if (select and os.path.isfile(p)) else f'explorer.exe "{target_dir}"'
-                            success = advapi32.CreateProcessAsUserW(
-                                dup_token.value or user_token.value,
-                                None,
-                                cmd,
-                                None,
-                                None,
-                                False,
-                                0x00000020,
-                                None,
-                                None,
-                                ctypes.byref(si),
-                                ctypes.byref(pi)
-                            )
-                            if success:
-                                kernel32.CloseHandle(pi.hProcess)
-                                kernel32.CloseHandle(pi.hThread)
-                                kernel32.CloseHandle(dup_token)
-                                kernel32.CloseHandle(user_token)
-                                print(f"[Server] launched explorer via CreateProcessAsUserW into session {active_session_id}")
-                                return p
-                            kernel32.CloseHandle(dup_token)
-                            kernel32.CloseHandle(user_token)
-            except Exception as e:
-                print(f"[Server] Session bridge failed ({e}); trying direct launch")
-
-        # 2. Standard interactive launch
-        try:
-            if select and os.path.isfile(p):
-                subprocess.Popen(['explorer.exe', f'/select,{p}'])
-            else:
-                try:
-                    os.startfile(target_dir)
-                except Exception:
-                    subprocess.Popen(['explorer.exe', target_dir])
-        except Exception as e:
-            print(f"[Server] reveal explorer failed: {e}")
-        return p
-
-    def _handle_open_downloaded(self, data):
-        try:
-            dest = os.path.abspath(DEST_DIR)
-            os.makedirs(dest, exist_ok=True)
-            os.makedirs(STREAMS_DIR, exist_ok=True)
-
-            abs_path = data.get('path')
-            if abs_path:
-                p = os.path.normpath(os.path.abspath(abs_path))
-                if os.path.exists(p):
-                    self._reveal_in_explorer(p, select=os.path.isfile(p))
-                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(p) else "opened folder", "path": p})
-                else:
-                    curr = p
-                    while curr and not os.path.exists(curr):
-                        parent = os.path.dirname(curr)
-                        if parent == curr:
-                            break
-                        curr = parent
-                    if not curr or not os.path.exists(curr):
-                        curr = STREAMS_DIR if 'streams' in p.lower() else dest
-                    self._reveal_in_explorer(curr, select=False)
-                    self._send_json({"ok": True, "status": "opened folder", "path": curr})
-                return
-
-            if data.get('folder'):
-                target = STREAMS_DIR if data.get('which') == 'streams' else dest
-                self._reveal_in_explorer(target, select=False)
-                self._send_json({"ok": True, "status": "opened folder", "path": target})
-            else:
-                filename = data.get('filename', '')
-                filepath = os.path.normpath(os.path.join(dest, filename)) if filename else dest
-                if os.path.exists(filepath):
-                    self._reveal_in_explorer(filepath, select=os.path.isfile(filepath))
-                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(filepath) else "opened folder", "path": filepath})
-                else:
-                    self._reveal_in_explorer(dest, select=False)
-                    self._send_json({"ok": True, "status": "opened folder", "path": dest})
-        except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
 
     def do_OPTIONS(self):
         self.send_response(200)
@@ -317,7 +197,7 @@ class ScraperHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"jobs": get_jobs_snapshot(), "source": "local-python-zipper"}).encode('utf-8'))
+            self.wfile.write(json.dumps(build_jobs_payload()).encode('utf-8'))
         elif self.path in ['/', '/health', '/api']:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -462,13 +342,14 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
         elif self.path == '/api/open-downloaded':
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
+            # Compatibility bridge for signed extension v1.32. This resolves
+            # paths only; Firefox native messaging performs the desktop action.
+            data = self._read_json()
             try:
-                data = json.loads(post_data.decode('utf-8')) if content_length > 0 else {}
-            except Exception:
-                data = {}
-            self._handle_open_downloaded(data)
+                path = resolve_legacy_reveal_path(data)
+                self._send_json({"ok": True, "status": "resolved", "path": path})
+            except (ValueError, FileNotFoundError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 404)
         else:
             self.send_response(404)
             self.end_headers()
@@ -492,9 +373,11 @@ class ScraperHandler(BaseHTTPRequestHandler):
         update_job(job_id, status="running")
         try:
             result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled)
+            archives = result.get("archives", [])
+            update_job(job_id, save_dir=os.path.abspath(DEST_DIR), archive_paths=resolve_archive_paths(archives))
             complete_job(
                 job_id,
-                archives=result.get("archives", []),
+                archives=archives,
                 rclone_complete=result.get("rclone_complete", False),
             )
         except Exception as e:
