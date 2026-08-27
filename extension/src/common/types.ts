@@ -94,6 +94,7 @@ export interface StreamJob {
   status: string;
   title?: string;
   stream_url?: string;
+  page_url?: string;
   quality?: string;
   thumbnail?: string | null;
   duration?: number | null;
@@ -104,6 +105,9 @@ export interface StreamJob {
   downloaded_bytes?: number;
   total_bytes?: number;
   save_path?: string | null;
+  save_dir?: string | null;
+  archives?: string[];
+  archive_paths?: string[];
   error?: string;
   created_at?: number;
 }

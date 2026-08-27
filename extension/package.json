@@ -1,11 +1,12 @@
 {
   "name": "vaultwares-zipper-extension",
-  "version": "1.31.0",
+  "version": "1.33.0",
   "private": true,
   "type": "module",
   "description": "Firefox/Chrome MV3 extension: Live-stream downloader running along a local companion python server",
   "scripts": {
     "build": "node build.mjs",
+    "build:verify": "node build.mjs --no-version-bump",
     "dev": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "start:firefox": "web-ext run --source-dir dist --browser-console",

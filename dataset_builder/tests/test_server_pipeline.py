@@ -11,6 +11,9 @@ from PIL import Image
 import dataset_builder.server as server
 
 
+import dataset_builder.ds_helpers as ds_helpers
+
+
 def _png_bytes(size=(4, 3), color=(30, 80, 120)):
     image = Image.new("RGB", size, color)
     buf = io.BytesIO()
@@ -19,6 +22,30 @@ def _png_bytes(size=(4, 3), color=(30, 80, 120)):
 
 
 class ServerPipelineTests(unittest.TestCase):
+    def test_jobs_payload_exposes_absolute_reveal_paths(self):
+        with TemporaryDirectory() as temp_dir:
+            streams_dir = os.path.join(temp_dir, "streams")
+            with (
+                patch.object(server, "DEST_DIR", temp_dir),
+                patch.object(server, "STREAMS_DIR", streams_dir),
+                patch.object(server, "get_jobs_snapshot", lambda: {"job-1": {"status": "completed"}}),
+            ):
+                payload = server.build_jobs_payload()
+                archive_paths = server.resolve_archive_paths(["archive.zip"])
+        self.assertEqual(payload["download_dir"], os.path.abspath(temp_dir))
+        self.assertEqual(payload["streams_dir"], os.path.abspath(streams_dir))
+        self.assertEqual(archive_paths, [os.path.abspath(os.path.join(temp_dir, "archive.zip"))])
+
+    def test_legacy_reveal_route_only_resolves_existing_path(self):
+        with TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "archive.zip"
+            target.write_bytes(b"zip")
+            with patch.object(server, "DEST_DIR", temp_dir):
+                resolved = server.resolve_legacy_reveal_path({"filename": target.name})
+                self.assertTrue(os.path.samefile(resolved, target))
+                with self.assertRaises(FileNotFoundError):
+                    server.resolve_legacy_reveal_path({"filename": "missing.zip"})
+
     def test_upscaler_models_put_nomos_model_before_pillow_fallback(self):
         models = server.get_available_upscale_models()
 
@@ -52,14 +79,13 @@ class ServerPipelineTests(unittest.TestCase):
     def test_download_and_zip_images_upscales_image_and_hands_archive_to_rclone(self):
         with TemporaryDirectory() as temp_dir:
             handed_off = []
-            handler = object.__new__(server.ScraperHandler)
 
+            import ds_helpers
             with (
                 patch.object(server, "DEST_DIR", temp_dir),
-                patch.object(server.scraper, "download_image", lambda _url, _headers: _png_bytes()),
-                patch.object(server, "handoff_to_rclone", lambda path: handed_off.append(Path(path))),
+                patch.object(ds_helpers, "handoff_to_rclone", lambda path: handed_off.append(Path(path)) or True),
             ):
-                handler._download_and_zip_images(
+                server.download_and_zip_images(
                     "sample",
                     "https://example.test/gallery",
                     ["https://cdn.example.test/image.png"],
@@ -67,6 +93,9 @@ class ServerPipelineTests(unittest.TestCase):
                     {},
                     upscale_enabled=True,
                     upscale_model="pillow-lanczos",
+                    dest_dir=temp_dir,
+                    download_image_fn=lambda _url, _headers: _png_bytes(),
+                    rclone_enabled=True,
                 )
 
             archives = list(Path(temp_dir).glob("sample_*.zip"))
@@ -97,7 +126,7 @@ class ServerPipelineTests(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, {"PYTHON_ZIPPER_RCLONE_REMOTES": "gdrive:python-zipper,proton:python-zipper"}),
-                patch.object(server.subprocess, "run", fake_run),
+                patch.object(ds_helpers.subprocess, "run", fake_run),
             ):
                 self.assertTrue(server.handoff_to_rclone(str(target)))
 
@@ -117,7 +146,7 @@ class ServerPipelineTests(unittest.TestCase):
 
             with (
                 patch.dict(os.environ, {"PYTHON_ZIPPER_RCLONE_REMOTES": "gdrive:python-zipper"}),
-                patch.object(server.subprocess, "run", lambda *args, **kwargs: Result()),
+                patch.object(ds_helpers.subprocess, "run", lambda *args, **kwargs: Result()),
             ):
                 self.assertFalse(server.handoff_to_rclone(str(target)))
 

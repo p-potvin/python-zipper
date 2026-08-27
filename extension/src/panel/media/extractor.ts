@@ -4,8 +4,7 @@ import { extractUrlFromBg } from '../utils/helpers';
 export function isHighQualityMedia(url: string): boolean {
     const lower = url.toLowerCase();
     const qualityPatterns = [
-        '1080p', '720p', '4k', '2160p', '1440p', '1080', '720', '1920', '3840', '2560',
-        'highres', 'hd', 'full', 'source', 'original', 'origin'
+        '480', '360', '1080', '720', 'source', 'original', 'origin'
     ];
     return qualityPatterns.some(pat => lower.includes(pat));
 }
@@ -16,7 +15,7 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
         resolved = url.replace('/thumbs/', '/files/');
     }
     const ext = url.split('.').pop()?.split(/[?#]/)[0].toLowerCase() || '';
-    const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'mkv', 'mov', 'm4v', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'].includes(ext);
+    const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'mkv', 'avi', 'mp3', 'wav'].includes(ext);
 
     if (!isDirectMedia && (url.startsWith('http://') || url.startsWith('https://'))) {
         try {
@@ -48,7 +47,7 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
             const imgTag = doc.querySelector('img#image') as HTMLImageElement || doc.querySelector('img.main-image') as HTMLImageElement || doc.querySelector('div.image-container img') as HTMLImageElement;
             if (imgTag && imgTag.src) return new URL(imgTag.src, url).href;
 
-            const bgEl = doc.querySelector('div[style*="background"], span[style*="background"], div[data-src], span[data-src], div[data-image], span[data-image], div[data-bg], span[data-bg], [style*="background-image"]') as HTMLElement;
+            const bgEl = doc.querySelector('div[data-src], span[data-src], div[data-image], span[data-image], div[data-bg], span[data-bg], [style*="background-image"]') as HTMLElement;
             if (bgEl) {
                 const styleAttr = bgEl.getAttribute('style') || '';
                 const bgUrl = extractUrlFromBg(styleAttr);

@@ -7,10 +7,12 @@ import { ext } from '../common/api';
 
 const cache = new Map<string, any>();
 
-// Keys the ported panel reads synchronously at startup. Add more as the port grows.
 const PRELOAD_KEYS = [
   'zipper-fab-right', 'zipper-fab-bottom',
   'zipper-panel-right', 'zipper-panel-bottom',
+  'zipper-highlight-enabled', 'zipper-upscale-enabled',
+  'zipper-upscale-model', 'zipper-rclone-enabled',
+  'zipper-server-download-enabled',
 ];
 
 export async function initGmShim(): Promise<void> {

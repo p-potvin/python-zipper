@@ -11,9 +11,9 @@ declare const saveAs: any;
 declare const unsafeWindow: any;
 
 export function harvestLinks() {
-    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv', '.wmv'];
+    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.m4v', '.mkv', '.avi', '.flv'];
     const audioExtensions = ['.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg'];
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.svg', '.ico'];
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
 
     const mediaCandidates: { url: string; score: number }[] = [];
     const cloudLinks = new Set<string>();
@@ -344,8 +344,10 @@ export async function runSmartGalleryZip() {
     // Filter out the base document page URL
     extractedUrls = extractedUrls.filter(u => u !== window.location.href);
 
+    const serverDownloadEnabled = getZipperSetting('server-download-enabled', 'false') === 'true';
     const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
-    if (globalState.serverOnline) {
+
+    if (serverDownloadEnabled && globalState.serverOnline) {
         logToConsole(`[SmartZip] Forwarding ${extractedUrls.length} media files to local server...`, "info");
         const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
         const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
@@ -365,7 +367,7 @@ export async function runSmartGalleryZip() {
         return;
     }
 
-    logToConsole(`[SmartZip] Initiating zipping workflow for ${extractedUrls.length} items...`, "info");
+    logToConsole(`[SmartZip] Initiating direct browser zipping for ${extractedUrls.length} items...`, "info");
     await processAndZipGallery(extractedUrls);
     logToConsole("[SmartZip] Zipping workflow complete!", "success");
 }

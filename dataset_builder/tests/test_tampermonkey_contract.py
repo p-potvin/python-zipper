@@ -3,21 +3,30 @@ from pathlib import Path
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "tampermonkey_script.js"
+SRC_DIR = Path(__file__).resolve().parents[2] / "userscript" / "src"
 
 
 class TampermonkeyContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = SCRIPT.read_text(encoding="utf-8")
+        sources = [SCRIPT.read_text(encoding="utf-8")]
+        if SRC_DIR.exists():
+            for p in sorted(SRC_DIR.rglob("*.ts")):
+                sources.append(p.read_text(encoding="utf-8"))
+        cls.source = "\n".join(sources)
 
     def test_userscript_uses_tampermonkey_storage_for_persistent_toggles(self):
         self.assertIn("getZipperSetting('highlight-enabled'", self.source)
         self.assertIn("setZipperSetting('highlight-enabled'", self.source)
         self.assertIn("getZipperSetting('upscale-enabled'", self.source)
         self.assertIn("setZipperSetting('upscale-enabled'", self.source)
+        self.assertIn("getZipperSetting('server-download-enabled'", self.source)
+        self.assertIn("setZipperSetting('server-download-enabled'", self.source)
+        self.assertIn("getZipperSetting('rclone-enabled'", self.source)
+        self.assertIn("setZipperSetting('rclone-enabled'", self.source)
 
     def test_userscript_has_primary_api_and_local_fallback_download_routing(self):
-        self.assertIn('primary: "http://100.67.25.118:9001"', self.source)
+        self.assertIn('primary: "http://127.0.0.1:5171"', self.source)
         self.assertIn('local: "http://127.0.0.1:5171"', self.source)
         self.assertIn("sendWithFallback(routeKey", self.source)
         self.assertIn('await Api.sendWithFallback("download"', self.source)

@@ -15,7 +15,6 @@ export class Api {
         health: "/health",
         abort: "/api/abort",
         jobs: "/api/jobs",
-        openDownloaded: "/api/open-downloaded",
         upscalerStatus: "/api/upscaler/status",
         streamStop: "/api/stream/stop",
         streamDelete: "/api/stream/delete"

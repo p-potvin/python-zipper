@@ -7,6 +7,7 @@ import { showBrowserNotification } from '../main';
 export async function fetchJobsFromEndpoints() {
     const mergedJobs = {};
     let jobOrigin = Api.origin;
+    let downloadDir = '';
     for (const endpointKey of ["primary", "local", "localhost"]) {
         const response = await Api.send("jobs", "GET", null, endpointKey);
         if (!response.ok) continue;
@@ -16,8 +17,9 @@ export async function fetchJobsFromEndpoints() {
             Object.assign(mergedJobs, data.jobs);
             jobOrigin = response.origin || jobOrigin;
         }
+        if (data.download_dir) downloadDir = data.download_dir;
     }
-    return { jobs: mergedJobs, origin: jobOrigin };
+    return { jobs: mergedJobs, origin: jobOrigin, downloadDir };
 }
 
 function fmtBytes(n) {
@@ -92,7 +94,7 @@ function renderStreamJob(key, job) {
     </div>`;
 }
 
-function renderBatchJob(key, job, jobOrigin) {
+function renderBatchJob(key, job, jobOrigin, downloadDir) {
     const color = statusColor(job.status);
     const percent = job.total_links > 0 ? Math.min(100, Math.round((job.processed_links / job.total_links) * 100)) : 0;
     const running = job.status === 'running' || job.status === 'queued';
@@ -123,17 +125,21 @@ function renderBatchJob(key, job, jobOrigin) {
             <div style="display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; align-items: center;">
                 ${running ? `<button class="zipper-job-abort zipper-btn" data-job="${key}" style="padding:2px 8px;font-size:10px;height:20px;background:#f59e0b;border:none;box-shadow:none;color:#231400;cursor:pointer;">Abort</button>` : ''}
                 ${job.status === 'completed' ? `
-                    ${job.archives && job.archives.length > 0 ? job.archives.map(arch => `
+                    ${job.archives && job.archives.length > 0 ? job.archives.map((arch, index) => {
+                        const archivePath = job.archive_paths?.[index]
+                            || `${job.save_dir || downloadDir || ''}\\${arch}`.replace(/^\\/, '');
+                        const downloadUrl = `${jobOrigin}/api/download-file?path=${encodeURIComponent(archivePath || arch)}`;
+                        return `
                         <div style="display: inline-flex; border: 1px solid var(--zipper-border); border-radius: 4px; overflow: hidden; background: rgba(0,0,0,0.2);">
-                            <a href="#" data-file="${arch}" data-origin="${jobOrigin}" class="zipper-view-link zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
+                            <a href="${esc(downloadUrl)}" target="_blank" class="zipper-view-link zipper-btn" style="text-decoration: none; padding: 2px 6px; font-size: 9px; height: 18px; line-height: 18px; font-weight: normal; background: var(--zipper-primary); color: #fff; box-shadow: none; border: none; border-radius: 0;">
                                 View ${arch.split('_').pop() || 'File'}
                             </a>
-                            <button class="zipper-open-btn zipper-btn" data-file="${arch}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
+                            <button class="zipper-open-btn zipper-btn" data-path="${esc(archivePath)}" title="Locate in Desktop Explorer" style="padding: 2px 4px; font-size: 9px; height: 18px; font-weight: normal; background: rgba(255,255,255,0.08); border: none; border-left: 1px solid var(--zipper-border); border-radius: 0; box-shadow: none;">
                                 📂
                             </button>
                         </div>
-                    `).join('') : ''}
-                    <button class="zipper-open-folder-btn zipper-btn" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
+                    `}).join('') : ''}
+                    <button class="zipper-open-folder-btn zipper-btn" data-path="${esc(job.save_dir || downloadDir || '')}" style="padding: 2px 6px; font-size: 9px; height: 20px; font-weight: normal; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border); box-shadow: none;">
                         Open Folder
                     </button>
                 ` : ''}
@@ -144,7 +150,7 @@ function renderBatchJob(key, job, jobOrigin) {
 
 export async function refreshJobs(dashboardSection: HTMLElement, previousJobStatuses: Record<string, string>) {
     if (!globalState.serverOnline) return;
-    const { jobs, origin: jobOrigin } = await fetchJobsFromEndpoints();
+    const { jobs, origin: jobOrigin, downloadDir } = await fetchJobsFromEndpoints();
     const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
 
     for (const key in jobs) {
@@ -164,11 +170,32 @@ export async function refreshJobs(dashboardSection: HTMLElement, previousJobStat
     jobKeys.sort((a, b) => jobs[b].created_at - jobs[a].created_at);
     jobsListContainer.innerHTML = jobKeys.map(key => {
         const job = jobs[key];
-        return job.type === 'stream' ? renderStreamJob(key, job) : renderBatchJob(key, job, jobOrigin);
+        return job.type === 'stream' ? renderStreamJob(key, job) : renderBatchJob(key, job, jobOrigin, downloadDir);
     }).join('');
 }
 
 export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
+    const flashRevealError = (button) => {
+        button.classList.remove('zipper-reveal-error');
+        void button.offsetWidth;
+        button.classList.add('zipper-reveal-error');
+        setTimeout(() => button.classList.remove('zipper-reveal-error'), 1600);
+    };
+    const revealPath = async (button, path) => {
+        const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
+        if (!path || !extAPI?.runtime) {
+            flashRevealError(button);
+            return false;
+        }
+        try {
+            const response = await extAPI.runtime.sendMessage({ kind: 'open:path', path });
+            if (response?.ok) return true;
+        } catch (error) {
+            console.error('[Jobs] File Explorer reveal failed:', error);
+        }
+        flashRevealError(button);
+        return false;
+    };
     jobsListContainer.onclick = async (e) => {
         const stopBtn = e.target.closest('.zipper-stream-stop');
         const delBtn = e.target.closest('.zipper-stream-delete');
@@ -177,7 +204,6 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
         const openStreamBtn = e.target.closest('.zipper-stream-open');
         const openFileBtn = e.target.closest('.zipper-open-btn');
         const openFolderBtn = e.target.closest('.zipper-open-folder-btn');
-        const viewLink = e.target.closest('.zipper-view-link');
 
         if (stopBtn) {
             e.preventDefault();
@@ -213,111 +239,20 @@ export function setupJobsListClickHandler(jobsListContainer: HTMLElement) {
             e.preventDefault();
             openStreamBtn.style.opacity = '0.5';
             const path = openStreamBtn.getAttribute('data-path');
-            console.log("[Jobs] Opening stream job path:", path);
-            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
-            if (extAPI && extAPI.runtime) {
-                try {
-                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path });
-                    console.log("[Jobs] Native open stream response:", resp);
-                } catch (err) {
-                    console.warn("[Jobs] Native messaging open failed, calling server direct:", err);
-                    await Api.send("openDownloaded", "POST", { path });
-                }
-            } else {
-                await Api.send("openDownloaded", "POST", { path });
-            }
+            await revealPath(openStreamBtn, path);
             openStreamBtn.style.opacity = '1';
-        } else if (viewLink) {
-            e.preventDefault();
-            const filename = viewLink.getAttribute('data-file');
-            const jobOrigin = viewLink.getAttribute('data-origin') || Api.origin;
-            viewLink.style.opacity = '0.5';
-            console.log("[Jobs] Viewing link file:", filename);
-            const response = await Api.send("openDownloaded", "POST", { filename });
-            viewLink.style.opacity = '1';
-            let success = false, filePath = null;
-            if (response.ok) {
-                try {
-                    const data = await response.json();
-                    if (data.status === 'opened file') success = true;
-                    if (data.path) filePath = data.path;
-                } catch (_) { }
-            }
-            console.log("[Jobs] Server response for viewLink:", { success, filePath });
-            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
-            if (filePath && extAPI && extAPI.runtime) {
-                try {
-                    console.log("[Jobs] Requesting background open for file path:", filePath);
-                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: filePath });
-                    console.log("[Jobs] Background open response:", resp);
-                    success = resp?.ok;
-                } catch (err) {
-                    console.error("[Jobs] Background open failed:", err);
-                }
-            }
-            if (!success) {
-                if (filePath) window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
-                else window.open(`${jobOrigin}/downloaded/${encodeURIComponent(filename)}`, '_blank');
-            }
         } else if (openFileBtn) {
             e.preventDefault();
-            const filename = openFileBtn.getAttribute('data-file');
+            const path = openFileBtn.getAttribute('data-path');
             openFileBtn.style.opacity = '0.5';
-            console.log("[Jobs] Opening file:", filename);
-            const response = await Api.send("openDownloaded", "POST", { filename });
+            await revealPath(openFileBtn, path);
             openFileBtn.style.opacity = '1';
-            let success = false, filePath = null;
-            if (response.ok) {
-                try {
-                    const data = await response.json();
-                    if (data.status === 'opened file') success = true;
-                    if (data.path) filePath = data.path;
-                } catch (_) { }
-            }
-            console.log("[Jobs] Server response for openFile:", { success, filePath });
-            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
-            if (filePath && extAPI && extAPI.runtime) {
-                try {
-                    console.log("[Jobs] Requesting background open for file path:", filePath);
-                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: filePath });
-                    console.log("[Jobs] Background open response:", resp);
-                    success = resp?.ok;
-                } catch (err) {
-                    console.error("[Jobs] Background open failed:", err);
-                }
-            }
-            if (!success && filePath) {
-                window.open('file:///' + filePath.replace(/\\/g, '/'), '_blank');
-            }
         } else if (openFolderBtn) {
             e.preventDefault();
+            const path = openFolderBtn.getAttribute('data-path');
             openFolderBtn.style.opacity = '0.5';
-            console.log("[Jobs] Opening folder");
-            const response = await Api.send("openDownloaded", "POST", { folder: true });
+            await revealPath(openFolderBtn, path);
             openFolderBtn.style.opacity = '1';
-            let success = false, folderPath = null;
-            if (response.ok) {
-                try {
-                    const data = await response.json();
-                    if (data.status === 'opened folder') success = true;
-                    if (data.path) folderPath = data.path;
-                } catch (_) { }
-            }
-            console.log("[Jobs] Server response for openFolder:", { success, folderPath });
-            const extAPI = (globalThis as any).browser ?? (globalThis as any).chrome;
-            if (folderPath && extAPI && extAPI.runtime) {
-                try {
-                    console.log("[Jobs] Requesting background open for folder path:", folderPath);
-                    const resp = await extAPI.runtime.sendMessage({ kind: 'open:path', path: folderPath });
-                    console.log("[Jobs] Background open response:", resp);
-                    success = resp?.ok;
-                } catch (err) {
-                    console.error("[Jobs] Background open failed:", err);
-                }
-            }
-            if (!success && folderPath) {
-                window.open('file:///' + folderPath.replace(/\\/g, '/'), '_blank');
-            }
         }
     };
 }

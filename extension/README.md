@@ -133,11 +133,17 @@ image pipeline they are **not** rclone-moved off by default (set
 `PYTHON_ZIPPER_STREAM_RCLONE=1` to opt in), so the file persists locally; the
 job records the absolute `save_path` and **📂 Open** reveals it in Explorer.
 
+### Native File Explorer integration
+
+- Run `native-host\install-native-host.ps1` once to install or update the
+  current-user Firefox native messaging host.
+- File and folder reveal actions go directly from Firefox to the native host.
+  The localhost server supplies download/job metadata but does not launch Explorer.
+- Missing or invalid paths fail without opening a substitute folder. The
+  initiating reveal control briefly gets a red border and remains retryable.
+
 ### Fixed in v1.2
 
-- **Open folder hung forever.** The server used `subprocess.run(['explorer', …])`,
-  which blocks until explorer exits — stalling the request thread. Now uses
-  non-blocking `os.startfile` / `Popen` (`server.py::_reveal_in_explorer`).
 - **Downloads silently did nothing.** Almost always a **stale server** that
   predates `/api/stream/*` (start 404s). Restart the server after pulling. The
   popup now surfaces a failed start instead of flashing briefly.

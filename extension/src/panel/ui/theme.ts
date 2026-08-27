@@ -340,6 +340,11 @@ export function injectStyles(pal) {
             .console-error { color: #f87171 !important; }
             .console-info { color: #60a5fa !important; }
 
+            .zipper-reveal-error {
+                outline: 2px solid #ef4444 !important;
+                outline-offset: 1px;
+            }
+
             #zipper-drop-overlay {
                 position: absolute;
                 top: 0;
