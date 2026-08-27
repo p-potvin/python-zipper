@@ -222,59 +222,74 @@ def get_available_upscale_models():
     return models
 
 
-def check_upscaler_capabilities():
-    """Verify upscaler availability, CUDA support, and model discovery."""
-    models = get_available_upscale_models()
-    model_names = [m["name"] for m in models]
-    has_vc_env = os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT)
-    cuda_available = False
-    device_name = ""
-    error = None
+_CAPABILITIES_CACHE = None
+_CAPABILITIES_LOCK = threading.Lock()
+_UPSCALE_SEMAPHORE = threading.Semaphore(1)
 
-    if has_vc_env:
-        # Check capabilities via vault-commander venv
-        try:
-            cmd = [
-                VAULT_COMMANDER_PYTHON,
-                "-c",
-                "import torch, spandrel, PIL; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if res.returncode == 0:
-                lines = res.stdout.strip().splitlines()
-                if len(lines) >= 1 and lines[0].strip().lower() == "true":
-                    cuda_available = True
-                if len(lines) >= 2:
-                    device_name = lines[1].strip()
-            else:
-                error = res.stderr.strip()
-        except Exception as e:
-            error = str(e)
-    else:
-        # Fallback to current process venv
-        try:
-            import importlib.util
-            if importlib.util.find_spec("PIL") is None:
-                error = "Pillow not installed"
-            if importlib.util.find_spec("spandrel") is None and any(m.get("kind") == "spandrel" for m in models):
-                error = "spandrel not installed"
-            import torch
-            cuda_available = torch.cuda.is_available()
-            if cuda_available:
-                device_name = torch.cuda.get_device_name(0)
-        except Exception as e:
-            if not error:
+
+def check_upscaler_capabilities(force_refresh=False):
+    """Verify upscaler availability, CUDA support, and model discovery.
+    Cached in-memory to prevent repeated heavy subprocess invocations."""
+    global _CAPABILITIES_CACHE
+    if _CAPABILITIES_CACHE is not None and not force_refresh:
+        return _CAPABILITIES_CACHE
+
+    with _CAPABILITIES_LOCK:
+        if _CAPABILITIES_CACHE is not None and not force_refresh:
+            return _CAPABILITIES_CACHE
+
+        models = get_available_upscale_models()
+        model_names = [m["name"] for m in models]
+        has_vc_env = os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT)
+        cuda_available = False
+        device_name = ""
+        error = None
+
+        if has_vc_env:
+            # Check capabilities via vault-commander venv once and cache it
+            try:
+                cmd = [
+                    VAULT_COMMANDER_PYTHON,
+                    "-c",
+                    "import torch, spandrel, PIL; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if res.returncode == 0:
+                    lines = res.stdout.strip().splitlines()
+                    if len(lines) >= 1 and lines[0].strip().lower() == "true":
+                        cuda_available = True
+                    if len(lines) >= 2:
+                        device_name = lines[1].strip()
+                else:
+                    error = res.stderr.strip()
+            except Exception as e:
                 error = str(e)
+        else:
+            # Fallback to current process venv
+            try:
+                import importlib.util
+                if importlib.util.find_spec("PIL") is None:
+                    error = "Pillow not installed"
+                if importlib.util.find_spec("spandrel") is None and any(m.get("kind") == "spandrel" for m in models):
+                    error = "spandrel not installed"
+                import torch
+                cuda_available = torch.cuda.is_available()
+                if cuda_available:
+                    device_name = torch.cuda.get_device_name(0)
+            except Exception as e:
+                if not error:
+                    error = str(e)
 
-    available = bool(len(model_names) > 0 and (has_vc_env or not error))
-    return {
-        "available": available,
-        "models": model_names,
-        "model_details": models,
-        "cuda": cuda_available,
-        "device": device_name or ("NVIDIA CUDA" if cuda_available else "CPU"),
-        "error": error if not available else None
-    }
+        available = bool(len(model_names) > 0 and (has_vc_env or not error))
+        _CAPABILITIES_CACHE = {
+            "available": available,
+            "models": model_names,
+            "model_details": models,
+            "cuda": cuda_available,
+            "device": device_name or ("NVIDIA CUDA" if cuda_available else "CPU"),
+            "error": error if not available else None
+        }
+        return _CAPABILITIES_CACHE
 
 
 def _configured_rclone_remotes():
@@ -312,6 +327,11 @@ def upscale_image_content(content, ext, model):
     if not model or model == "off":
         return content
 
+    with _UPSCALE_SEMAPHORE:
+        return _do_upscale_image_content(content, ext, model)
+
+
+def _do_upscale_image_content(content, ext, model):
     # 1. ImageMagick / VW CLI quality enhancement operations
     magick_op = None
     if model.startswith("magick-"):
