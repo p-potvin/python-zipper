@@ -53,14 +53,33 @@ export function GM_xmlhttpRequest(details: any): void {
     method: details.method || 'GET',
     headers: details.headers || {},
     data: details.data ?? null,
+    responseType: details.responseType || '',
+    timeout: details.timeout || 30000,
   };
   ext.runtime
     .sendMessage({ kind: 'gm:xhr', req })
     .then((res: any) => {
-      if (res && res.ok) details.onload?.({ status: res.status, responseText: res.responseText });
-      else details.onerror?.({ status: res?.status ?? 0 });
+      if (res && res.ok) {
+        let response = res.responseText;
+        if (res.base64Data) {
+          const binaryString = atob(res.base64Data);
+          const len = binaryString.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          response = bytes.buffer;
+        }
+        details.onload?.({
+          status: res.status,
+          responseText: res.responseText,
+          response: response,
+        });
+      } else {
+        details.onerror?.({ status: res?.status ?? 0, error: res?.error });
+      }
     })
-    .catch(() => details.onerror?.({ status: 0 }));
+    .catch((err) => details.onerror?.({ status: 0, error: String(err) }));
 }
 
 export function GM_setClipboard(text: string): void {

@@ -176,15 +176,18 @@ export function injectStyles(pal) {
 
             .zipper-tab-btn {
                 flex: 1;
-                padding: 10px;
+                padding: 9px 4px;
                 background: transparent;
                 border: none;
                 color: var(--zipper-text-muted);
-                font-size: 12px;
+                font-size: 11.5px;
                 font-weight: 600;
                 cursor: pointer;
                 transition: all 0.2s;
                 text-align: center;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
                 border-radius: 0 !important;
             }
 
@@ -394,19 +397,26 @@ export function injectStyles(pal) {
                 gap: 8px;
                 font-size: 11px;
                 color: var(--zipper-text-muted);
-                padding: 4px;
+                padding: 4px 6px;
                 border-radius: 4px;
-                transition: background 0.2s;
+                transition: background 0.15s ease, transform 0.1s ease;
+                cursor: pointer;
+                user-select: none;
             }
 
             .zipper-link-item:hover {
-                background: rgba(255, 255, 255, 0.04);
+                background: rgba(255, 255, 255, 0.08);
                 color: var(--zipper-text);
+            }
+
+            .zipper-link-item:active {
+                transform: scale(0.99);
             }
 
             .zipper-link-item input[type="checkbox"] {
                 accent-color: var(--zipper-primary);
                 cursor: pointer;
+                pointer-events: auto;
             }
 
             .zipper-link-url {
@@ -414,7 +424,8 @@ export function injectStyles(pal) {
                 overflow: hidden;
                 text-overflow: ellipsis;
                 flex: 1;
-                cursor: default;
+                cursor: pointer;
+                user-select: none;
             }
 
             .zipper-select-all-group {

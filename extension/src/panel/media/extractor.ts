@@ -13,6 +13,10 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
     let resolved = url;
     if (url.includes('onlyfans.com') && url.includes('/thumbs/')) {
         resolved = url.replace('/thumbs/', '/files/');
+    } else if ((url.includes('coomer.su') || url.includes('kemono.su')) && url.includes('/thumbnail/')) {
+        resolved = url.replace('/thumbnail/', '/');
+    } else if (url.includes('bunkr') && url.includes('/thumbs/')) {
+        resolved = url.replace('/thumbs/', '/images/');
     }
     const ext = url.split('.').pop()?.split(/[?#]/)[0].toLowerCase() || '';
     const isDirectMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'mkv', 'avi', 'mp3', 'wav'].includes(ext);
@@ -20,13 +24,26 @@ export async function resolveBestMediaUrl(url: string): Promise<string> {
     if (!isDirectMedia && (url.startsWith('http://') || url.startsWith('https://'))) {
         try {
             const htmlText = await new Promise<string>((resolve, reject) => {
+                const timer = setTimeout(() => resolve(''), 3500);
                 GM_xmlhttpRequest({
                     method: 'GET',
                     url: url,
-                    onload: (res) => resolve(res.responseText),
-                    onerror: reject
+                    timeout: 3500,
+                    onload: (res) => {
+                        clearTimeout(timer);
+                        resolve(res.responseText || '');
+                    },
+                    onerror: () => {
+                        clearTimeout(timer);
+                        resolve('');
+                    },
+                    ontimeout: () => {
+                        clearTimeout(timer);
+                        resolve('');
+                    }
                 });
             });
+            if (!htmlText) return resolved;
             const doc = new DOMParser().parseFromString(htmlText, 'text/html');
             const ogVideo = doc.querySelector('meta[property="og:video"]') as HTMLMetaElement;
             if (ogVideo && ogVideo.content) return ogVideo.content;

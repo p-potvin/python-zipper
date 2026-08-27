@@ -1,11 +1,13 @@
 // @ts-nocheck -- vendored verbatim from ../../userscript/src; built by esbuild, not type-checked
 import { isHighQualityMedia, resolveBestMediaUrl } from '../media/extractor';
-import { getElementUrl, isMediaUrl, isCloudUrl, extractUrlsFromText, fetchAsArrayBuffer } from './helpers';
-import { highlightElement } from '../ui/highlighter';
+import { extractCarouselMediaUrls } from '../media/carousel_detector';
+import { getElementUrl, isMediaUrl, isCloudUrl, isSameDomain, extractUrlsFromText, fetchAsArrayBuffer } from './helpers';
+import { highlightElement, canHighlightElement } from '../ui/highlighter';
 import { globalState } from './state';
 import { updateGalleryUI, removeGalleryUIWithDelay, scrollToBottomSmartForGallery } from '../ui/gallery';
 import { logToConsole, getZipperSetting } from './config';
 import { Api } from '../api';
+import { createLocalJob, updateLocalJob, completeLocalJob, failLocalJob } from '../ui/local_jobs';
 
 
 export function harvestLinks() {
@@ -15,17 +17,54 @@ export function harvestLinks() {
 
     const mediaCandidates: { url: string; score: number }[] = [];
     const cloudLinks = new Set<string>();
+    const currentHref = window.location.href;
 
-    // Gather media elements
+    // 1. Scan universal JS Carousel & Lightbox modules first for high-res slide URLs
+    try {
+        const carouselUrls = extractCarouselMediaUrls(document);
+        carouselUrls.forEach(url => {
+            const lowerUrl = url.toLowerCase();
+            const isVideo = videoExtensions.some(ext => lowerUrl.includes(ext));
+            if (isVideo) {
+                cloudLinks.add(url);
+            }
+            mediaCandidates.push({ url, score: isVideo ? 400 : 350 });
+        });
+    } catch (e) {
+        console.warn('[Zipper] Carousel scanning error:', e);
+    }
+
+    // 2. Gather DOM elements
     document.querySelectorAll('img, video, audio, source, a, picture, div, span, [style*="background"], [data-src], [data-image], [data-bg]').forEach(el => {
+        if (el.closest('#zipper-panel') || el.closest('#zipper-fab') || el.closest('#zipper-float-download-btn')) {
+            return;
+        }
         const tagName = el.tagName.toLowerCase();
         const url = getElementUrl(el);
         if (!url) return;
 
         const lowerUrl = url.toLowerCase();
 
-        // Cloud domains check
-        const isCloudDomain = isCloudUrl(url);
+        // Reject .svg, .ico, and cursors completely
+        if (lowerUrl.includes('.svg') || lowerUrl.includes('.ico') || lowerUrl.includes('.cur') || lowerUrl.includes('.bmp')) {
+            return;
+        }
+
+        // Same domain check
+        const isSameHost = isSameDomain(url, currentHref);
+
+        // If it's an <a> link on the same domain and NOT a direct media file, skip it
+        if (tagName === 'a' && isSameHost) {
+            const hasDirectMedia = videoExtensions.some(ext => lowerUrl.includes(ext)) ||
+                imageExtensions.some(ext => lowerUrl.includes(ext)) ||
+                audioExtensions.some(ext => lowerUrl.includes(ext));
+            if (!hasDirectMedia && !el.querySelector('img, video, picture')) {
+                return;
+            }
+        }
+
+        // Cloud domains check (same-domain is rejected by isCloudUrl)
+        const isCloudDomain = isCloudUrl(url, currentHref);
 
         // Base detection
         const isVideo = videoExtensions.some(ext => lowerUrl.includes(ext)) || tagName === 'video' || (tagName === 'source' && el.parentElement?.tagName.toLowerCase() === 'video') || lowerUrl.includes('bunkr') || lowerUrl.includes('bunkrr');
@@ -33,7 +72,7 @@ export function harvestLinks() {
         const isImage = imageExtensions.some(ext => lowerUrl.includes(ext)) || tagName === 'img' || tagName === 'picture' || (tagName === 'source' && el.parentElement?.tagName.toLowerCase() === 'picture');
 
         // Cloud links should contain all cloud domain links and all videos from media
-        if (isCloudDomain || isVideo) {
+        if (isCloudDomain || (isVideo && !isSameHost)) {
             cloudLinks.add(url);
         }
 
@@ -46,7 +85,7 @@ export function harvestLinks() {
             score += 260;
         } else if (isImage) {
             score += 250;
-        } else if (isMediaUrl(lowerUrl)) {
+        } else if (isMediaUrl(lowerUrl, currentHref)) {
             score += 150;
         }
 
@@ -75,7 +114,7 @@ export function harvestLinks() {
                     score += 300;
                 } else if (area >= 1280 * 720) {
                     score += 150;
-                } else if (area < 100 * 100) {
+                } else if (area < 100 * 100 || width < 120 || height < 120) {
                     score -= 500; // Tiny icons/spacers
                 } else if (area < 200 * 200) {
                     score -= 150; // Very small
@@ -84,7 +123,7 @@ export function harvestLinks() {
 
             // Visibility
             const style = window.getComputedStyle(el);
-            if (style.display === 'none' || style.visibility === 'hidden') {
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
                 score -= 400;
             }
         }
@@ -100,7 +139,7 @@ export function harvestLinks() {
                 score -= 300;
             }
             // Post media or main containers are premium zones
-            if (/(post-media|gallery|main-content|article|video-container|audio-container|content-wrapper|photos|feed)/i.test(classIdStr)) {
+            if (/(post-media|gallery|main-content|article|video-container|audio-container|content-wrapper|photos|feed|carousel|slider|pswp|swiper)/i.test(classIdStr)) {
                 score += 100;
             }
             parent = parent.parentElement;
@@ -110,17 +149,17 @@ export function harvestLinks() {
         // Keyword blacklist check
         const blacklistKeywords = [
             'avatar', 'sprite', 'logo', 'button', 'icon', 'emoji',
-            'font', 'loading', 'spacer', 'ad-', 'track', 'analytics', 'pixel', 'favicon'
+            'font', 'loading', 'spacer', 'ad-', 'track', 'analytics', 'pixel', 'favicon', 'profile-pic'
         ];
         if (blacklistKeywords.some(kw => lowerUrl.includes(kw))) {
             score -= 500;
         }
 
-        // Highlight in UI if element is media and score is positive
-        if (score >= 100 && (tagName === 'img' || tagName === 'video' || tagName === 'audio' || tagName === 'source' || tagName === 'a' || tagName === 'picture' || tagName === 'div' || tagName === 'span')) {
-            highlightElement(el);
-            if (el.parentElement && (el.parentElement.tagName.toLowerCase() === 'a' || el.parentElement.tagName.toLowerCase() === 'picture' || el.parentElement.tagName.toLowerCase() === 'audio')) {
-                highlightElement(el.parentElement);
+        // Strict highlight in UI if element is media, score is high, and passes strict highlight filters
+        if (score >= 160 && canHighlightElement(el, url)) {
+            highlightElement(el, url);
+            if (el.parentElement && (el.parentElement.tagName.toLowerCase() === 'a' || el.parentElement.tagName.toLowerCase() === 'picture')) {
+                highlightElement(el.parentElement, url);
             }
         }
 
@@ -130,21 +169,24 @@ export function harvestLinks() {
         }
     });
 
-    // Parse body text for links too
+    // 3. Parse body text for links too
     const text = document.body.innerText || "";
-    const textUrls = extractUrlsFromText(text, window.location.href);
+    const textUrls = extractUrlsFromText(text, currentHref);
     textUrls.forEach(url => {
         const lowerUrl = url.toLowerCase();
+        if (lowerUrl.includes('.svg') || lowerUrl.includes('.ico') || lowerUrl.includes('.cur')) return;
+
+        const isSameHost = isSameDomain(url, currentHref);
         const isVideo = videoExtensions.some(ext => lowerUrl.includes(ext)) || lowerUrl.includes("bunkr") || lowerUrl.includes("bunkrr");
         const isAudio = audioExtensions.some(ext => lowerUrl.includes(ext));
-        const isCloudDomain = isCloudUrl(url);
+        const isCloudDomain = isCloudUrl(url, currentHref);
 
-        if (isCloudDomain || isVideo) {
+        if (isCloudDomain || (isVideo && !isSameHost)) {
             cloudLinks.add(url);
         }
 
-        const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lowerUrl);
-        if (!hasMediaExt && !isMediaUrl(url)) return;
+        const hasMediaExt = /\.(jpg|jpeg|png|gif|webp|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lowerUrl);
+        if (!hasMediaExt && !isMediaUrl(url, currentHref)) return;
 
         let score = 120; // default medium score for plain text urls
         if (isVideo) {
@@ -157,7 +199,7 @@ export function harvestLinks() {
             score += 100;
         }
 
-        const blacklistKeywords = ['avatar', 'sprite', 'logo', 'button', 'icon', 'emoji', 'font', 'loading', 'spacer'];
+        const blacklistKeywords = ['avatar', 'sprite', 'logo', 'button', 'icon', 'emoji', 'font', 'loading', 'spacer', 'favicon'];
         if (blacklistKeywords.some(kw => lowerUrl.includes(kw))) {
             score -= 400;
         }
@@ -195,7 +237,6 @@ export function harvestLinks() {
 }
 
 
-
 function localDownloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -215,23 +256,30 @@ export async function processAndZipGallery(urls: string[]) {
         return;
     }
 
+    const localJobId = createLocalJob(totalFiles, window.location.href);
+    const archivesCreated: string[] = [];
+
     let zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
     let count = 0;
     let batchIndex = 1;
     const totalBatches = Math.ceil(totalFiles / 50);
 
     for (let i = 0; i < totalFiles; i++) {
-        if (globalState.abortScraping) break;
+        if (globalState.abortScraping) {
+            updateLocalJob(localJobId, { status: 'aborted' });
+            break;
+        }
         const url = urls[i];
         if (!url) continue;
 
-        const currentPct = (i / totalFiles) * 100;
+        const currentPct = Math.round((i / totalFiles) * 100);
         updateGalleryUI(currentPct, `Batch ${batchIndex}/${totalBatches} — Fetching item ${i + 1}/${totalFiles}`);
+        updateLocalJob(localJobId, { processed_links: i + 1, total_links: totalFiles });
 
         try {
             const rawBuffer = await fetchAsArrayBuffer(url);
             let ext = url.split('.').pop()?.split(/[\?#]/)[0] || 'jpg';
-            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
+            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'jpg';
 
             const blob = new Blob([rawBuffer as any]);
             const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
@@ -248,7 +296,10 @@ export async function processAndZipGallery(urls: string[]) {
             try {
                 const zipBlob = await zipWriter.close();
                 const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
-                localDownloadBlob(zipBlob, `${cleanPath}_batch_${batchIndex}.zip`);
+                const archiveName = `${cleanPath}_batch_${batchIndex}.zip`;
+                localDownloadBlob(zipBlob, archiveName);
+                archivesCreated.push(archiveName);
+                updateLocalJob(localJobId, { archives: [...archivesCreated] });
                 zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
                 batchIndex++;
             } catch (error) {
@@ -262,12 +313,15 @@ export async function processAndZipGallery(urls: string[]) {
         try {
             const zipBlob = await zipWriter.close();
             const cleanPath = window.location.pathname.replace(/\//g, '_') || 'gallery';
-            localDownloadBlob(zipBlob, `${cleanPath}_batch_${batchIndex}_final.zip`);
+            const archiveName = `${cleanPath}_batch_${batchIndex}_final.zip`;
+            localDownloadBlob(zipBlob, archiveName);
+            archivesCreated.push(archiveName);
         } catch (error) {
             console.error('Final segment cleanup container execution failed:', error);
         }
     }
 
+    completeLocalJob(localJobId, archivesCreated);
     updateGalleryUI(100, `Done! Downloaded ${count} files.`);
     removeGalleryUIWithDelay();
 }
@@ -277,7 +331,7 @@ export async function runSmartGalleryZip() {
     const gallerySelectorInput = document.getElementById('zipper-gallery-selector') as HTMLInputElement | null;
     const customSelector = gallerySelectorInput ? gallerySelectorInput.value.trim() : '';
 
-    let container = document;
+    let container: ParentNode = document;
     if (customSelector) {
         const el = document.querySelector(customSelector);
         if (el) {
@@ -290,42 +344,53 @@ export async function runSmartGalleryZip() {
 
     await scrollToBottomSmartForGallery();
 
-    let extractedUrls = [];
+    let extractedUrls: string[] = [];
 
-    if (container === document && window.location.hostname.includes('onlyfans.com')) {
+    // 1. Check for universal JS carousel / lightbox modules in container
+    try {
+        const carouselUrls = extractCarouselMediaUrls(container);
+        if (carouselUrls.length > 0) {
+            extractedUrls = carouselUrls;
+            logToConsole(`[SmartZip] Extracted ${extractedUrls.length} media links from active JS carousels/lightboxes.`, "success");
+        }
+    } catch (e) {
+        console.warn('[SmartZip] Carousel detector error:', e);
+    }
+
+    // 2. Specific fallback for OnlyFans timeline item if viewer not open yet
+    if (extractedUrls.length === 0 && container === document && window.location.hostname.includes('onlyfans.com')) {
         const firstThumbnail = document.querySelector(".user_posts .b-photos__item");
         if (firstThumbnail) {
             logToConsole("[SmartZip] OnlyFans timeline item detected. Opening Vue photoswipe viewer...", "info");
             firstThumbnail.click();
             await new Promise(r => setTimeout(r, 800));
             try {
-                const pswpContainer = document.querySelector("div.photoswipe");
-                if (pswpContainer) {
-                    const vueInstance = pswpContainer.__vue__ || (typeof unsafeWindow !== 'undefined' && unsafeWindow.document.querySelector("div.photoswipe").__vue__);
-                    const dataSource = vueInstance ? (vueInstance.dataSource || (vueInstance._props && vueInstance._props.dataSource)) : null;
-                    if (dataSource) {
-                        extractedUrls = Array.from(dataSource).map(item => item.src).filter(Boolean);
-                        logToConsole(`[SmartZip] Extracted ${extractedUrls.length} links via Vue Photoswipe`, "success");
-                        const closeBtn = document.querySelector('.pswp__button--close');
-                        if (closeBtn) closeBtn.click();
-                    }
+                const pswpUrls = extractCarouselMediaUrls(document);
+                if (pswpUrls.length > 0) {
+                    extractedUrls = pswpUrls;
+                    logToConsole(`[SmartZip] Extracted ${extractedUrls.length} links via Photoswipe`, "success");
+                    const closeBtn = document.querySelector('.pswp__button--close');
+                    if (closeBtn) closeBtn.click();
                 }
             } catch (e) {
-                console.error("[SmartZip] Vue photoswipe extraction failed:", e);
+                console.error("[SmartZip] Photoswipe extraction failed:", e);
             }
         }
     }
 
+    // 3. Fallback: scan DOM nodes in container
     if (extractedUrls.length === 0) {
         logToConsole("[SmartZip] Scanning DOM for media nodes...", "info");
         const nodes = container.querySelectorAll('img, video, audio, source, a, picture, div, span, [style*="background"], [data-src], [data-image], [data-bg]');
-        const urlSet = new Set();
+        const urlSet = new Set<string>();
         for (const el of nodes) {
             const url = getElementUrl(el);
             if (url) {
+                const lower = url.toLowerCase();
+                if (lower.includes('.svg') || lower.includes('.ico') || lower.includes('.cur')) continue;
                 const resolved = await resolveBestMediaUrl(url);
-                const ext = resolved.split('.').pop().split(/[?#]/)[0].toLowerCase();
-                const isMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext);
+                const ext = resolved.split('.').pop()?.split(/[?#]/)[0].toLowerCase() || '';
+                const isMedia = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'ogg', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext);
                 if (isMedia) {
                     urlSet.add(resolved);
                 }
@@ -341,8 +406,10 @@ export async function runSmartGalleryZip() {
         return;
     }
 
-    // Filter out the base document page URL
-    extractedUrls = extractedUrls.filter(u => u !== window.location.href);
+    // Filter out the base document page URL and non-media svgs
+    extractedUrls = extractedUrls
+        .filter(u => u !== window.location.href && u !== `${window.location.href}#`)
+        .filter(u => !u.toLowerCase().includes('.svg') && !u.toLowerCase().includes('.ico'));
 
     const serverDownloadEnabled = getZipperSetting('server-download-enabled', 'false') === 'true';
     const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
@@ -371,4 +438,5 @@ export async function runSmartGalleryZip() {
     await processAndZipGallery(extractedUrls);
     logToConsole("[SmartZip] Zipping workflow complete!", "success");
 }
+
 

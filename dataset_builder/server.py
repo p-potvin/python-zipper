@@ -2,10 +2,37 @@ import os
 import sys
 import json
 import threading
+import datetime
+import builtins
 import requests
 from urllib.parse import urljoin
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
+
+# Force unbuffered / line-buffered stdout and stderr for service logs
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+# Universal timestamped logging wrapper
+_orig_print = builtins.print
+def timestamped_print(*args, **kwargs):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args:
+        first = f"[{now}] {args[0]}"
+        _orig_print(first, *args[1:], **kwargs)
+    else:
+        _orig_print(f"[{now}]", **kwargs)
+    if "flush" not in kwargs:
+        kwargs["flush"] = True
+builtins.print = timestamped_print
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import scraper
@@ -14,7 +41,7 @@ from ds_jobs import (
     get_jobs_snapshot, JOBS, JOBS_LOCK,
 )
 from ds_helpers import (
-    get_available_upscale_models, handoff_to_rclone, upscale_image_content,
+    get_available_upscale_models, check_upscaler_capabilities, handoff_to_rclone, upscale_image_content,
     get_rd_token, unrestrict_link_rd, bypass_linkvertise,
     download_via_ytdlp, download_direct_file, download_and_zip_images,
     NOMOS_MODEL_NAME, IMAGE_EXTENSIONS,
@@ -49,6 +76,7 @@ def resolve_legacy_reveal_path(data):
         raise FileNotFoundError("The requested path does not exist")
     return path
 
+
 PORT = 5171
 DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
 VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca:9001")
@@ -57,6 +85,17 @@ VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca
 class ScraperHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+        except Exception as e:
+            if "10053" in str(e) or "10054" in str(e) or "Broken pipe" in str(e):
+                self.close_connection = True
+            else:
+                raise
 
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -111,37 +150,8 @@ class ScraperHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle_upscaler_status(self):
-        models = get_available_upscale_models()
-        available_models = [model["name"] for model in models]
-        error = None
-        cuda_available = False
-        try:
-            import importlib.util
-            if importlib.util.find_spec("PIL") is None:
-                error = "Pillow not installed (pip install pillow)"
-            if NOMOS_MODEL_NAME in available_models and importlib.util.find_spec("spandrel") is None:
-                error = "spandrel not installed (pip install spandrel)"
-        except Exception as e:
-            error = str(e)
-        try:
-            import torch
-            cuda_available = torch.cuda.is_available()
-        except Exception:
-            pass
-        available = bool(available_models and not error)
-        result = {
-            "available": available,
-            "models": available_models,
-            "model_details": models,
-            "cuda": cuda_available
-        }
-        if error:
-            result["error"] = error
-        body = json.dumps(result).encode('utf-8')
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body)
+        result = check_upscaler_capabilities()
+        self._send_json(result)
 
     def _read_json(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -153,16 +163,27 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return {}
 
     def _send_json(self, obj, code=200):
-        body = json.dumps(obj).encode('utf-8')
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(obj).encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+        except Exception as e:
+            if "10053" in str(e) or "10054" in str(e) or "Broken pipe" in str(e):
+                self.close_connection = True
+            else:
+                print(f"[Server] Error sending JSON: {e}")
 
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
+        try:
+            self.send_response(200)
+            self.end_headers()
+        except Exception:
+            self.close_connection = True
 
     def do_GET(self):
         if self._handle_proxy():
@@ -175,34 +196,39 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 if not os.path.isabs(filepath):
                     filepath = os.path.normpath(os.path.join(DEST_DIR, filepath))
                 if os.path.exists(filepath):
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/octet-stream')
-                    self.send_header('Content-Length', str(os.path.getsize(filepath)))
-                    self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
-                    self.end_headers()
-                    with open(filepath, 'rb') as f:
-                        while True:
-                            chunk = f.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                    return
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"File not found")
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/octet-stream')
+                        self.send_header('Content-Length', str(os.path.getsize(filepath)))
+                        self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
+                        self.end_headers()
+                        with open(filepath, 'rb') as f:
+                            while True:
+                                chunk = f.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                        return
+                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                        self.close_connection = True
+                        return
+                    except Exception as e:
+                        if "10053" in str(e) or "10054" in str(e):
+                            self.close_connection = True
+                            return
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"File not found")
+            except Exception:
+                self.close_connection = True
             return
         elif self.path == '/api/upscaler/status':
             self._handle_upscaler_status()
         elif self.path == '/api/jobs':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(build_jobs_payload()).encode('utf-8'))
+            self._send_json(build_jobs_payload())
         elif self.path in ['/', '/health', '/api']:
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "online"}).encode('utf-8'))
+            self._send_json({"status": "online"})
         elif self.path == '/qa-logs':
             try:
                 log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
@@ -221,26 +247,23 @@ class ScraperHandler(BaseHTTPRequestHandler):
                                             pass
                 logs.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 logs = logs[:200]
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "ok", "logs": logs}).encode('utf-8'))
+                self._send_json({"status": "ok", "logs": logs})
             except Exception as e:
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                self._send_json({"error": str(e)}, 500)
         else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not Found")
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not Found")
+            except Exception:
+                self.close_connection = True
 
     def do_POST(self):
         if self._handle_proxy():
             return
         if self.path == '/scrape':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b""
             try:
                 data = json.loads(post_data.decode('utf-8'))
                 url = data.get('url')
@@ -248,22 +271,15 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 patchright = data.get('patchright', False)
                 batch_size = data.get('batch_size', 100)
                 if not url:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Missing url parameter")
+                    self._send_json({"error": "Missing url parameter"}, 400)
                     return
                 threading.Thread(target=self._run_scraper, args=(url, selector, patchright, batch_size)).start()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Scraping task started"}).encode('utf-8'))
+                self._send_json({"status": "Scraping task started"})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
         elif self.path == '/download':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b""
             try:
                 data = json.loads(post_data.decode('utf-8'))
                 url = data.get('url')
@@ -273,21 +289,14 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 upscale_model = data.get('upscale_model', NOMOS_MODEL_NAME)
                 stream_headers = data.get('stream_headers', {}) or {}
                 if not url or not links:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Missing url or links parameters")
+                    self._send_json({"error": "Missing url or links parameters"}, 400)
                     return
                 job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
                 rclone_enabled = bool(data.get('rclone_enabled', False))
                 threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled)).start()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Download task started", "count": len(links), "correlationId": job_id}).encode('utf-8'))
+                self._send_json({"status": "Download task started", "count": len(links), "correlationId": job_id})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
         elif self.path == '/api/stream/probe':
             data = self._read_json()
             url = data.get('url')
@@ -333,14 +342,9 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 log_file_path = os.path.join(log_dir, f"{node}.log")
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(data) + "\n")
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Log received"}).encode('utf-8'))
+                self._send_json({"status": "Log received"})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
         elif self.path == '/api/open-downloaded':
             # Compatibility bridge for signed extension v1.32. This resolves
             # paths only; Firefox native messaging performs the desktop action.
@@ -351,9 +355,12 @@ class ScraperHandler(BaseHTTPRequestHandler):
             except (ValueError, FileNotFoundError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 404)
         else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Endpoint not found")
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Endpoint not found")
+            except Exception:
+                self.close_connection = True
 
     def _run_scraper(self, url, selector, patchright, batch_size):
         print(f"\n[Server] Background scraper task started for URL: {url}")
@@ -424,8 +431,10 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 final_url = unrestrict_link_rd(resolved_url, rd_token)
                 print(f"[Server] Unrestricted {resolved_url} -> {final_url}")
             parsed = urlparse(final_url)
-            ext = os.path.splitext(parsed.path)[1].lower().strip(".")
-            is_image = ext in IMAGE_EXTENSIONS
+            clean_path = parsed.path.rstrip("/").lower()
+            path_ext = os.path.splitext(clean_path)[1].strip(".")
+            last_segment = clean_path.split("/")[-1] if "/" in clean_path else clean_path
+            is_image = path_ext in IMAGE_EXTENSIONS or last_segment in IMAGE_EXTENSIONS
             if is_image:
                 image_urls.append(final_url)
             else:

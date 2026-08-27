@@ -431,7 +431,7 @@ $('tb-gear').addEventListener('click', async () => {
      </div>
      <div style="display:flex;gap:16px;margin-top:4px;">
        <div class="kv" style="flex:1;margin:0;"><span>Version</span><b>${ext.runtime.getManifest().version}</b></div>
-       <div class="kv" style="flex:1;margin:0;"><span>Saves to</span><b>.downloaded/streams</b></div>
+       <div class="kv" style="flex:1;margin:0;"><span>Saves to</span><b>.downloaded/</b></div>
      </div>
      
      <div style="display:flex;gap:16px;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">

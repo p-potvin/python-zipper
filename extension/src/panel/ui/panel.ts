@@ -7,7 +7,7 @@ import { showBrowserNotification } from '../main';
 import { isCloudUrl, isMediaUrl, clientSideFallback, normalizeUrl, getElementUrl, fetchAsArrayBuffer, extractUrlsFromText, setElementHTML } from '../utils/helpers';
 import { resolveBestMediaUrl } from '../media/extractor';
 
-import { createHeader, createTabs, createImagesSection, createLinksSection, createSmartGallerySection, createDashboardSection, createDropOverlay, isHighlightEnabled } from './panel_sections';
+import { createHeader, createTabs, createImagesSection, createCustomLinksSection, createDashboardSection, createDropOverlay, isHighlightEnabled } from './panel_sections';
 import { refreshJobs, setupJobsListClickHandler } from './panel_jobs';
 import { createRefreshHarvestedLinks, addDroppedLinks } from './panel_harvest';
 import { handleScrape, handleSend, handleDrop } from './panel_actions';
@@ -218,19 +218,16 @@ export function initUI(_pal: any) {
     const imagesSection = createImagesSection();
     content.appendChild(imagesSection);
 
-    const linksSection = createLinksSection();
-    content.appendChild(linksSection);
-
-    const smartGallerySection = createSmartGallerySection();
-    content.appendChild(smartGallerySection);
+    const customLinksSection = createCustomLinksSection();
+    content.appendChild(customLinksSection);
 
     const dashboardSection = createDashboardSection();
     content.appendChild(dashboardSection);
 
-    // --- Smart Gallery Button & Element Picker ---
-    const smartGalleryBtn = smartGallerySection.querySelector('#zipper-smart-gallery-btn');
-    const gallerySelectorInput = smartGallerySection.querySelector('#zipper-gallery-selector');
-    const galleryPickerBtn = smartGallerySection.querySelector('#zipper-gallery-picker-btn');
+    // --- Custom Gallery & Element Picker ---
+    const smartGalleryBtn = customLinksSection.querySelector('#zipper-smart-gallery-btn');
+    const gallerySelectorInput = customLinksSection.querySelector('#zipper-gallery-selector');
+    const galleryPickerBtn = customLinksSection.querySelector('#zipper-gallery-picker-btn');
 
     if (galleryPickerBtn && gallerySelectorInput) {
         galleryPickerBtn.onclick = (e) => {
@@ -251,15 +248,17 @@ export function initUI(_pal: any) {
         };
     }
 
-    smartGalleryBtn.onclick = async () => {
-        smartGalleryBtn.disabled = true;
-        try {
-            await runSmartGalleryZip();
-        } catch (err) {
-            logToConsole(`[SmartZip] Error: ${err.message || err}`, 'error');
-        }
-        smartGalleryBtn.disabled = false;
-    };
+    if (smartGalleryBtn) {
+        smartGalleryBtn.onclick = async () => {
+            smartGalleryBtn.disabled = true;
+            try {
+                await runSmartGalleryZip();
+            } catch (err) {
+                logToConsole(`[SmartZip] Error: ${err.message || err}`, 'error');
+            }
+            smartGalleryBtn.disabled = false;
+        };
+    }
 
     // --- Jobs List ---
     const jobsListContainer = dashboardSection.querySelector('#zipper-jobs-list');
@@ -272,27 +271,33 @@ export function initUI(_pal: any) {
     // --- Harvested Links ---
     const mediaListContainer = imagesSection.querySelector('#zipper-media-list');
     const mediaCountSpan = imagesSection.querySelector('#zipper-media-count');
-    const cloudListContainer = linksSection.querySelector('#zipper-cloud-list');
-    const cloudCountSpan = linksSection.querySelector('#zipper-cloud-count');
 
     const { refreshHarvestedLinks, resetHarvestCache } = createRefreshHarvestedLinks(
-        mediaListContainer, cloudListContainer, mediaCountSpan, cloudCountSpan
+        mediaListContainer, mediaCountSpan
     );
 
     refreshHarvestedLinks();
 
+    // --- Row click to toggle media item checkbox ---
+    mediaListContainer.addEventListener('click', (e) => {
+        const item = (e.target as HTMLElement).closest('.zipper-link-item');
+        if (!item) return;
+        if ((e.target as HTMLElement).tagName.toLowerCase() === 'input') return;
+        const cb = item.querySelector('.zipper-media-checkbox') as HTMLInputElement;
+        if (cb) {
+            cb.checked = !cb.checked;
+            cb.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
+
     // --- Select All handlers ---
     const mediaSelectAll = imagesSection.querySelector('#zipper-media-select-all');
-    mediaSelectAll.onchange = () => {
-        const val = mediaSelectAll.checked;
-        imagesSection.querySelectorAll('.zipper-media-checkbox').forEach(cb => cb.checked = val);
-    };
-
-    const cloudSelectAll = linksSection.querySelector('#zipper-cloud-select-all');
-    cloudSelectAll.onchange = () => {
-        const val = cloudSelectAll.checked;
-        linksSection.querySelectorAll('.zipper-cloud-checkbox').forEach(cb => cb.checked = val);
-    };
+    if (mediaSelectAll) {
+        mediaSelectAll.onchange = () => {
+            const val = (mediaSelectAll as HTMLInputElement).checked;
+            imagesSection.querySelectorAll('.zipper-media-checkbox').forEach(cb => (cb as HTMLInputElement).checked = val);
+        };
+    }
 
     // --- Selector input filter ---
     const selectorInput = imagesSection.querySelector('#zipper-selector');
@@ -362,32 +367,6 @@ export function initUI(_pal: any) {
                     el.classList.remove('zipper-captured-highlight');
                 });
             }
-        };
-    }
-
-    // --- Toggle Server Downloads ---
-    const toggleServerBtn = header.querySelector('#zipper-server-toggle-btn');
-    if (toggleServerBtn) {
-        const savedServerDownload = getZipperSetting('server-download-enabled', 'false') === 'true';
-        toggleServerBtn.classList.toggle('active', savedServerDownload);
-        toggleServerBtn.onclick = () => {
-            const enabled = !toggleServerBtn.classList.contains('active');
-            toggleServerBtn.classList.toggle('active', enabled);
-            setZipperSetting('server-download-enabled', String(enabled));
-            logToConsole(`Server download route: ${enabled ? 'ENABLED (Forward to local server)' : 'DISABLED (Direct browser standalone)'}`, 'info');
-        };
-    }
-
-    // --- Toggle RClone Handoff ---
-    const toggleRcloneBtn = header.querySelector('#zipper-rclone-toggle-btn');
-    if (toggleRcloneBtn) {
-        const savedRclone = getZipperSetting('rclone-enabled', 'false') === 'true';
-        toggleRcloneBtn.classList.toggle('active', savedRclone);
-        toggleRcloneBtn.onclick = () => {
-            const enabled = !toggleRcloneBtn.classList.contains('active');
-            toggleRcloneBtn.classList.toggle('active', enabled);
-            setZipperSetting('rclone-enabled', String(enabled));
-            logToConsole(`RClone handoff: ${enabled ? 'ENABLED (Upload to remote)' : 'DISABLED (Keep files local)'}`, 'info');
         };
     }
 
@@ -597,6 +576,8 @@ export function initUI(_pal: any) {
         const online = await Api.checkServerStatus();
         globalState.serverOnline = online;
         const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
+        const upscaleModelSelect = document.getElementById('zipper-upscale-model') as HTMLSelectElement;
+
         if (online) {
             statusDot.classList.add('online');
             const onlineTitle = `Server Online (${Api.origin})`;
@@ -608,21 +589,54 @@ export function initUI(_pal: any) {
             if (upscalerRes.ok) {
                 let upscalerData;
                 try { upscalerData = upscalerRes.json(); } catch (e) { upscalerData = {}; }
-                upscalerAvailable = upscalerData.available;
+                upscalerAvailable = !!upscalerData.available;
                 if (upscaleBtn) {
                     if (upscalerAvailable) {
                         upscaleBtn.removeAttribute('disabled');
                         const savedEnabled = getZipperSetting('upscale-enabled', 'false') === 'true';
+                        const savedModel = getZipperSetting('upscale-model', '4xNomos8k_atd');
                         upscaleBtn.classList.toggle('active', savedEnabled);
-                        upscaleBtn.title = `Toggle Image Upscaling (4x AI — ${(upscalerData.models || []).join(', ')})`;
-                        const sel = document.getElementById('zipper-upscale-model');
-                        if (sel) sel.removeAttribute('disabled');
+
+                        if (upscaleModelSelect) {
+                            upscaleModelSelect.removeAttribute('disabled');
+                            const details = Array.isArray(upscalerData.model_details) ? upscalerData.model_details : [];
+                            if (details.length > 0) {
+                                const currentOptions = Array.from(upscaleModelSelect.options).map(o => o.value);
+                                const modelNames = details.map(d => d.name);
+                                const needsUpdate = modelNames.some(m => !currentOptions.includes(m)) || currentOptions.length <= 2;
+                                if (needsUpdate) {
+                                    const upscalingItems = details.filter(d => (d.group || 'Upscaling') === 'Upscaling');
+                                    const enhanceItems = details.filter(d => d.group === 'Enhancement');
+
+                                    let optsHtml = '<option value="off">Off (Original Quality)</option>';
+                                    if (upscalingItems.length > 0) {
+                                        optsHtml += '<optgroup label="AI 4x Super-Resolution (CUDA)">';
+                                        for (const item of upscalingItems) {
+                                            optsHtml += `<option value="${item.name}">${item.label || item.name}</option>`;
+                                        }
+                                        optsHtml += '</optgroup>';
+                                    }
+                                    if (enhanceItems.length > 0) {
+                                        optsHtml += '<optgroup label="Quality Enhancement (ImageMagick / VW CLI)">';
+                                        for (const item of enhanceItems) {
+                                            optsHtml += `<option value="${item.name}">${item.label || item.name}</option>`;
+                                        }
+                                        optsHtml += '</optgroup>';
+                                    }
+                                    upscaleModelSelect.innerHTML = optsHtml;
+                                    upscaleModelSelect.value = savedEnabled ? savedModel : 'off';
+                                }
+                            }
+                        }
+                        const currentVal = upscaleModelSelect ? upscaleModelSelect.value : savedModel;
+                        upscaleBtn.title = savedEnabled
+                            ? `Active Quality Enhancement: ${currentVal}`
+                            : 'Toggle AI Upscaling & Image Enhancement';
                     } else {
                         upscaleBtn.classList.remove('active');
                         upscaleBtn.setAttribute('disabled', 'true');
-                        upscaleBtn.title = `Upscaler unavailable: ${upscalerData.error || 'No models found'}`;
-                        const sel = document.getElementById('zipper-upscale-model');
-                        if (sel) sel.setAttribute('disabled', 'true');
+                        upscaleBtn.title = `Enhancement unavailable: ${upscalerData.error || 'No models found'}`;
+                        if (upscaleModelSelect) upscaleModelSelect.setAttribute('disabled', 'true');
                     }
                 }
             }
@@ -637,8 +651,7 @@ export function initUI(_pal: any) {
                 upscaleBtn.classList.remove('active');
                 upscaleBtn.setAttribute('disabled', 'true');
                 upscaleBtn.title = 'Upscaler unavailable (server offline)';
-                const sel = document.getElementById('zipper-upscale-model');
-                if (sel) sel.setAttribute('disabled', 'true');
+                if (upscaleModelSelect) upscaleModelSelect.setAttribute('disabled', 'true');
             }
         }
     }
@@ -673,18 +686,22 @@ export function initUI(_pal: any) {
     });
 
     panel.addEventListener('drop', async (e) => {
-        await handleDrop(e, (links) => addDroppedLinks(links, imagesSection, linksSection, mediaListContainer, cloudListContainer, mediaCountSpan, cloudCountSpan), tabBtns);
+        await handleDrop(e, (links) => addDroppedLinks(links, imagesSection, mediaListContainer, mediaCountSpan), tabBtns);
         dropOverlay.style.display = 'none';
     });
 
     // --- Scrape button ---
     const scrapeBtn = imagesSection.querySelector('#zipper-scrape-btn');
-    scrapeBtn.onclick = () => handleScrape(imagesSection, selectorInput, flashFab);
+    if (scrapeBtn) {
+        scrapeBtn.onclick = () => handleScrape(imagesSection, selectorInput, flashFab);
+    }
 
-    // --- Send button ---
-    const sendBtn = linksSection.querySelector('#zipper-send-btn');
-    const linksInput = linksSection.querySelector('#zipper-links-input');
-    sendBtn.onclick = () => handleSend(linksSection, linksInput);
+    // --- Send button (Pasted Links in Custom / Links Tab) ---
+    const sendBtn = customLinksSection.querySelector('#zipper-send-btn');
+    const linksInput = customLinksSection.querySelector('#zipper-links-input');
+    if (sendBtn && linksInput) {
+        sendBtn.onclick = () => handleSend(customLinksSection, linksInput, flashFab);
+    }
 
     // --- Keyboard shortcut ---
     window.addEventListener("keydown", (e) => {
@@ -698,7 +715,7 @@ export function initUI(_pal: any) {
         if (e.shiftKey && (e.key === "Q" || e.key === "q")) {
             fab.click();
         }
-        if (e.altKey && (e.code === "KeyQ" || e.key === "q" || e.key === "Q")) {
+        if (e.altKey && (e.code === "KeyT" || e.key === "t" || e.key === "T")) {
             e.preventDefault();
             e.stopImmediatePropagation();
             if (smartGalleryBtn) {

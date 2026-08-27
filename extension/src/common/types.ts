@@ -86,6 +86,8 @@ export type BgMessage =
   | { kind: 'config:get' }
   | { kind: 'config:set'; proxy: string }
   | { kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean }
+  | { kind: 'downloads:list' }
+  | { kind: 'downloads:reveal'; downloadId?: number; path?: string }
   | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } };
 
 export interface StreamJob {

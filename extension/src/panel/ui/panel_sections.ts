@@ -43,47 +43,41 @@ function makeSection(className: string, id: string, html: string): HTMLElement {
     return section;
 }
 
-export function createLinksSection() {
-    const section = makeSection('zipper-panel-section', 'section-links', `
-        <div class="zipper-select-all-group">
-            <label><input type="checkbox" id="zipper-cloud-select-all" checked> Cloud Links (<span id="zipper-cloud-count">0</span>)</label>
-        </div>
-        <div id="zipper-cloud-list" class="zipper-link-list"></div>
-        <div class="zipper-input-group">
-            <label>Or Paste Manual Links</label>
-            <textarea id="zipper-links-input" class="zipper-input zipper-textarea" placeholder="Paste links, one per line..."></textarea>
-        </div>
-        <button id="zipper-send-btn" class="zipper-btn">
-            <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
-                <path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083l6-15Zm-1.833 1.89L6.637 10.07l-.215-.338a.5.5 0 0 0-.154-.154l-.338-.215 7.494-7.494 1.178-.471-.47 1.178Z"/>
-            </svg>
-            <span>Send Selected to Cloud</span>
-        </button>
-    `);
-    section.style.display = 'none';
-    return section;
-}
-
-export function createSmartGallerySection() {
-    const section = makeSection('zipper-panel-section', 'section-smart-gallery', `
-        <div style="display: flex; gap: 8px; align-items: flex-end; margin-bottom: 4px;">
-            <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
-                <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Gallery Container Selector</label>
-                <div style="display: flex; gap: 4px; align-items: center;">
-                    <input type="text" id="zipper-gallery-selector" class="zipper-input" placeholder="e.g. .user_posts" style="flex: 1; box-sizing: border-box; height: 26px; padding: 2px 6px; font-size: 11px;">
-                    <button id="zipper-gallery-picker-btn" class="zipper-btn" title="Pick element on page" style="height: 26px; width: 26px; padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border);">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="22" y1="12" x2="18" y2="12"></line>
-                            <line x1="6" y1="12" x2="2" y2="12"></line>
-                            <line x1="12" y1="6" x2="12" y2="2"></line>
-                            <line x1="12" y1="22" x2="12" y2="18"></line>
-                        </svg>
-                    </button>
+export function createCustomLinksSection() {
+    const section = makeSection('zipper-panel-section', 'section-custom-links', `
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: flex-end;">
+                <div class="zipper-input-group" style="flex: 1; margin: 0; min-width: 0;">
+                    <label style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500;">Custom Gallery Container</label>
+                    <div style="display: flex; gap: 4px; align-items: center;">
+                        <input type="text" id="zipper-gallery-selector" class="zipper-input" placeholder="e.g. .user_posts, #gallery" style="flex: 1; box-sizing: border-box; height: 26px; padding: 2px 6px; font-size: 11px;">
+                        <button id="zipper-gallery-picker-btn" class="zipper-btn" title="Pick container on page" style="height: 26px; width: 26px; padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: rgba(255,255,255,0.08); border: 1px solid var(--zipper-border);">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="22" y1="12" x2="18" y2="12"></line>
+                                <line x1="6" y1="12" x2="2" y2="12"></line>
+                                <line x1="12" y1="6" x2="12" y2="2"></line>
+                                <line x1="12" y1="22" x2="12" y2="18"></line>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
+                <button id="zipper-smart-gallery-btn" class="zipper-btn" style="height: 26px; padding: 2px 8px; font-size: 11px; flex-shrink: 0; background: var(--zipper-secondary);">
+                    Extract Gallery
+                </button>
             </div>
-            <button id="zipper-smart-gallery-btn" class="zipper-btn" style="height: 26px; padding: 2px 8px; font-size: 11px; flex-shrink: 0; background: var(--zipper-secondary);">
-                Smart Gallery Zip
+
+            <div class="zipper-input-group" style="margin-top: 4px;">
+                <label style="font-weight: 500;">Paste Direct Links / URLs</label>
+                <textarea id="zipper-links-input" class="zipper-input zipper-textarea" placeholder="Paste image/video URLs, one per line..." style="min-height: 90px; resize: vertical;"></textarea>
+            </div>
+
+            <button id="zipper-send-btn" class="zipper-btn" style="height: 28px; padding: 4px 8px;">
+                <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                    <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                    <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+                </svg>
+                <span>Download Pasted Links</span>
             </button>
         </div>
     `);
@@ -117,16 +111,6 @@ export function createHeader() {
                         <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
                     </svg>
                 </button>
-                <button id="zipper-server-toggle-btn" class="zipper-icon-toggle ${isServerDownloadEnabled() ? 'active' : ''}" title="Toggle Server Downloads (Off: Browser Standalone / On: Local Server)">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                        <path d="M4 1h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1zm0 8h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm0 8h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zM6 4h2v1H6V4zm0 8h2v1H6v-1zm0 8h2v1H6v-1z"/>
-                    </svg>
-                </button>
-                <button id="zipper-rclone-toggle-btn" class="zipper-icon-toggle ${isRcloneEnabled() ? 'active' : ''}" title="Toggle RClone Cloud Handoff (Off: Local Storage / On: Cloud Remotes)">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                        <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-1.41-1.41L14.17 13H7v-2h7.17l-3.58-3.59L12 6l5 5v2z"/>
-                    </svg>
-                </button>
                 <div style="position: relative; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; vertical-align: middle;">
                     <button id="zipper-upscale-toggle-btn" class="zipper-icon-toggle" title="Toggle Image Upscaling (4x AI)" style="margin:0;">
                         <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
@@ -134,9 +118,22 @@ export function createHeader() {
                         </svg>
                     </button>
                     <select id="zipper-upscale-model" style="position: absolute; top:0; left:0; width:100%; height:100%; opacity:0; cursor:pointer;">
-                        <option value="off">Off</option>
-                        <option value="4xNomos8k_atd">Nomos8k</option>
-                        <option value="pillow-lanczos">Pillow 4x</option>
+                        <option value="off">Off (Original Quality)</option>
+                        <optgroup label="AI 4x Super-Resolution (CUDA)">
+                            <option value="4xNomos8k_atd">4x Nomos8k ATD — High-Fidelity (Recommended)</option>
+                            <option value="4xNomos8kDAT">4x Nomos8k DAT — Transformer Detail</option>
+                            <option value="4xRealWebPhoto_v4_dat2">4x RealWebPhoto v4 — Web Photos & Portraits</option>
+                            <option value="pillow-lanczos">4x Fast Lanczos — CPU Resampling</option>
+                        </optgroup>
+                        <optgroup label="Quality Enhancement (ImageMagick / VW CLI)">
+                            <option value="magick-enhance">Auto Enhance — Denoise + Level + Sharpen</option>
+                            <option value="magick-sharpen">Sharpen — Unsharp Mask Edges</option>
+                            <option value="magick-denoise">Denoise — 3x3 Median Filter</option>
+                            <option value="magick-contrast">Contrast — Sigmoidal Contrast</option>
+                            <option value="magick-autolevel">Auto Level — Histogram Balance</option>
+                            <option value="magick-clarity">Clarity — Local Micro-Contrast</option>
+                            <option value="magick-vibrance">Vibrance — Skin-Safe Saturation</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
@@ -153,8 +150,7 @@ export function createTabs() {
     tabs.className = 'zipper-tabs';
     setElementHTML(tabs, `
         <button class="zipper-tab-btn active" data-tab="images">Media</button>
-        <button class="zipper-tab-btn" data-tab="links">Cloud</button>
-        <button class="zipper-tab-btn" data-tab="smart-gallery">Smart</button>
+        <button class="zipper-tab-btn" data-tab="custom-links">Custom / Links</button>
         <button class="zipper-tab-btn" data-tab="dashboard">Jobs</button>
     `);
     return tabs;

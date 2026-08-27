@@ -25,17 +25,44 @@ export function htmlToElement(html) {
     return parsed.body.firstElementChild || null;
 }
 
-export function fetchAsArrayBuffer(url) {
+export async function fetchAsArrayBuffer(url: string): Promise<ArrayBuffer> {
+    // 1. Try direct fetch first (fastest, no IPC overhead for same-origin or CORS-enabled assets)
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        const resp = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (resp.ok) {
+            const buf = await resp.arrayBuffer();
+            if (buf && buf.byteLength > 0) return buf;
+        }
+    } catch {
+        // Direct fetch failed (CORS or network); fall back to privileged GM_xmlhttpRequest
+    }
+
+    // 2. Privileged background XHR fetch
     return new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
             method: 'GET',
             url: url,
             responseType: 'arraybuffer',
-            onload: (res) => res.status >= 200 && res.status < 300 ? resolve(res.response) : reject(res.status),
-            onerror: reject
+            timeout: 25000,
+            onload: (res: any) => {
+                if (res.status >= 200 && res.status < 300 && res.response instanceof ArrayBuffer && res.response.byteLength > 0) {
+                    resolve(res.response);
+                } else if (res.response && res.response.byteLength > 0) {
+                    resolve(res.response);
+                } else {
+                    reject(new Error(`Failed to fetch media: HTTP ${res.status}`));
+                }
+            },
+            onerror: (err: any) => reject(new Error(err?.error || 'Network error')),
+            ontimeout: () => reject(new Error('Fetch timed out'))
         });
     });
 }
+
+import { createLocalJob, updateLocalJob, completeLocalJob, failLocalJob } from '../ui/local_jobs';
 
 export async function clientSideFallback(urls, btn, logToConsole) {
     logToConsole("[Local] Falling back to browser-side zipping...", "info");
@@ -45,17 +72,25 @@ export async function clientSideFallback(urls, btn, logToConsole) {
     let zipBlob;
     let blob = new Blob();
 
+    const localJobId = createLocalJob(urls.length, window.location.href);
+    const archivesCreated: string[] = [];
+
     for (let i = 0; i < urls.length; i++) {
         let url = urls[i];
+        btn.textContent = `Fetching (${i + 1}/${urls.length})...`;
         try {
             let rawBuffer = await fetchAsArrayBuffer(url);
+            if (!rawBuffer || rawBuffer.byteLength === 0) {
+                throw new Error("Empty binary data received");
+            }
             let ext = url.split('.').pop().split(new RegExp('[?#]'))[0];
-            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'ukwn';
+            if (!['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'ogg', 'mov', 'm4v', 'mkv', 'avi', 'flv', 'wmv', 'mp3', 'wav', 'flac', 'm4a', 'aac'].includes(ext.toLowerCase())) ext = 'ukwn';
 
             blob = new Blob([rawBuffer]);
-            await zipWriter.add(window.location.pathname + `_${String(i + 1).padStart(3, '0')}.${ext}`, new zip.BlobReader(blob), { level: 0 });
+            await zipWriter.add(window.location.pathname.replace(/\//g, '_') + `_${String(count + 1).padStart(3, '0')}.${ext}`, new zip.BlobReader(blob), { level: 0 });
             count++;
             btn.textContent = `Zipping (${count}/${urls.length})...`;
+            updateLocalJob(localJobId, { processed_links: count, total_links: urls.length });
         } catch (error) {
             logToConsole(`[Local] Error processing media ${i + 1}: ${error.message || error}`, "error");
         }
@@ -65,7 +100,10 @@ export async function clientSideFallback(urls, btn, logToConsole) {
         if (count > 0 && count % 100 == 0) {
             try {
                 zipBlob = await zipWriter.close();
-                saveAs(zipBlob, window.location.pathname + '_' + getRandomInt(9) + '.zip');
+                const archiveName = window.location.pathname.replace(/\//g, '_') + '_' + getRandomInt(9) + '.zip';
+                saveAs(zipBlob, archiveName);
+                archivesCreated.push(archiveName);
+                updateLocalJob(localJobId, { archives: [...archivesCreated] });
                 logToConsole(`[Local] Downloaded batch ZIP of 100 media files!`, "success");
                 zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"));
             } catch (error) {
@@ -78,11 +116,17 @@ export async function clientSideFallback(urls, btn, logToConsole) {
     if (count > 0) {
         try {
             zipBlob = await zipWriter.close();
-            saveAs(zipBlob, window.location.pathname + '_' + getRandomInt(9) + '.zip');
+            const archiveName = window.location.pathname.replace(/\//g, '_') + '_' + getRandomInt(9) + '.zip';
+            saveAs(zipBlob, archiveName);
+            archivesCreated.push(archiveName);
+            completeLocalJob(localJobId, archivesCreated);
             logToConsole(`[Local] Final ZIP downloaded successfully!`, "success");
         } catch (error) {
             logToConsole(`[Local] Final ZIP generation failed: ${error}`, "error");
+            failLocalJob(localJobId, String(error));
         }
+    } else {
+        failLocalJob(localJobId, 'No files could be downloaded');
     }
 
     btn.textContent = 'Send Selected Media';
@@ -191,28 +235,55 @@ export function getElementUrl(el) {
     return normalizeUrl(directUrl, window.location.href);
 }
 
-function matchesDomain(url, domainList) {
-    if (!url) return false;
-    let hostname = '';
+export function getDomain(url) {
+    if (!url) return '';
     try {
         const parsed = new URL(url.startsWith('http') ? url : 'http://' + url);
-        hostname = parsed.hostname.toLowerCase();
+        return parsed.hostname.toLowerCase().replace(/^www\./, '');
     } catch {
-        const m = url.toLowerCase().match(/(?:https?:\/\/)?([a-z0-9.-]+)/i);
-        hostname = m ? m[1] : url.toLowerCase();
+        const m = url.toLowerCase().match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9.-]+)/i);
+        return m ? m[1] : '';
     }
+}
+
+export function isSameDomain(url, currentUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
+    if (!url || !currentUrl) return false;
+    const d1 = getDomain(url);
+    const d2 = getDomain(currentUrl);
+    if (!d1 || !d2) return false;
+    return d1 === d2 || d1.endsWith('.' + d2) || d2.endsWith('.' + d1);
+}
+
+function matchesDomain(url, domainList) {
+    if (!url) return false;
+    const hostname = getDomain(url);
+    if (!hostname) return false;
     return domainList.some(d => {
-        const domain = d.toLowerCase();
+        const domain = d.toLowerCase().replace(/^www\./, '');
         return hostname === domain || hostname.endsWith('.' + domain);
     });
 }
 
-export function isCloudUrl(url) {
+export function isCloudUrl(url, currentUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
+    if (!url) return false;
+    // If the link is on the same domain as the current page, do NOT treat it as a cloud link
+    if (isSameDomain(url, currentUrl)) {
+        return false;
+    }
     return matchesDomain(url, mediaDomains);
 }
 
-export function isMediaUrl(url) {
+export function isMediaUrl(url, currentUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
+    if (!url) return false;
     const lower = url.toLowerCase();
-    return /\.(jpg|jpeg|png|gif|webp|svg|ico|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower) ||
-        matchesDomain(url, mediaDomains);
+    const isDirectMediaExt = /\.(jpg|jpeg|png|gif|webp|mp4|webm|ogg|mov|m4v|mkv|avi|flv|wmv|mp3|wav|flac|m4a|aac)(?:[?#].*)?$/i.test(lower);
+    if (isDirectMediaExt) return true;
+
+    // If on same domain, require direct media extension (do not accept arbitrary page links)
+    if (isSameDomain(url, currentUrl)) {
+        return false;
+    }
+
+    return matchesDomain(url, mediaDomains);
 }
+

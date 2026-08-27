@@ -94,9 +94,35 @@ ext.tabs.onRemoved.addListener(async (closedTabId: number) => {
   }
 });
 
-async function gmXhr(req: { url: string; method?: string; headers?: Record<string, string>; data?: any }) {
+async function gmXhr(req: { url: string; method?: string; headers?: Record<string, string>; data?: any; responseType?: string; timeout?: number }) {
   try {
-    const res = await fetch(req.url, { method: req.method || 'GET', headers: req.headers || {}, body: req.data ?? null });
+    const controller = new AbortController();
+    const timeoutMs = req.timeout && req.timeout > 0 ? req.timeout : 30000;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const isGetOrHead = !req.method || req.method.toUpperCase() === 'GET' || req.method.toUpperCase() === 'HEAD';
+    const bodyPayload = isGetOrHead ? undefined : (typeof req.data === 'string' ? req.data : (req.data ? JSON.stringify(req.data) : undefined));
+
+    const res = await fetch(req.url, {
+      method: req.method || 'GET',
+      headers: req.headers || {},
+      body: bodyPayload,
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+
+    if (req.responseType === 'arraybuffer' || req.responseType === 'blob') {
+      const buffer = await res.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = '';
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+      return { ok: res.ok, status: res.status, base64Data: base64 };
+    }
+
     return { ok: res.ok, status: res.status, responseText: await res.text() };
   } catch (e: any) {
     return { ok: false, status: 0, responseText: '', error: String(e) };
@@ -138,6 +164,21 @@ async function handle(msg: BgMessage, sender: any) {
       const dReferer = (msg as any).referer;
       return await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
     }
+    case 'downloads:list': {
+      return { ok: true, downloads: await getBrowserDownloadsList() };
+    }
+    case 'downloads:reveal': {
+      const dId = (msg as any).downloadId;
+      if (dId && ext.downloads && ext.downloads.show) {
+        try {
+          await ext.downloads.show(dId);
+          return { ok: true };
+        } catch (_) { }
+      }
+      const path = (msg as any).path;
+      if (path) return await revealPath(path);
+      return { ok: false, error: 'Cannot reveal download' };
+    }
 
     case 'gm:xhr': return await gmXhr((msg as any).req);
     default: return { ok: false, error: 'unknown message' };
@@ -171,6 +212,93 @@ async function saveDownloadedJobs() {
   }
 }
 
+interface TrackedBrowserDownload {
+  id: number;
+  url: string;
+  filename: string;
+  state: 'in_progress' | 'complete' | 'interrupted';
+  bytesReceived: number;
+  totalBytes: number;
+  startTime: string;
+  endTime?: string;
+  error?: string;
+}
+
+const trackedDownloads = new Map<number, TrackedBrowserDownload>();
+
+if (ext.downloads) {
+  if (ext.downloads.onCreated) {
+    ext.downloads.onCreated.addListener((item: any) => {
+      if (item && item.id) {
+        trackedDownloads.set(item.id, {
+          id: item.id,
+          url: item.url,
+          filename: item.filename || 'download',
+          state: item.state || 'in_progress',
+          bytesReceived: item.bytesReceived || 0,
+          totalBytes: item.totalBytes || 0,
+          startTime: item.startTime || new Date().toISOString()
+        });
+      }
+    });
+  }
+
+  if (ext.downloads.onChanged) {
+    ext.downloads.onChanged.addListener((delta: any) => {
+      if (!delta || !delta.id) return;
+      const existing: TrackedBrowserDownload = trackedDownloads.get(delta.id) || {
+        id: delta.id,
+        url: '',
+        filename: '',
+        state: 'in_progress',
+        bytesReceived: 0,
+        totalBytes: 0,
+        startTime: new Date().toISOString()
+      };
+
+      if (delta.filename?.current) existing.filename = delta.filename.current;
+      if (delta.state?.current) existing.state = delta.state.current;
+      if (delta.bytesReceived?.current !== undefined) existing.bytesReceived = delta.bytesReceived.current;
+      if (delta.totalBytes?.current !== undefined) existing.totalBytes = delta.totalBytes.current;
+      if (delta.error?.current) existing.error = delta.error.current;
+      if (existing.state === 'complete') existing.endTime = new Date().toISOString();
+
+      trackedDownloads.set(delta.id, existing);
+    });
+  }
+
+  if (ext.downloads.onErased) {
+    ext.downloads.onErased.addListener((id: number) => {
+      trackedDownloads.delete(id);
+    });
+  }
+}
+
+async function getBrowserDownloadsList(): Promise<TrackedBrowserDownload[]> {
+  if (ext.downloads && ext.downloads.search) {
+    try {
+      const items = await ext.downloads.search({
+        limit: 30,
+        orderBy: ['-startTime']
+      });
+      // Filter for python-zipper downloads or recently tracked downloads
+      const list: TrackedBrowserDownload[] = items.map((item: any) => ({
+        id: item.id,
+        url: item.url,
+        filename: item.filename || '',
+        state: item.state || 'in_progress',
+        bytesReceived: item.bytesReceived || 0,
+        totalBytes: item.totalBytes || 0,
+        startTime: item.startTime || '',
+        endTime: item.endTime,
+        error: item.error
+      }));
+      return list;
+    } catch (_) { }
+  }
+  return Array.from(trackedDownloads.values());
+}
+
 async function startBrowserDownload(url: string, filename: string, saveAs: boolean = false, referer?: string) {
   try {
     const cleanName = filename.replace(/^[/\\]+/, '').replace(/[?:*|"<>]/g, '_');
@@ -187,6 +315,16 @@ async function startBrowserDownload(url: string, filename: string, saveAs: boole
       ];
     }
     const downloadId = await ext.downloads.download(options);
+    const newDownload: TrackedBrowserDownload = {
+      id: downloadId,
+      url: url,
+      filename: `python-zipper/${cleanName}`,
+      state: 'in_progress',
+      bytesReceived: 0,
+      totalBytes: 0,
+      startTime: new Date().toISOString()
+    };
+    trackedDownloads.set(downloadId, newDownload);
     return { ok: true, downloadId };
   } catch (e: any) {
     console.error("Browser download failed:", e);
@@ -242,9 +380,11 @@ async function revealPath(path: string) {
 
 async function revealDefaultDownloadFolder() {
   const jobData = await serverGet('/api/jobs');
-  const path = jobData?.streams_dir || jobData?.download_dir;
+  // Prioritize download_dir (.downloaded) where batch zips land, then streams_dir
+  const path = jobData?.download_dir || jobData?.streams_dir;
   if (!path) {
     return { ok: false, code: 'download_folder_unknown', error: 'The download folder is unavailable' };
   }
   return await revealPath(path);
 }
+

@@ -77,21 +77,204 @@ IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "svg"}
 UPSCALE_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
 
+VAULT_COMMANDER_ROOT = r"C:\Users\Administrator\Desktop\Github Repos\vault-commander"
+VAULT_COMMANDER_UPSCALERS_DIR = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", "models", "upscalers")
+VAULT_COMMANDER_PYTHON = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", ".venv", "Scripts", "python.exe")
+VAULT_COMMANDER_UPSCALE_SCRIPT = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", "upscale.py")
+VAULT_COMMANDER_ENHANCE_SCRIPT = os.path.join(VAULT_COMMANDER_ROOT, "cli", "Enhance-Image.ps1")
+
+ENHANCE_OPERATIONS = [
+    {
+        "name": "magick-enhance",
+        "label": "Auto Enhance — Denoise + Level + Sharpen",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "enhance",
+        "desc": "Balanced general enhancement combining gentle despeckle, auto-level color balance, and unsharp mask"
+    },
+    {
+        "name": "magick-sharpen",
+        "label": "Sharpen — Unsharp Mask",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "sharpen",
+        "desc": "High quality unsharp mask for edge clarity and crisp details"
+    },
+    {
+        "name": "magick-denoise",
+        "label": "Denoise — 3x3 Median Filter",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "denoise",
+        "desc": "3x3 median noise reduction for clean grain removal"
+    },
+    {
+        "name": "magick-contrast",
+        "label": "Contrast — Sigmoidal Curve",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "contrast",
+        "desc": "Sigmoidal non-linear contrast enhancement for rich depth"
+    },
+    {
+        "name": "magick-autolevel",
+        "label": "Auto Level — Dynamic Range",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "auto-level",
+        "desc": "Channel-wise contrast stretch for perfect highlights/shadows"
+    },
+    {
+        "name": "magick-clarity",
+        "label": "Clarity — Local Micro-Contrast",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "clarity",
+        "desc": "Local contrast adjustment for vivid texture definition"
+    },
+    {
+        "name": "magick-vibrance",
+        "label": "Vibrance — Color Saturation",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "vibrance",
+        "desc": "Intelligent color boost preserving skin tones"
+    }
+]
+
+UPSCALE_LABELS = {
+    "4xNomos8k_atd": {
+        "label": "4x Nomos8k ATD — AI High-Fidelity (Recommended)",
+        "desc": "Trained for maximum fidelity on textures, skin, and fine details",
+        "group": "Upscaling"
+    },
+    "4xNomos8kDAT": {
+        "label": "4x Nomos8k DAT — AI Transformer Detail",
+        "desc": "Transformer-based 4x upscaler with advanced attention mechanism",
+        "group": "Upscaling"
+    },
+    "4xRealWebPhoto_v4_dat2": {
+        "label": "4x RealWebPhoto v4 — AI Photo & Web",
+        "desc": "Optimized specifically for web photos, portraits, and compressed JPEG artifacts",
+        "group": "Upscaling"
+    },
+    "pillow-lanczos": {
+        "label": "4x Fast Lanczos — Lightweight Resampling",
+        "desc": "Fast CPU-based 4x Lanczos interpolation (no GPU required)",
+        "group": "Upscaling"
+    }
+}
+
 
 def get_available_upscale_models():
+    """Discover all available upscaler models and enhancement operations."""
     models = []
-    if os.path.exists(NOMOS_MODEL_PATH):
-        models.append({
-            "name": NOMOS_MODEL_NAME,
-            "kind": "spandrel",
-            "path": os.path.abspath(NOMOS_MODEL_PATH),
-        })
+    # 1. Scan vault-commander upscaler models
+    if os.path.exists(VAULT_COMMANDER_UPSCALERS_DIR):
+        for fname in sorted(os.listdir(VAULT_COMMANDER_UPSCALERS_DIR)):
+            if fname.lower().endswith((".safetensors", ".pth", ".pt", ".bin")):
+                name = os.path.splitext(fname)[0]
+                meta = UPSCALE_LABELS.get(name, {
+                    "label": f"4x {name} — AI Upscaling",
+                    "desc": "Neural AI 4x Super-Resolution",
+                    "group": "Upscaling"
+                })
+                models.append({
+                    "name": name,
+                    "label": meta["label"],
+                    "desc": meta.get("desc", ""),
+                    "group": meta.get("group", "Upscaling"),
+                    "kind": "spandrel",
+                    "path": os.path.abspath(os.path.join(VAULT_COMMANDER_UPSCALERS_DIR, fname)),
+                })
+    # 2. Add local models if present
+    if os.path.exists(MODELS_DIR):
+        for fname in sorted(os.listdir(MODELS_DIR)):
+            if fname.lower().endswith((".safetensors", ".pth", ".pt")):
+                name = os.path.splitext(fname)[0]
+                if not any(m["name"] == name for m in models):
+                    meta = UPSCALE_LABELS.get(name, {
+                        "label": f"4x {name} — AI Upscaling",
+                        "desc": "Neural AI 4x Super-Resolution",
+                        "group": "Upscaling"
+                    })
+                    models.append({
+                        "name": name,
+                        "label": meta["label"],
+                        "desc": meta.get("desc", ""),
+                        "group": meta.get("group", "Upscaling"),
+                        "kind": "spandrel",
+                        "path": os.path.abspath(os.path.join(MODELS_DIR, fname)),
+                    })
+    # 3. Always include Pillow Lanczos
+    p_meta = UPSCALE_LABELS["pillow-lanczos"]
     models.append({
         "name": "pillow-lanczos",
+        "label": p_meta["label"],
+        "desc": p_meta["desc"],
+        "group": p_meta["group"],
         "kind": "pillow",
         "path": "",
     })
+    # 4. Include ImageMagick enhancement operations
+    for op in ENHANCE_OPERATIONS:
+        models.append(op)
     return models
+
+
+def check_upscaler_capabilities():
+    """Verify upscaler availability, CUDA support, and model discovery."""
+    models = get_available_upscale_models()
+    model_names = [m["name"] for m in models]
+    has_vc_env = os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT)
+    cuda_available = False
+    device_name = ""
+    error = None
+
+    if has_vc_env:
+        # Check capabilities via vault-commander venv
+        try:
+            cmd = [
+                VAULT_COMMANDER_PYTHON,
+                "-c",
+                "import torch, spandrel, PIL; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                lines = res.stdout.strip().splitlines()
+                if len(lines) >= 1 and lines[0].strip().lower() == "true":
+                    cuda_available = True
+                if len(lines) >= 2:
+                    device_name = lines[1].strip()
+            else:
+                error = res.stderr.strip()
+        except Exception as e:
+            error = str(e)
+    else:
+        # Fallback to current process venv
+        try:
+            import importlib.util
+            if importlib.util.find_spec("PIL") is None:
+                error = "Pillow not installed"
+            if importlib.util.find_spec("spandrel") is None and any(m.get("kind") == "spandrel" for m in models):
+                error = "spandrel not installed"
+            import torch
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                device_name = torch.cuda.get_device_name(0)
+        except Exception as e:
+            if not error:
+                error = str(e)
+
+    available = bool(len(model_names) > 0 and (has_vc_env or not error))
+    return {
+        "available": available,
+        "models": model_names,
+        "model_details": models,
+        "cuda": cuda_available,
+        "device": device_name or ("NVIDIA CUDA" if cuda_available else "CPU"),
+        "error": error if not available else None
+    }
 
 
 def _configured_rclone_remotes():
@@ -126,6 +309,129 @@ def handoff_to_rclone(file_path):
 def upscale_image_content(content, ext, model):
     if ext.lower() not in UPSCALE_IMAGE_EXTENSIONS:
         return content
+    if not model or model == "off":
+        return content
+
+    # 1. ImageMagick / VW CLI quality enhancement operations
+    magick_op = None
+    if model.startswith("magick-"):
+        magick_op = model.replace("magick-", "")
+    elif model in ["enhance", "sharpen", "denoise", "contrast", "auto-level", "autolevel", "clarity", "vibrance"]:
+        magick_op = model
+
+    if magick_op:
+        if magick_op in ["autolevel", "auto-level"]:
+            magick_op = "auto-level"
+        import tempfile
+        tmp_in = None
+        tmp_out = None
+        try:
+            clean_ext = ext.lstrip(".").lower()
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_in:
+                f_in.write(content)
+                tmp_in = f_in.name
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_out:
+                tmp_out = f_out.name
+
+            # Preferred: Execute via vault-commander CLI script
+            if os.path.exists(VAULT_COMMANDER_ENHANCE_SCRIPT):
+                cmd = [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", VAULT_COMMANDER_ENHANCE_SCRIPT,
+                    "-InputPath", tmp_in,
+                    "-Operation", magick_op,
+                    "-OutputPath", tmp_out
+                ]
+            else:
+                args = ["magick", tmp_in]
+                if magick_op == "enhance":
+                    args.extend(["-despeckle", "-auto-level", "-unsharp", "0x1.0+1.2+0.05"])
+                elif magick_op == "sharpen":
+                    args.extend(["-unsharp", "0x1.2+1.5+0.04"])
+                elif magick_op == "denoise":
+                    args.extend(["-statistic", "median", "3x3"])
+                elif magick_op == "contrast":
+                    args.extend(["-sigmoidal-contrast", "3,50%"])
+                elif magick_op == "auto-level":
+                    args.extend(["-auto-level"])
+                elif magick_op == "clarity":
+                    args.extend(["-unsharp", "0x5.0+0.8+0.0", "-auto-gamma"])
+                elif magick_op == "vibrance":
+                    args.extend(["-modulate", "100,120,100"])
+                args.append(tmp_out)
+                cmd = args
+
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+                with open(tmp_out, "rb") as f:
+                    return f.read()
+            else:
+                print(f"[Server] ImageMagick enhancement error ({res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        except Exception as e:
+            print(f"[Server] ImageMagick enhancement exception: {e}")
+        finally:
+            if tmp_in and os.path.exists(tmp_in):
+                try: os.remove(tmp_in)
+                except Exception: pass
+            if tmp_out and os.path.exists(tmp_out):
+                try: os.remove(tmp_out)
+                except Exception: pass
+
+    # 2. Pillow Lanczos mode
+    if model == "pillow-lanczos":
+        try:
+            import io
+            from PIL import Image
+            img = Image.open(io.BytesIO(content))
+            new_w, new_h = img.width * 4, img.height * 4
+            upscaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            out_buf = io.BytesIO()
+            fmt = "JPEG" if ext.lower() in ["jpg", "jpeg"] else ext.upper()
+            upscaled.save(out_buf, format=fmt)
+            return out_buf.getvalue()
+        except Exception as e:
+            print(f"[Server] Pillow Lanczos upscaling failed: {e}")
+            return content
+
+    # 3. Vault-commander CUDA Spandrel upscaling
+    if os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT):
+        import tempfile
+        tmp_in = None
+        tmp_out = None
+        try:
+            clean_ext = ext.lstrip(".").lower()
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_in:
+                f_in.write(content)
+                tmp_in = f_in.name
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_out:
+                tmp_out = f_out.name
+
+            cmd = [
+                VAULT_COMMANDER_PYTHON,
+                VAULT_COMMANDER_UPSCALE_SCRIPT,
+                "--input", tmp_in,
+                "--model", model,
+                "--output", tmp_out
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+                with open(tmp_out, "rb") as f:
+                    return f.read()
+            else:
+                print(f"[Server] Vault-commander upscaling exited ({res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        except Exception as e:
+            print(f"[Server] Vault-commander upscaling exception: {e}")
+        finally:
+            if tmp_in and os.path.exists(tmp_in):
+                try: os.remove(tmp_in)
+                except Exception: pass
+            if tmp_out and os.path.exists(tmp_out):
+                try: os.remove(tmp_out)
+                except Exception: pass
+
+    # 4. Fallback local Python upscale
     try:
         from upscale_image import upscale_bytes
         return upscale_bytes(content, model=model)
@@ -261,7 +567,11 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
         return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
     try:
         print(f"[Server] Starting direct download for: {url}")
-        resp = requests.get(url, headers=headers, stream=True, timeout=120)
+        try:
+            resp = requests.get(url, headers=headers, stream=True, timeout=120)
+        except requests.exceptions.ProxyError as pe:
+            print(f"[Server] Proxy failed for {url} ({pe}), falling back to direct...")
+            resp = requests.get(url, headers=headers, stream=True, timeout=120, proxies={"http": None, "https": None})
         if resp.status_code != 200:
             print(f"[Server] Direct download failed for {url}: status {resp.status_code}")
             return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)

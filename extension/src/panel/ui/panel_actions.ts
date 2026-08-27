@@ -34,11 +34,7 @@ export async function handleScrape(
 
     scrapeBtn.disabled = true;
     logToConsole(`[Media] Resolving quality and gated media links...`, 'info');
-    const resolvedUrls = [];
-    for (const u of urls) {
-        const bestUrl = await resolveBestMediaUrl(u);
-        resolvedUrls.push(bestUrl);
-    }
+    const resolvedUrls = await Promise.all(urls.map(u => resolveBestMediaUrl(u).catch(() => u)));
     const finalUrls = [...new Set(resolvedUrls.filter(Boolean))].filter(u => u !== window.location.href);
 
     const serverDownloadEnabled = getZipperSetting('server-download-enabled', 'false') === 'true';
@@ -46,7 +42,8 @@ export async function handleScrape(
 
     const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
     const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
-    const selectVal = (document.getElementById('zipper-upscale-model') as HTMLSelectElement).value;
+    const selectEl = document.getElementById('zipper-upscale-model') as HTMLSelectElement;
+    const selectVal = selectEl ? selectEl.value : 'off';
     const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
 
     if (serverDownloadEnabled && globalState.serverOnline) {
@@ -72,11 +69,11 @@ export async function handleScrape(
                 } catch (e) {
                     logToConsole(`[Server] Success: Sent ${finalUrls.length} media files to pipeline.`, 'success');
                 }
-                flashFab();
+                flashFab?.();
             } else {
                 throw new Error(`Server returned ${response.status}`);
             }
-        } catch (err) {
+        } catch (err: any) {
             logToConsole(`[Server] Failed to send links: ${err.message}`, 'error');
             await clientSideFallback(finalUrls, scrapeBtn, logToConsole);
         }
@@ -88,69 +85,75 @@ export async function handleScrape(
 }
 
 export async function handleSend(
-    linksSection: HTMLElement,
-    linksInput: HTMLTextAreaElement
+    customLinksSection: HTMLElement,
+    linksInput: HTMLTextAreaElement,
+    flashFab?: () => void
 ) {
-    const sendBtn = linksSection.querySelector('#zipper-send-btn') as HTMLButtonElement;
-    const checkedBoxes = Array.from(linksSection.querySelectorAll('.zipper-cloud-checkbox:checked'));
-    let urls = checkedBoxes.map(cb => normalizeUrl(cb.getAttribute('data-url'), window.location.href)).filter(Boolean);
-
+    const sendBtn = customLinksSection.querySelector('#zipper-send-btn') as HTMLButtonElement;
     const rawText = linksInput.value.trim();
-    if (rawText) {
-        const manualLinks = extractUrlsFromText(rawText, window.location.href);
-        urls = [...new Set([...urls, ...manualLinks])];
+    if (!rawText) {
+        logToConsole('[Links] No manual links pasted.', 'error');
+        return;
     }
 
+    const manualLinks = extractUrlsFromText(rawText, window.location.href);
+    let urls = [...new Set(manualLinks.map(url => normalizeUrl(url, window.location.href)).filter(Boolean))];
+
     if (urls.length === 0) {
-        logToConsole('[Upload] No cloud links selected or manually input.', 'error');
+        logToConsole('[Links] No valid URLs found in pasted text.', 'error');
         return;
     }
 
     sendBtn.disabled = true;
-    logToConsole(`[Upload] Resolving quality and media links for ${urls.length} target(s)...`, 'info');
+    logToConsole(`[Links] Resolving quality and media links for ${urls.length} target(s)...`, 'info');
 
-    const resolvedUrls = [];
-    for (const u of urls) {
-        const bestUrl = await resolveBestMediaUrl(u);
-        resolvedUrls.push(bestUrl);
-    }
+    const resolvedUrls = await Promise.all(urls.map(u => resolveBestMediaUrl(u).catch(() => u)));
     const finalUrls = [...new Set(resolvedUrls.filter(Boolean))].filter(u => u !== window.location.href);
 
     if (finalUrls.length === 0) {
-        logToConsole('[Upload] No valid links remaining after resolution.', 'error');
+        logToConsole('[Links] No valid links remaining after resolution.', 'error');
         sendBtn.disabled = false;
         return;
     }
 
-    logToConsole(`[Upload] Sending ${finalUrls.length} link(s) to pipeline...`, 'info');
+    const serverDownloadEnabled = getZipperSetting('server-download-enabled', 'false') === 'true';
+    const rcloneEnabled = getZipperSetting('rclone-enabled', 'false') === 'true';
 
     const upscaleBtn = document.getElementById('zipper-upscale-toggle-btn');
     const upscaleEnabled = upscaleBtn ? upscaleBtn.classList.contains('active') : false;
     const selectVal = (document.getElementById('zipper-upscale-model') as HTMLSelectElement).value;
     const upscaleModel = selectVal === 'off' ? getZipperSetting('upscale-model', '4xNomos8k_atd') : selectVal;
 
-    if (globalState.serverOnline) {
+    if (serverDownloadEnabled && globalState.serverOnline) {
+        logToConsole(`[Server] Sending ${finalUrls.length} pasted links to pipeline...`, 'info');
         try {
             const response = await Api.sendWithFallback("download", "POST", {
                 url: window.location.href,
                 links: finalUrls,
-                batch_size: 100,
+                batch_size: 5,
                 upscale_enabled: upscaleEnabled,
                 upscale_model: upscaleModel,
-                rclone_enabled: getZipperSetting('rclone-enabled', 'false') === 'true'
+                rclone_enabled: rcloneEnabled
             });
 
             if (response.ok) {
-                logToConsole(`[Server] Successfully forwarded ${finalUrls.length} links to pipeline!`, 'success');
+                logToConsole(`[Server] Successfully queued ${finalUrls.length} pasted links to pipeline!`, 'success');
                 linksInput.value = '';
+                if (flashFab) flashFab();
             } else {
-                throw new Error(`Server error: ${response.status}`);
+                throw new Error(`Server returned ${response.status}`);
             }
         } catch (err) {
-            logToConsole(`[Server] Failed to contact server: ${err.message}`, 'error');
+            logToConsole(`[Server] Failed to send links: ${err.message}. Falling back to browser download...`, 'error');
+            await clientSideFallback(finalUrls, sendBtn, logToConsole);
+            linksInput.value = '';
+            if (flashFab) flashFab();
         }
     } else {
-        logToConsole('[Server] Error: Local server offline.', 'error');
+        logToConsole(`[Local] Downloading ${finalUrls.length} pasted links directly in browser...`, 'info');
+        await clientSideFallback(finalUrls, sendBtn, logToConsole);
+        linksInput.value = '';
+        if (flashFab) flashFab();
     }
     sendBtn.disabled = false;
 }
