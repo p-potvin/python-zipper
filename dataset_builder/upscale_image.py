@@ -83,21 +83,27 @@ def upscale_bytes(content, model=DEFAULT_MODEL, scale=DEFAULT_SCALE):
 
         use_model = model == DEFAULT_MODEL and NOMOS_MODEL_PATH.exists()
 
-        # The Lanczos path is a plain resize, not a model, so it is not recorded
-        # as one -- that would put non-model work in the model table and quietly
-        # inflate every volume figure. But falling back because the weights are
-        # missing is exactly the kind of silent degradation telemetry exists to
-        # surface, so it is recorded as `rejected` (a policy outcome, the same
-        # shape as a budget refusal) rather than as a successful upscale.
+        # A Lanczos resize is not a model run and is not recorded as one.
+        #
+        # There are two ways to end up here and only one of them is worth a
+        # record. If the caller asked for the model and the weights are absent,
+        # that is silent degradation and exactly what telemetry is for. If the
+        # caller asked for a plain resize, nothing went wrong -- recording it
+        # would put ordinary image work in the model table and inflate every
+        # volume figure with invocations that never happened.
+        #
+        # The first version recorded both, and production immediately filled
+        # with `rejected` rows describing resizes that were working correctly.
         if not use_model:
-            telemetry.record(
-                provider="local", runtime="pillow", model=PILLOW_MODEL, task="image",
-                service="dataset-builder-upscale", status="rejected",
-                error_class="UpscalerModelMissing" if model == DEFAULT_MODEL else "UpscalerNotRequested",
-                error_message=f"{NOMOS_MODEL_PATH} not present" if model == DEFAULT_MODEL else None,
-                width=image.width, height=image.height, image_count=1,
-                duration_ms=0.0,
-            )
+            if model == DEFAULT_MODEL:
+                telemetry.record(
+                    provider="local", runtime="pillow", model=PILLOW_MODEL, task="image",
+                    service="dataset-builder-upscale", status="rejected",
+                    error_class="UpscalerModelMissing",
+                    error_message=f"{NOMOS_MODEL_PATH} not present",
+                    width=image.width, height=image.height, image_count=1,
+                    duration_ms=0.0,
+                )
             resized = _upscale_with_pillow(image, scale=scale)
         else:
             with telemetry.run(

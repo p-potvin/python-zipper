@@ -1,0 +1,139 @@
+@import "../sidebar/tokens.css";
+
+/* The popup is the access point, not the workspace — you see it far more often
+ * than the sidebar. It answers three questions and offers one action: is the
+ * stack up, is anything downloading, is there anything on this page, and open
+ * the sidebar. Anything more belongs in the sidebar. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  width: 300px;                      /* --vwsq-rail-w, so it matches the sidebar */
+  background: var(--vwsq-console-bg);
+  color: var(--vwsq-console-text);
+  font-family: var(--vwsq-font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.pop { display: flex; flex-direction: column; }
+
+.pop-hdr {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-3);
+  background: var(--vwsq-console-surface);
+  border-bottom: 1px solid var(--vwsq-console-border);
+}
+.pop-brand {
+  font-family: var(--vwsq-font-mono); font-size: .7rem; font-weight: 500;
+  letter-spacing: .18em; text-transform: uppercase;
+  color: var(--vwsq-console-text-bright);
+}
+.pop-spring { flex: 1; }
+
+.pop-open {
+  display: flex; align-items: center; justify-content: center; gap: var(--vwsq-space-2);
+  margin: var(--vwsq-space-3);
+  height: 36px;
+  border: 0; border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-iris-500); color: #FFFFFF;
+  font-family: var(--vwsq-font-sans); font-size: .82rem; font-weight: 600;
+  cursor: pointer;
+  transition: background var(--vwsq-motion-snap);
+}
+.pop-open:hover { background: var(--vwsq-iris-600); }
+
+.pop-rows { display: flex; flex-direction: column; }
+
+.row {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  border-top: 1px solid var(--vwsq-console-border);
+  font-size: .78rem;
+  min-width: 0;
+}
+.row-label { color: var(--vwsq-console-text-secondary); white-space: nowrap; }
+.row-val {
+  margin-left: auto;
+  font-family: var(--vwsq-font-mono); font-size: .68rem;
+  color: var(--vwsq-console-text-bright);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.row-btn {
+  width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
+  color: inherit; font: inherit;
+}
+.row-btn:hover { background: var(--vwsq-console-hover); }
+
+.led {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--vwsq-font-mono); font-size: .58rem; font-weight: 500;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .2em .5em; border-radius: var(--vwsq-radius-pill);
+}
+.led::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.led-online { background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online); }
+.led-alert  { background: var(--vwsq-signal-alert-soft);  color: var(--vwsq-signal-alert); }
+.led-relay  { background: var(--vwsq-signal-relay-soft);  color: var(--vwsq-signal-relay); }
+.led-idle   { background: var(--vwsq-signal-idle-soft);   color: var(--vwsq-signal-idle); }
+.led-relay::before { animation: ledPulse 4s ease-in-out infinite; }
+@keyframes ledPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ---- streams on this tab ------------------------------------------------ */
+
+.streams { display: flex; flex-direction: column; border-top: 1px solid var(--vwsq-console-border); }
+.stream {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  border: 0; background: none; cursor: pointer; text-align: left;
+  color: inherit; min-width: 0;
+}
+.stream:hover { background: var(--vwsq-console-hover); }
+.stream-title {
+  flex: 1; min-width: 0; font-size: .74rem;
+  color: var(--vwsq-console-text-bright);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stream-tag {
+  font-family: var(--vwsq-font-mono); font-size: .54rem;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .15em .4em; border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-coral-soft); color: var(--vwsq-coral-500);
+}
+
+/* ---- progress ----------------------------------------------------------- */
+
+.bar {
+  height: 3px; border-radius: 2px;
+  background: var(--vwsq-console-sunken); overflow: hidden;
+  margin: 0 var(--vwsq-space-3) var(--vwsq-space-2);
+}
+.bar-fill { height: 100%; background: var(--vwsq-iris-500); transition: width 300ms; }
+
+.pop-foot {
+  display: flex; gap: var(--vwsq-space-1);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3) var(--vwsq-space-3);
+  border-top: 1px solid var(--vwsq-console-border);
+}
+.foot-btn {
+  flex: 1; height: 26px;
+  border: 1px solid var(--vwsq-console-border-strong);
+  border-radius: var(--vwsq-radius-control);
+  background: transparent; color: var(--vwsq-console-text-secondary);
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+  transition: color var(--vwsq-motion-snap), background var(--vwsq-motion-snap);
+}
+.foot-btn:hover { color: var(--vwsq-console-text-bright); background: var(--vwsq-console-hover); }
+
+.muted {
+  padding: var(--vwsq-space-3);
+  color: var(--vwsq-console-text-dim); font-size: .74rem; text-align: center;
+}
+
+:focus-visible { outline: 2px solid var(--vwsq-coral-500); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

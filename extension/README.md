@@ -7,10 +7,13 @@ large progressive MP4s) across **every frame**, captures each request's real
 headers (Referer/Cookie/User-Agent), and forwards captures to the existing local
 pipeline at `http://127.0.0.1:5171/download`.
 
-The Tampermonkey userscript in `../userscript/` is **untouched** and keeps
-working. This extension is a parallel track.
-
 _Scaffolded: Fri, 24 Jul 2026 03:39_
+_Userscript retired: Thu, 27 Aug 2026 20:41_
+
+> **The Tampermonkey userscript is gone.** `../userscript/` and the generated
+> `../tampermonkey_script.js` were removed — this extension is now the only
+> track, and `src/panel/` no longer has an upstream to stay in sync with. The
+> sidebar rebuild in `src/sidebar/` is what replaces it.
 
 ## Why an extension (vs the userscript)
 
@@ -27,42 +30,59 @@ _Scaffolded: Fri, 24 Jul 2026 03:39_
 | `public/manifest.json` | MV3 manifest (Firefox `background.scripts` event page) |
 | `src/background/sniffer.ts` | `webRequest` detection + per-tab store + header capture |
 | `src/background/index.ts` | message router + server forwarding + `gm:xhr` backend |
-| `src/content/index.ts` | boots the GM shim + vendors, then builds the image-harvest panel |
-| `src/content/vendors.ts` | installs `zip` / `saveAs` / `unsafeWindow` globals the panel expects |
-| `src/shim/gm-shim.ts` | `GM_*` → `browser.*` adapter (cache-backed sync reads) |
-| `src/panel/**` | the full userscript UI (image harvesting), vendored (`// @ts-nocheck`) |
-| `src/popup/popup.ts` + `popup.html` | **the stream UI** — VDH-style cards, download/progress, controls |
+| `src/content/index.ts` | message endpoint in every frame — harvest, highlight, title extraction |
+| `src/content/vendors.ts` | *(unused)* zip/saveAs globals for the retired panel |
+| `src/shim/gm-shim.ts` | *(unused)* `GM_*` → `browser.*` adapter for the retired panel |
+| `src/panel/**` | legacy in-page panel — **no longer injected**, kept only until the picker is ported |
+| `src/popup/popup.tsx` + `popup.css` | the access point — sidebar launcher, server/job status, per-tab streams |
+| `src/content/harvest.ts` | all-frames DOM pass — srcset, picture, lazy attrs, backgrounds, og/JSON-LD |
+| `src/content/highlight.ts` | sidebar-driven element outlining |
+| `src/background/media_log.ts` | network media log — the only source of byte size |
+| `src/background/harvest_store.ts` | frame collection, two-pass dedup, per-tab snapshot |
+| `src/common/harvest.ts` | the `MediaCandidate` record + srcset/dedup/merge helpers |
+| `src/common/scoring.ts` | named additive scoring rules |
+| `src/common/upgrade_rules.ts` | thumbnail→original table, and rule derivation |
 | `src/background/enrich.ts` | HLS master parse + lazy yt-dlp probe (only while popup is open) |
+| `src/sidebar/index.tsx` | **the sidebar** — Preact + Signals shell, per-window tab tracking |
+| `src/sidebar/tokens.css` | vaultsqware tokens + the console/warm surface toggle |
+| `src/common/domain.ts` | registrable-domain helpers — the site-profile attribution key |
 
-## Popup is the stream home (v1.2)
+## Sidebar is the workspace, popup is the access point
 
-All stream detection/download UI lives in the **toolbar popup** (Video-Download­Helper-style
-cards): thumbnail with a `live` badge, protocol badge (HLS/M3U8/HTTP/DASH),
-title, rename, a quality dropdown, and a blue Download split-button. Started
-downloads turn into progress cards in the same list — live %/speed/ETA, a **Stop**
-that finalizes the recording, **Open**, and delete. A bottom toolbar carries
-refresh, open-downloads-folder, clear, and “No video?” (re-capture).
+The **sidebar** (`sidebar_action`) carries Capture, Downloads, Insights and
+Settings. It is per-window, not per-tab — it stays mounted across tab switches,
+so the active tab is tracked in `watchActiveTab()` and a snapshot is dropped the
+moment the page changes.
 
-Streams are queried **only while the popup is open** (1s poll); the content
-script no longer injects anything stream-related, and yt-dlp probing is deferred
-to when the popup asks — so browsing with the popup closed costs nothing beyond
-the passive `webRequest` sniff.
+The **popup** is what you actually see most of the time, since browsing normally
+happens with the sidebar closed. It answers what you'd open it to find out —
+server reachable, downloads running, streams on this tab, media seen — and
+offers one action: open the sidebar. `sidebarAction.open()` needs a live user
+gesture, so it is called synchronously in the click handler.
 
-## Panel port
+Streams are still queried only while a UI surface is open, and yt-dlp probing is
+still deferred, so idle browsing costs nothing beyond the passive sniff.
 
-`src/panel/` is a copy of `../userscript/src` (kept in sync manually — the
-userscript remains the upstream source of truth). Only three environment seams
-were changed: the `GM_*` globals now come from `gm-shim.ts`, the `zip`/`saveAs`
-globals from `vendors.ts`, and `main.ts` was slimmed to export `start()` instead
-of auto-running (its dead duplicate harvest/zip code and the Tampermonkey menu
-command were dropped). Everything else — Media/Cloud/Smart/Jobs tabs, theming,
-drag, upscale toggle, server status, gallery zipping — runs unchanged.
+## Panel (legacy, being replaced)
 
-Detected live streams appear at the top of the **Cloud tab** with a red
-`[HLS]/[DASH]` tag and a 🔑 marker when request headers were captured. Each has a
-header-aware **Grab** button (routes through the background so Referer/Cookie
-travel with it) and a checkbox that also feeds the panel's existing
-"Send Selected to Cloud" batch.
+`src/panel/` began as a copy of the Tampermonkey userscript's `src/`, carried
+across with three environment seams changed: `GM_*` globals from `gm-shim.ts`,
+`zip`/`saveAs` from `vendors.ts`, and `main.ts` slimmed to export `start()`.
+
+**It is no longer injected.** Nothing imports it, so esbuild drops it from the
+bundle — which took `content.js` from 515 KB to 27 KB, on every frame of every
+page. The FAB and floating download button are gone with it.
+
+What the panel uniquely did still has a home:
+
+| Was | Now |
+|---|---|
+| element highlighting | `src/content/highlight.ts`, driven from the sidebar |
+| gallery zip | the server already batches and zips via `/download` |
+| container picker | to be re-added as a sidebar-initiated mode |
+
+The one real loss is the **in-browser** zip fallback that worked with the server
+offline. The directory stays until the picker is ported, then it goes.
 
 ## Build & run (Firefox)
 
@@ -73,8 +93,8 @@ npm run build          # -> dist/
 npm run start:firefox  # launches Firefox with the extension loaded (web-ext)
 ```
 
-Then play a video anywhere; the red **N streams** pill appears bottom-right.
-Click a stream's **Send to Cloud** to push it (with headers) to the local server.
+Then open the sidebar from the toolbar button and hit **Scan page**. Playing a
+video first makes streams appear in the popup.
 
 Live-reload while developing: `npm run dev` (esbuild watch) in one terminal,
 `npm run start:firefox` in another (web-ext reloads on `dist/` changes).
@@ -102,14 +122,15 @@ list shows one entry per actual stream.
 
 **2. Metadata in the Jobs tab.** On detection the background probes each stream
 via `yt-dlp -j` (`/api/stream/probe`) → title, thumbnail, duration, and the full
-quality/format list. Detected streams show this in the Cloud tab; once started,
+quality/format list. Detected streams show this in the popup; once started,
 the **Jobs tab** shows a live progress bar, %, downloaded/total, speed, ETA, and
 the thumbnail — driven by yt-dlp's `--progress-template` parsed line-by-line in
 `ds_streams.download_stream`.
 
 **3. Controls.**
-- Cloud tab, per stream: quality dropdown (yt-dlp formats), **Start**, **✕** (remove detection).
-- Cloud tab, section: **Clear** (drop detections) and **↻ Re-capture** (clears + reloads the tab so network requests fire again).
+- Popup, per stream: click to grab with the captured headers.
+- Popup, footer: **Clear** (drop detections), **Folder**, **Refresh**.
+- Sidebar → Downloads: quality selection, stop, reveal, retry. *(in progress)*
 - Jobs tab, per stream job: **Stop** (kills the yt-dlp process), **Delete** (stop + remove job), **📂 Open** (reveal the saved file).
 
 **Proxy / auth headers.** The sniffer captures *all* request headers except
@@ -174,9 +195,10 @@ job records the absolute `save_path` and **📂 Open** reveals it in Explorer.
 - DRM / Widevine (EME) streams cannot be grabbed.
 - Non-persistent background may unload when idle; active playback keeps it alive
   and the content script re-polls every 4s, so detected streams are re-surfaced.
-- `web-ext lint` reports `UNSAFE_VAR_ASSIGNMENT` (innerHTML) warnings from the
-  vendored panel markup. These are AMO-submission advisories only — they don't
-  block loading unpacked or self-signing — and are inherited unchanged from the
-  userscript.
-- The panel port is a manual copy of `../userscript/src`; changes upstream must
-  be re-copied (see the "Panel port" section).
+- `web-ext lint` reports 2 `UNSAFE_VAR_ASSIGNMENT` (innerHTML) warnings from
+  Preact's `dangerouslySetInnerHTML` support. 0 errors. Retiring the in-page
+  panel removed the other four.
+- Content scripts run with `all_frames: true` so the harvest can reach embedded
+  players and gallery iframes. Everything UI-shaped in `src/content/index.ts` is
+  gated behind `IS_TOP_FRAME` — without that gate, a page with ten iframes gets
+  ten panels and ten competing replies to one `title:extract` request.

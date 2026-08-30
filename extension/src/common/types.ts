@@ -88,7 +88,31 @@ export type BgMessage =
   | { kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean }
   | { kind: 'downloads:list' }
   | { kind: 'downloads:reveal'; downloadId?: number; path?: string }
-  | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } };
+  | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } }
+  // ---- harvest ----------------------------------------------------------
+  | { kind: 'harvest:run'; mode?: 'quick' | 'deep'; scope?: string; tabId?: number }
+  /** Scroll the feed out and open the viewer, then harvest. Manual only. */
+  | { kind: 'harvest:deep-abort'; tabId?: number }
+  | { kind: 'harvest:get'; tabId?: number }
+  /** What the passive network log already holds — no scan, no page contact. */
+  | { kind: 'harvest:peek'; tabId?: number }
+  /** Pushed by each frame in response to the background's broadcast. */
+  | { kind: 'harvest:frame-result'; runId: string; isTop?: boolean; candidates: import('./harvest').MediaCandidate[]; scanned?: number }
+  | { kind: 'harvest:send-server'; links: string[]; kinds?: Record<string, string>; pageUrl?: string; tabId?: number }
+  /** Which of these URLs have already been downloaded, and under what filename. */
+  | { kind: 'grabbed:lookup'; urls: string[] }
+  | { kind: 'grabbed:clear' }
+  /** Background -> sidebar: the passive network log grew for this tab. */
+  | { kind: 'media:logged'; tabId: number; logged: number }
+  // ---- container picker --------------------------------------------------
+  | { kind: 'picker:start' }
+  | { kind: 'picker:stop' }
+  | { kind: 'picker:count'; selector: string }
+  | { kind: 'picker:result'; selector: string }
+  // ---- VaultWares API ----------------------------------------------------
+  | { kind: 'api:config:get' }
+  | { kind: 'api:config:set'; baseUrl?: string; apiKey?: string }
+  | { kind: 'api:health' };
 
 export interface StreamJob {
   id: string;

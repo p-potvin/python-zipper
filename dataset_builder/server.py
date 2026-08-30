@@ -78,7 +78,7 @@ def resolve_legacy_reveal_path(data):
 
 
 PORT = 5171
-DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
+from ds_config import DEST_DIR
 VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca:9001")
 
 
@@ -288,12 +288,13 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 upscale_enabled = bool(data.get('upscale_enabled', False))
                 upscale_model = data.get('upscale_model', NOMOS_MODEL_NAME)
                 stream_headers = data.get('stream_headers', {}) or {}
+                link_kinds = data.get('link_kinds', {}) or {}
                 if not url or not links:
                     self._send_json({"error": "Missing url or links parameters"}, 400)
                     return
                 job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
                 rclone_enabled = bool(data.get('rclone_enabled', False))
-                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled)).start()
+                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled, link_kinds)).start()
                 self._send_json({"status": "Download task started", "count": len(links), "correlationId": job_id})
             except Exception as e:
                 self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
@@ -374,12 +375,12 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return
         self._download_and_process(url, urls, batch_size)
 
-    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None, rclone_enabled=False):
+    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None, rclone_enabled=False, link_kinds=None):
         print(f"\n[Server] Background downloader task started for URL: {url} ({len(links)} links)")
         os.makedirs(DEST_DIR, exist_ok=True)
         update_job(job_id, status="running")
         try:
-            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled)
+            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled, link_kinds)
             archives = result.get("archives", [])
             update_job(job_id, save_dir=os.path.abspath(DEST_DIR), archive_paths=resolve_archive_paths(archives))
             complete_job(
@@ -391,81 +392,19 @@ class ScraperHandler(BaseHTTPRequestHandler):
             fail_job(job_id, e)
             raise
 
-    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None, rclone_enabled=False):
-        from urllib.parse import urlparse
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        # Merge browser-captured headers (Referer/Cookie/User-Agent/Origin) from the
-        # extension so authenticated streams resolve instead of 403'ing. These apply
-        # to every link in the batch — the extension sends one stream per request.
-        if stream_headers:
-            for k, v in stream_headers.items():
-                if v:
-                    headers[k] = v
-        url_slug = scraper.get_url_slug(page_url)
-        rd_token = get_rd_token()
-        unique_urls = []
-        seen = set()
-        for u in raw_links:
-            full_url = urljoin(page_url, u)
-            if (full_url.startswith("http://") or full_url.startswith("https://")) and full_url not in seen:
-                seen.add(full_url)
-                unique_urls.append(full_url)
-        print(f"[Server] Processing {len(unique_urls)} link(s)...")
-        update_job(job_id, total_links=len(unique_urls), status="running")
-        image_urls = []
-        archives = []
-        rclone_results = []
-        for index, url in enumerate(unique_urls, start=1):
-            resolved_url = url
-            if any(domain in url.lower() for domain in ["linkvertise.com", "direct-link.net", "link-center.net", "link-hub.net", "link-target.net"]):
-                resolved_url = bypass_linkvertise(url)
-                print(f"[Server] Bypassed {url} -> {resolved_url}")
-            final_url = resolved_url
-            is_premium = any(domain in resolved_url.lower() for domain in [
-                "mega.nz", "keep2share.cc", "k2s.cc", "fileboom.me", "fboom.me",
-                "rapidgator.net", "rg.to", "katfile.com", "tezfiles.com", "pixeldrain.com"
-            ])
-            if is_premium:
-                final_url = unrestrict_link_rd(resolved_url, rd_token)
-                print(f"[Server] Unrestricted {resolved_url} -> {final_url}")
-            parsed = urlparse(final_url)
-            clean_path = parsed.path.rstrip("/").lower()
-            path_ext = os.path.splitext(clean_path)[1].strip(".")
-            last_segment = clean_path.split("/")[-1] if "/" in clean_path else clean_path
-            is_image = path_ext in IMAGE_EXTENSIONS or last_segment in IMAGE_EXTENSIONS
-            if is_image:
-                image_urls.append(final_url)
-            else:
-                direct_result = download_direct_file(final_url, headers, DEST_DIR, rclone_enabled)
-                if direct_result.get("filename"):
-                    archives.append(direct_result["filename"])
-                    rclone_results.append(direct_result.get("rclone_complete", False))
-            update_job(job_id, processed_links=index, images_count=len(image_urls))
-        if image_urls:
-            if len(image_urls) == 1 and not upscale_enabled:
-                direct_result = download_direct_file(image_urls[0], headers, DEST_DIR, rclone_enabled)
-                if direct_result.get("filename"):
-                    archives.append(direct_result["filename"])
-                    rclone_results.append(direct_result.get("rclone_complete", False))
-            else:
-                zip_result = download_and_zip_images(
-                    url_slug, page_url, image_urls, batch_size, headers,
-                    upscale_enabled, upscale_model, DEST_DIR, scraper.download_image,
-                    rclone_enabled
-                )
-                archives.extend(zip_result.get("archives", []))
-                rclone_results.extend(zip_result.get("rclone_results", []))
-                update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
-        return {
-            "archives": archives,
-            "rclone_complete": bool(rclone_results) and all(rclone_results),
-        }
+    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None, rclone_enabled=False, link_kinds=None):
+        # Kept so the legacy /download route keeps working while the extension
+        # migrates to the API. Both paths run the one pipeline.
+        from ds_pipeline import download_and_process
+        return download_and_process(
+            page_url, raw_links, batch_size, upscale_enabled, upscale_model,
+            job_id, stream_headers, rclone_enabled, link_kinds,
+        )
 
 
 class ThreadedHTTPServer(ThreadingTCPServer):
     allow_reuse_address = True
+
 
 def run_server():
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zip it — Live Stream Grabber (VaultWares)",
-  "version": "1.38.0",
+  "version": "1.44.0",
   "description": "Media (Videos, Images, HLS/DASH/MSS Streams) downloader used with a local python server.",
   "browser_specific_settings": {
     "gecko": {
@@ -40,9 +40,16 @@
         "content.js"
       ],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true,
+      "match_about_blank": false
     }
   ],
+  "sidebar_action": {
+    "default_panel": "sidebar.html",
+    "default_title": "Zipper",
+    "default_icon": "icon.svg",
+    "open_at_install": false
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Live Stream Grabber",
