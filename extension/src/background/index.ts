@@ -4,11 +4,29 @@ import {
   updatePanelOpenTime, setHasActiveDownloads,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
+import { installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged } from './media_log';
+import { installHarvestStore, runHarvest, getSnapshot, acceptFrameResult } from './harvest_store';
+import { loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed } from './grabbed';
 import { serverGet, serverPost, SERVER_ENDPOINTS } from './server';
+import { Api as VwApi, getConfig as getApiConfig, setConfig as setApiConfig } from '../common/vwapi';
 import { getProxy, setProxy, loadConfig } from './config';
 import type { BgMessage } from '../common/types';
 
 installSniffer();
+installMediaLog();
+installHarvestStore();
+
+// Tell any open sidebar that the passive log grew, so a page still loading
+// fills the list in place instead of needing a manual re-scan. Fire-and-forget:
+// nobody may be listening, and that is the normal case.
+onMediaLogged((tabId: number) => {
+  try {
+    void ext.runtime.sendMessage({
+      kind: 'media:logged', tabId, logged: mediaLogSize(tabId),
+    }).catch(() => { /* no sidebar open */ });
+  } catch { /* ignore */ }
+});
+void loadGrabbed();
 void loadConfig();
 // Note: enrichment (yt-dlp probe) is triggered lazily from streams:get — i.e.
 // only while the popup is open — not on every detected request.
@@ -75,6 +93,16 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
   return { ok: false, error: res?.error || 'server offline — is python-zipper running on :5171?' };
 }
 
+/** Best guess at the filename the server will write, for the already-got mark. */
+function savedNameFor(url: string): string {
+  try {
+    const p = new URL(url).pathname;
+    return decodeURIComponent(p.split('/').filter(Boolean).pop() || '') || 'file';
+  } catch {
+    return 'file';
+  }
+}
+
 const tabJobMap = new Map<number, Set<string>>();
 
 ext.tabs.onRemoved.addListener(async (closedTabId: number) => {
@@ -129,8 +157,27 @@ async function gmXhr(req: { url: string; method?: string; headers?: Record<strin
   }
 }
 
+/**
+ * Which tab a message is about.
+ *
+ * Content scripts arrive with `sender.tab`. The popup and the sidebar do not —
+ * they are extension pages, so `sender.tab` is undefined and every tab-scoped
+ * handler would silently operate on `undefined`. Falling back to the active tab
+ * of the current window is what makes the same message work from all three.
+ */
+async function resolveTabId(msg: any, sender: any): Promise<number | undefined> {
+  if (typeof msg?.tabId === 'number') return msg.tabId;
+  if (typeof sender?.tab?.id === 'number') return sender.tab.id;
+  try {
+    const tabs = await ext.tabs.query({ active: true, currentWindow: true });
+    return tabs?.[0]?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 async function handle(msg: BgMessage, sender: any) {
-  const tabId = (msg as any).tabId ?? sender?.tab?.id;
+  const tabId = await resolveTabId(msg, sender);
   switch (msg?.kind) {
     case 'streams:get': {
       updatePanelOpenTime();
@@ -162,7 +209,13 @@ async function handle(msg: BgMessage, sender: any) {
       const dFilename = (msg as any).filename || 'file';
       const dSaveAs = (msg as any).saveAs ?? false;
       const dReferer = (msg as any).referer;
-      return await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
+      const started = await startBrowserDownload(dUrl, dFilename, dSaveAs, dReferer);
+      if (started?.ok) {
+        // Record the name it was actually saved under, not the URL basename —
+        // the grid shows this so it matches what's on disk.
+        markGrabbed(dUrl, dFilename, dReferer || '', 'browser');
+      }
+      return started;
     }
     case 'downloads:list': {
       return { ok: true, downloads: await getBrowserDownloadsList() };
@@ -181,6 +234,133 @@ async function handle(msg: BgMessage, sender: any) {
     }
 
     case 'gm:xhr': return await gmXhr((msg as any).req);
+
+    // ---- harvest ----------------------------------------------------------
+    // A frame pushing its DOM scan back. Fire-and-forget: the collector in
+    // harvest_store owns the settle window, this just hands the results over.
+    case 'harvest:frame-result': {
+      acceptFrameResult((msg as any).runId, (msg as any).candidates || [], (msg as any).isTop !== false);
+      return { ok: true };
+    }
+    case 'harvest:run': {
+      if (tabId === undefined) return { ok: false, error: 'no active tab' };
+      const t = await ext.tabs.get(tabId).catch(() => null);
+      const pageUrl = t?.url || '';
+      if (!/^https?:/i.test(pageUrl)) {
+        return { ok: false, error: 'not a web page' };
+      }
+      const mode = (msg as any).mode === 'deep' ? 'deep' : 'quick';
+      return { ok: true, snapshot: await runHarvest(tabId, pageUrl, mode, (msg as any).scope || '') };
+    }
+    case 'harvest:deep-abort': {
+      if (tabId === undefined) return { ok: false };
+      try { await ext.tabs.sendMessage(tabId, { kind: 'harvest:deep-abort' }); } catch { /* ignore */ }
+      return { ok: true };
+    }
+    case 'harvest:get': {
+      return { ok: true, snapshot: getSnapshot(tabId) ?? null, logged: mediaLogSize(tabId) };
+    }
+    // What the passive log already holds, with no scan at all — this is what
+    // makes a revisit cheap once the profile store lands.
+    case 'harvest:peek': {
+      return { ok: true, logged: mediaLogSize(tabId), candidates: getMediaLog(tabId).slice(0, 200) };
+    }
+    // Hands a selection to the local pipeline. This still targets the existing
+    // /download contract; it moves to the VaultWares API when the worker flip
+    // lands, and the sidebar shouldn't need to change when it does.
+    case 'harvest:send-server': {
+      const links: string[] = (msg as any).links || [];
+      if (!links.length) return { ok: false, error: 'nothing selected' };
+      const pageUrl = (msg as any).pageUrl || '';
+      // Replay the headers the browser actually sent for these hosts. Without
+      // them the server fetches with no Referer and no session, and any host
+      // that checks either answers 403 — which is what killed the zip on its
+      // very first file.
+      const stream_headers = tabId !== undefined ? headersFor(tabId, links, pageUrl) : {};
+      // The server otherwise guesses image-vs-file from the path extension,
+      // which is wrong on every CDN that serves images from extension-less
+      // URLs — and a wrong guess means the file skips the zip batch and gets
+      // fetched on its own. We already know the real kind from the response
+      // Content-Type, so send it.
+      const kinds = (msg as any).kinds || {};
+
+      // Preferred path: queue on the API and let a worker claim it. Survives
+      // the workstation being off, and is tracked centrally.
+      const api = await VwApi.submitJob({
+        kind: 'batch',
+        page_url: pageUrl,
+        page_domain: (msg as any).pageDomain || '',
+        links,
+        link_kinds: kinds,
+        headers: stream_headers,
+        options: { batch_size: 50, rclone_enabled: false, upscale_enabled: false },
+      });
+      if (api.ok && api.data?.job_id) {
+        markManyGrabbed(
+          links.map((u) => ({ url: u, savedAs: savedNameFor(u) })),
+          pageUrl,
+          'server',
+        );
+        return { ok: true, jobId: api.data.job_id, via: 'api' };
+      }
+
+      // Fallback to the local server while the API rollout settles. Reported
+      // rather than silent — "it worked" and "it worked the old way" are
+      // different facts and the difference matters when debugging.
+      const res = await serverPost('/download', {
+        url: pageUrl,
+        links,
+        batch_size: 50,
+        stream_headers,
+        link_kinds: kinds,
+        rclone_enabled: false,
+        upscale_enabled: false,
+      });
+      if (res?.correlationId || res?.status) {
+        markManyGrabbed(
+          links.map((u) => ({ url: u, savedAs: savedNameFor(u) })),
+          pageUrl,
+          'server',
+        );
+        return { ok: true, jobId: res.correlationId, via: 'local' };
+      }
+      return {
+        ok: false,
+        error: api.error
+          ? `API: ${api.error}; local server also unreachable`
+          : 'server offline — is python-zipper running on :5171?',
+      };
+    }
+
+    case 'grabbed:lookup':
+      return { ok: true, grabbed: lookupGrabbed((msg as any).urls || []) };
+    case 'grabbed:clear':
+      await clearGrabbed();
+      return { ok: true };
+
+    case 'api:config:get': {
+      const cfg = await getApiConfig();
+      // Never hand the key back to the UI in full — it only needs to know
+      // whether one is set, and enough to recognise which.
+      return {
+        ok: true,
+        baseUrl: cfg.baseUrl,
+        hasKey: !!cfg.apiKey,
+        keyHint: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}…` : '',
+      };
+    }
+    case 'api:config:set': {
+      await setApiConfig({
+        baseUrl: (msg as any).baseUrl,
+        apiKey: (msg as any).apiKey,
+      });
+      return { ok: true };
+    }
+    case 'api:health': {
+      const r = await VwApi.health();
+      return { ok: r.ok, error: r.error, data: r.data };
+    }
+
     default: return { ok: false, error: 'unknown message' };
   }
 }

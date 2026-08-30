@@ -10,6 +10,7 @@ import sys
 import random
 import shutil
 import subprocess
+import threading
 import requests
 from urllib.parse import urlparse
 
@@ -622,24 +623,74 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
 
 def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
                             upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, dest_dir=None,
-                            download_image_fn=None, rclone_enabled=False):
+                            download_image_fn=None, rclone_enabled=False,
+                            job_id=None, progress_fn=None):
+    """Download a gallery and pack it into batched zips.
+
+    Downloads run in a small thread pool; the zip writes stay on this thread
+    because ``zipfile`` is not thread-safe and because filenames are numbered in
+    order. Fetching was the entire cost here - the loop used to block on one
+    image at a time, so a 200-image gallery paid 200 sequential round trips.
+
+    Memory is bounded by fetching a window at a time rather than everything up
+    front: a large gallery of multi-megabyte images would otherwise be held in
+    RAM all at once before a single byte was written.
+
+    Concurrency is deliberately modest. Every image in a gallery usually comes
+    from one host, so the worker count *is* the per-host request rate, and a
+    gallery host that decides we look like a scraper is a worse outcome than a
+    slower download. Override with PYTHON_ZIPPER_FETCH_WORKERS if a given host
+    tolerates more.
+    """
     import zipfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        workers = int(os.environ.get("PYTHON_ZIPPER_FETCH_WORKERS", "6"))
+    except ValueError:
+        workers = 6
+    workers = max(1, min(workers, 16))
+    window = workers * 2
+
     zip_writer = None
     zip_path = None
     count = 0
     zip_file_count = 0
     archives = []
     rclone_results = []
+    fetched = 0
 
-    print(f"[Server] Downloading {len(img_urls)} images for slug '{url_slug}'...")
+    print(f"[Server] Downloading {len(img_urls)} images for slug '{url_slug}' "
+          f"({workers} parallel fetches)...")
 
-    for i, img_url in enumerate(img_urls):
+    def _fetch(u):
+        try:
+            return download_image_fn(u, headers) if download_image_fn else None
+        except Exception as e:
+            print(f"[Server] Fetch failed for {u}: {e}")
+            return None
+
+    def _pairs():
+        """Yield (url, content) in the original order, a window at a time."""
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for start in range(0, len(img_urls), window):
+                chunk = img_urls[start:start + window]
+                for u, content in zip(chunk, pool.map(_fetch, chunk)):
+                    yield u, content
+
+    for img_url, content in _pairs():
+        fetched += 1
+        if progress_fn and fetched % 5 == 0:
+            try:
+                progress_fn(job_id, fetched, len(img_urls))
+            except Exception:
+                pass
+
         parsed_img = urlparse(img_url)
         ext = os.path.splitext(parsed_img.path)[1].lower().strip(".")
         if ext not in IMAGE_EXTENSIONS:
             ext = "jpg"
 
-        content = download_image_fn(img_url, headers) if download_image_fn else None
         if not content:
             continue
 

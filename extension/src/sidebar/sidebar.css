@@ -1,0 +1,273 @@
+@import "./tokens.css";
+@import "./capture.css";
+
+/* Firefox sidebars run roughly 300-400px wide. vaultsqware's --vwsq-rail-w is
+ * 300px, so the system's own proportions apply here without adjustment. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--sb-bg);
+  color: var(--sb-text);
+  font-family: var(--vwsq-font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root { height: 100%; }
+
+.shell {
+  height: 100%;
+  display: grid;
+  /* header · context strip · scrolling body · rail */
+  grid-template-rows: auto auto 1fr auto;
+  min-height: 0;
+}
+
+/* ---- header ------------------------------------------------------------- */
+
+.hdr {
+  display: flex;
+  align-items: center;
+  gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-3) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-bottom: 1px solid var(--sb-border);
+}
+
+.brand {
+  font-family: var(--vwsq-font-mono);
+  font-size: .72rem;
+  font-weight: 500;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--sb-text-bright);
+  white-space: nowrap;
+}
+
+.hdr-spring { flex: 1; min-width: 0; }
+
+.leds { display: flex; align-items: center; gap: var(--vwsq-space-1); }
+
+.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--vwsq-radius-control);
+  background: transparent;
+  color: var(--sb-text-dim);
+  cursor: pointer;
+  transition: color var(--vwsq-motion-snap), border-color var(--vwsq-motion-snap),
+              background var(--vwsq-motion-snap);
+}
+.iconbtn:hover {
+  color: var(--sb-text-bright);
+  border-color: var(--sb-border-strong);
+  background: var(--sb-hover);
+}
+.iconbtn svg { width: 14px; height: 14px; }
+
+/* ---- LED ---------------------------------------------------------------- */
+
+.led {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--vwsq-font-mono);
+  font-size: .6rem;
+  font-weight: 500;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: .22em .5em;
+  border-radius: var(--vwsq-radius-pill);
+  white-space: nowrap;
+}
+.led::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.led-online  { background: var(--vwsq-signal-online-soft);  color: var(--vwsq-signal-online); }
+.led-relay   { background: var(--vwsq-signal-relay-soft);   color: var(--vwsq-signal-relay); }
+.led-warning { background: var(--vwsq-signal-warning-soft); color: var(--vwsq-signal-warning); }
+.led-alert   { background: var(--vwsq-signal-alert-soft);   color: var(--vwsq-signal-alert); }
+.led-sync    { background: var(--vwsq-signal-sync-soft);    color: var(--vwsq-signal-sync); }
+.led-idle    { background: var(--vwsq-signal-idle-soft);    color: var(--vwsq-signal-idle); }
+
+/* A dormant LED shouldn't pulse. Only live states do, and slowly — the system
+   puts passive animation at 4s so it reads as a status light, not a spinner. */
+.led-relay::before,
+.led-sync::before { animation: ledPulse 4s ease-in-out infinite; }
+@keyframes ledPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+/* ---- context strip ------------------------------------------------------ */
+
+.ctx {
+  display: flex;
+  align-items: center;
+  gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-sunken);
+  border-bottom: 1px solid var(--sb-border);
+  font-family: var(--vwsq-font-mono);
+  font-size: .68rem;
+  color: var(--sb-text-dim);
+  min-width: 0;
+}
+.ctx-domain {
+  color: var(--sb-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ctx-note { flex: 0 0 auto; }
+
+/* ---- body --------------------------------------------------------------- */
+
+.body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  padding: var(--vwsq-space-4) var(--vwsq-space-3);
+}
+.body::-webkit-scrollbar { width: 10px; }
+.body::-webkit-scrollbar-track { background: transparent; }
+.body::-webkit-scrollbar-thumb {
+  background: var(--sb-elevated);
+  border-radius: var(--vwsq-radius-pill);
+  border: 3px solid var(--sb-bg);
+}
+.body::-webkit-scrollbar-thumb:hover { background: var(--sb-active); }
+
+/* ---- empty states ------------------------------------------------------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--vwsq-space-3);
+  padding: var(--vwsq-space-6) var(--vwsq-space-4);
+  text-align: center;
+}
+.empty-mark {
+  width: 40px;
+  height: 40px;
+  color: var(--sb-text-dim);
+  opacity: .5;
+}
+.empty h2 {
+  margin: 0;
+  font-size: .95rem;
+  font-weight: 600;
+  color: var(--sb-text-bright);
+}
+.empty p {
+  margin: 0;
+  font-size: .8rem;
+  color: var(--sb-text-secondary);
+  max-width: 30ch;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vwsq-space-2);
+  height: 32px;
+  padding: 0 var(--vwsq-space-4);
+  border: 0;
+  border-radius: var(--vwsq-radius-control);
+  background: var(--sb-accent);
+  color: #FFFFFF;
+  font-family: var(--vwsq-font-sans);
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--vwsq-motion-snap);
+}
+.btn:hover { background: var(--vwsq-iris-600); }
+.btn svg { width: 14px; height: 14px; }
+
+/* ---- rail — the warm region, where you choose rather than act ----------- */
+
+.rail {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  background: var(--sb-rail-bg);
+  border-top: 1px solid var(--sb-rail-border);
+}
+
+.rail-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: var(--vwsq-space-2) var(--vwsq-space-1) calc(var(--vwsq-space-2) + 2px);
+  border: 0;
+  border-top: 2px solid transparent;
+  background: transparent;
+  color: var(--sb-rail-text-dim);
+  font-family: var(--vwsq-font-mono);
+  font-size: .58rem;
+  font-weight: 500;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--vwsq-motion-snap), background var(--vwsq-motion-snap);
+}
+.rail-tab svg { width: 15px; height: 15px; }
+.rail-tab:hover { color: var(--sb-rail-text); background: var(--sb-rail-sunken); }
+.rail-tab[aria-selected="true"] {
+  color: var(--sb-rail-text);
+  background: var(--sb-rail-sunken);
+  border-top-color: var(--vwsq-coral-500);
+}
+
+.rail-badge {
+  position: absolute;
+  transform: translate(14px, -14px);
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--vwsq-radius-pill);
+  background: var(--vwsq-coral-500);
+  color: #1A0B06;
+  font-size: .55rem;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* ---- focus + motion ----------------------------------------------------- */
+
+:focus-visible {
+  outline: var(--vwsq-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--vwsq-radius-control);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+

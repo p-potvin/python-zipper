@@ -1,6 +1,6 @@
 {
   "name": "vaultwares-zipper-extension",
-  "version": "1.38.0",
+  "version": "1.44.0",
   "private": true,
   "type": "module",
   "description": "Firefox/Chrome MV3 extension: Live-stream downloader running along a local companion python server",
@@ -14,11 +14,10 @@
     "xpi": "web-ext build --source-dir dist --artifacts-dir dist-xpi --overwrite-dest"
   },
   "dependencies": {
-    "@zip.js/zip.js": "^2.7.52",
-    "file-saver": "^2.0.5"
+    "@preact/signals": "^2.11.1",
+    "preact": "^10.29.8"
   },
   "devDependencies": {
-    "@types/file-saver": "^2.0.7",
     "esbuild": "^0.28.1",
     "typescript": "^5.5.0",
     "web-ext": "^10.6.0"
