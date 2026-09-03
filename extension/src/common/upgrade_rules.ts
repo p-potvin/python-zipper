@@ -125,7 +125,7 @@ export function deriveRule(thumbUrl: string, fullUrl: string): UpgradeRule | nul
     const i = diff[0];
     const host = a.hostname.replace(/^www\./, '');
     return {
-      test: new RegExp(host.replace(/\./g, '\\.'), 'i'),
+      test: new RegExp(escapeRe(host), 'i'),
       from: new RegExp(`/${escapeRe(segA[i])}/`),
       to: `/${segB[i]}/`,
       source: 'learned',
