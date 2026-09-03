@@ -10,6 +10,9 @@
 
 import { signal } from '@preact/signals';
 import { ext } from '../common/api';
+import {
+  DEFAULT_SETTINGS, loadSettings, saveSettings, type ZipperSettings,
+} from '../common/settings';
 
 const baseUrl = signal('');
 const keyInput = signal('');
@@ -18,6 +21,44 @@ const keyHint = signal('');
 const status = signal<{ kind: 'idle' | 'ok' | 'err' | 'busy'; text: string }>({
   kind: 'idle', text: '',
 });
+
+/**
+ * The page-facing options.
+ *
+ * These live here rather than on the Capture tab on purpose. Highlighting and
+ * the in-page button used to be per-scan controls, which meant they reset every
+ * time you looked for something — and a control you have to re-enable on every
+ * use is one you stop using. They describe how the extension behaves while you
+ * browse, so they belong with the other things that are true until changed.
+ */
+export const opts = signal<ZipperSettings>({ ...DEFAULT_SETTINGS });
+
+export async function loadOptions(): Promise<void> {
+  opts.value = await loadSettings();
+}
+
+async function setOpt<K extends keyof ZipperSettings>(key: K, value: ZipperSettings[K]): Promise<void> {
+  // Optimistic, then authoritative: the switch should move under the finger,
+  // but `saveSettings` clamps and normalises, so the stored value wins.
+  opts.value = { ...opts.value, [key]: value };
+  opts.value = await saveSettings({ [key]: value } as Partial<ZipperSettings>);
+}
+
+function Toggle(
+  { label, hint, on, onChange }:
+  { label: string; hint: string; on: boolean; onChange: (v: boolean) => void },
+) {
+  return (
+    <label class="opt">
+      <input type="checkbox" checked={on}
+             onChange={(e) => onChange((e.currentTarget as HTMLInputElement).checked)} />
+      <span class="opt-text">
+        <span class="opt-label">{label}</span>
+        <span class="opt-hint">{hint}</span>
+      </span>
+    </label>
+  );
+}
 
 export async function loadApiConfig(): Promise<void> {
   try {
@@ -62,8 +103,50 @@ async function test(): Promise<void> {
 
 export function SettingsTab() {
   const s = status.value;
+  const o = opts.value;
   return (
     <div class="cap">
+      <div class="sect">On the page</div>
+
+      <Toggle
+        label="Outline media"
+        hint="Dashed border around every grabbable file, always — not just after a scan."
+        on={o.highlight}
+        onChange={(v) => void setOpt('highlight', v)} />
+
+      <Toggle
+        label="Hover download button"
+        hint="A button in the corner of whatever media you point at."
+        on={o.injectButton}
+        onChange={(v) => void setOpt('injectButton', v)} />
+
+      {o.injectButton ? (
+        <label class="field">
+          <span>Smallest element that gets a button</span>
+          <input class="inp inp-sm" type="number" min="0" max="200" step="1"
+                 value={String(o.minButtonPx)}
+                 onChange={(e) => void setOpt('minButtonPx', Number((e.currentTarget as HTMLInputElement).value))} />
+          <span class="opt-hint">
+            Below this the button would cover the element and swallow the click
+            that opens it, so it is refused outright. 22px is about the floor.
+          </span>
+        </label>
+      ) : null}
+
+      <Toggle
+        label="Scan on interaction"
+        hint="Re-scan what changes right after you click, scroll or type — never on the page's own churn."
+        on={o.liveScan}
+        onChange={(v) => void setOpt('liveScan', v)} />
+
+      <div class="sect">Downloads</div>
+
+      <Toggle
+        label="Zip more than one file"
+        hint="Two or more files download as a single archive instead of separate entries."
+        on={o.zipMultiple}
+        onChange={(v) => void setOpt('zipMultiple', v)} />
+
       <div class="sect">VaultWares API</div>
 
       <label class="field">

@@ -1,6 +1,6 @@
 import type { DetectedStream, StreamVariant } from '../common/types';
 import { foldVariants, touch } from './sniffer';
-import { serverPost } from './server';
+import { Api, awaitJobResult } from '../common/vwapi';
 import { getProxy } from './config';
 
 // Parse an HLS master playlist into its variant streams (for dedup folding and
@@ -62,7 +62,14 @@ export async function enrichStream(s: DetectedStream): Promise<void> {
   }
 
   if (!s.probed) {
-    const meta = await serverPost('/api/stream/probe', { url: s.url, headers: s.headers, proxy: getProxy() || undefined }, 50000);
+    // Queued and waited on, rather than posted to a local server. The wait is a
+    // worker poll interval, which is the price of the workstation not having to
+    // listen on a port — and of a probe still being possible when the browser
+    // and the machine that runs yt-dlp are not the same box.
+    const queued = await Api.probeStream(s.url, s.headers || {}, getProxy() || undefined);
+    const meta = queued.ok && queued.data?.job_id
+      ? await awaitJobResult(queued.data.job_id, 60_000)
+      : null;
     if (meta) {
       s.meta = meta;
       s.probed = true;

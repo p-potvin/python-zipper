@@ -11,6 +11,17 @@ import { registrableDomain, hostOf } from './domain';
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'stream' | 'document' | 'other';
 
+/**
+ * One scoring rule that fired, and what it contributed.
+ *
+ * Lives here rather than in scoring.ts because it is part of the record: it
+ * travels with the candidate to the sidebar, which is the whole point. Knowing
+ * *why* something ranked where it did previously meant reading the scorer and
+ * simulating it by hand. Kept as a tuple because a page can carry a few
+ * thousand candidates and `{rule, delta}` would nearly double the message.
+ */
+export type ScoreRule = [rule: string, delta: number];
+
 /** Where a candidate came from. Used for ranking and for explaining the result. */
 export type CandidateOrigin =
   | 'dom'       // an element's src/href/srcset
@@ -46,6 +57,27 @@ export interface MediaCandidate {
   upgradedFrom?: string;
   /** Nearby text, alt, or title — seeds the filename. */
   label?: string;
+  /**
+   * Signature of the container this element sits in. Two assets sharing one is
+   * strong evidence they are siblings in a grid — see page_rank.ts. DOM-only:
+   * the network log has no element to look at.
+   */
+  container?: string;
+  /** Set by the page-relative pass when this turned out to be one of an
+   *  ensemble — a gallery, a grid, a carousel's own slide list. */
+  cluster?: { id: string; size: number };
+  /** Every rule that contributed to `score`, in the order it fired. */
+  reasons?: ScoreRule[];
+  /**
+   * For `kind: 'stream'` only — the sniffer's key for the detected stream.
+   *
+   * A stream candidate is a handle, not a file: this is what the recorder is
+   * started with, and it is the reason the UI can offer Record where every
+   * other candidate offers a download.
+   */
+  streamKey?: string;
+  /** hls | dash | mss, for the tag on a stream row. */
+  streamType?: string;
 }
 
 // ---- classification ---------------------------------------------------------
@@ -204,6 +236,14 @@ const ORIGIN_RANK: Record<CandidateOrigin, number> = {
 export function mergeCandidate(a: MediaCandidate, b: MediaCandidate): MediaCandidate {
   const primary = ORIGIN_RANK[b.origin] > ORIGIN_RANK[a.origin] ? b : a;
   const other = primary === a ? b : a;
+  // A URL seen by two independent paths is more likely to be real content.
+  const corroborated = a.origin !== b.origin ? 40 : 0;
+  // Keep the breakdown belonging to the score we keep, or the two stop
+  // agreeing and the UI explains a number that isn't the one on screen.
+  const best = a.score >= b.score ? a : b;
+  const reasons = best.reasons
+    ? [...best.reasons, ...(corroborated ? [['merge.corroborated', corroborated] as ScoreRule] : [])]
+    : undefined;
   return {
     ...primary,
     width: primary.width ?? other.width,
@@ -211,10 +251,11 @@ export function mergeCandidate(a: MediaCandidate, b: MediaCandidate): MediaCandi
     bytes: primary.bytes ?? other.bytes,
     mime: primary.mime ?? other.mime,
     label: primary.label ?? other.label,
+    container: primary.container ?? other.container,
     domHits: Math.max(a.domHits ?? 0, b.domHits ?? 0) || undefined,
     upgradedFrom: primary.upgradedFrom ?? other.upgradedFrom,
-    // A URL seen by two independent paths is more likely to be real content.
-    score: Math.max(a.score, b.score) + (a.origin !== b.origin ? 40 : 0),
+    reasons,
+    score: Math.max(a.score, b.score) + corroborated,
   };
 }
 

@@ -1,9 +1,15 @@
 import { ext } from '../common/api';
+import { loadSettings, onSettingsChanged, type ZipperSettings } from '../common/settings';
 import { extractStreamTitle } from './title-extractor';
 import { harvestDom } from './harvest';
-import { applyHighlights, clearHighlights, revealUrl } from './highlight';
+import {
+  applyHighlights, clearHighlights, revealUrl, setGlobalHighlight, markEligible,
+} from './highlight';
+import { setInjectButton } from './inject_button';
+import { setLiveScan } from './live_scan';
 import { deepScan, abortDeepScan, closeViewer } from './deep_scan';
 import { startPicker, stopPicker, selectorMatchCount } from './picker';
+import { detectPhotoSwipe } from './pswp';
 
 // The manifest now injects into every frame, so the harvest can see embedded
 // players and gallery iframes. Everything UI-shaped below must therefore be
@@ -51,13 +57,18 @@ ext.runtime.onMessage.addListener((msg: any) => {
         { maxMs: msg.maxMs || 90_000, openViewer: msg.openViewer !== false },
       );
       opened = result.phase === 'done';
-      const harvested = await harvestDom(msg.pageUrl || location.href, 0, msg.scope || '');
+      // The one path allowed to click: the user asked for a deep run, which is
+      // exactly the consent needed to open the site's viewer and read its
+      // gallery. Everything else reads PhotoSwipe only if it is already open.
+      const harvested = await harvestDom(
+        msg.pageUrl || location.href, 0, msg.scope || '', { photoSwipe: 'open' });
       await ext.runtime.sendMessage({
         kind: 'harvest:frame-result',
         runId: msg.runId,
         isTop: true,
         candidates: harvested.candidates,
         scanned: harvested.scanned,
+        photoSwipe: harvested.photoSwipe,
       });
     } catch (e) {
       try {
@@ -82,6 +93,7 @@ ext.runtime.onMessage.addListener((msg: any) => {
         runId: msg.runId,
         candidates: result.candidates,
         scanned: result.scanned,
+        photoSwipe: result.photoSwipe,
       });
     } catch (e) {
       // A frame that can't scan (cross-origin quirk, torn down mid-scan) must
@@ -131,6 +143,10 @@ ext.runtime.onMessage.addListener(
         sendResponse({ ok: true });
         return true;
       }
+      if (msg?.kind === 'highlight:refresh') {
+        sendResponse({ ok: true, hits: markEligible() });
+        return true;
+      }
       if (msg?.kind === 'highlight:reveal') {
         sendResponse({ ok: true, found: revealUrl(msg.url || '') });
         return true;
@@ -163,6 +179,35 @@ if (IS_TOP_FRAME) ext.runtime.onMessage.addListener(
     return undefined;
   },
 );
+
+// A standalone PhotoSwipe check, so the sidebar can offer the deep run before
+// any scan has happened. Top frame only — the banner is a single statement
+// about the page, and ten iframes answering would produce ten of them.
+if (IS_TOP_FRAME) ext.runtime.onMessage.addListener(
+  (msg: any, _sender: any, sendResponse: (r: any) => void) => {
+    if (msg?.kind !== 'pswp:detect') return undefined;
+    void detectPhotoSwipe().then(
+      (status) => sendResponse({ ok: true, status }),
+      () => sendResponse({ ok: false }),
+    );
+    return true;
+  },
+);
+
+// ---- global options ---------------------------------------------------------
+//
+// Highlighting, the download button and live scanning are browsing-session
+// preferences, not per-scan state — see common/settings.ts. Applied on load and
+// re-applied whenever the switch moves, in every frame, so an embedded gallery
+// behaves the same as the top document.
+function applySettings(s: ZipperSettings): void {
+  try { setGlobalHighlight(s.highlight); } catch { /* pre-render document */ }
+  try { setInjectButton(s.injectButton, s.minButtonPx); } catch { /* ignore */ }
+  try { setLiveScan(s.liveScan); } catch { /* ignore */ }
+}
+
+void loadSettings().then(applySettings).catch(() => { /* storage unavailable */ });
+onSettingsChanged(applySettings);
 
 // NOTE: the legacy in-page panel and its FAB are no longer injected. The
 // sidebar replaces them, and the floating button was the specific thing that

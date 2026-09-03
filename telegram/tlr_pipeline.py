@@ -6,6 +6,61 @@ Handles direct-download processing and Real-Debrid link processing.
 import os
 import asyncio
 import requests
+from tlr_alldebrid import process_mega_url
+
+
+def process_mega_links_with_alldebrid(
+    mega_links,
+    downloads,
+    failed_links,
+    playlists_dir=None,
+    output_dir=None,
+    api_key=None,
+    url_titles=None,
+):
+    """
+    Process MEGA links (folders and individual files) using the AllDebrid API.
+    Unlocks folders, extracts direct links, applies Telegram-derived smart naming,
+    generates and saves .m3u playlists to python-zipper.
+    """
+    if not mega_links:
+        return
+
+    print(f"\n[ALLDEBRID MEGA PIPELINE] Processing {len(mega_links)} MEGA link(s)...")
+    for idx, url in enumerate(mega_links, 1):
+        telegram_title = (url_titles or {}).get(url, "")
+        if telegram_title:
+            print(f"\n[{idx}/{len(mega_links)}] AllDebrid processing: {url} (Title: '{telegram_title}')")
+        else:
+            print(f"\n[{idx}/{len(mega_links)}] AllDebrid processing: {url}")
+
+        res = process_mega_url(
+            url,
+            output_dir=output_dir,
+            playlists_dir=playlists_dir,
+            api_key=api_key,
+            custom_title=telegram_title
+        )
+        if res.get("status") == "success":
+            playlist_path = res.get("playlist_path")
+            json_path = res.get("json_path")
+            items = res.get("items", [])
+            for item in items:
+                downloads.append({
+                    "mega_url": url,
+                    "filename": item.get("filename"),
+                    "original_filename": item.get("original_filename"),
+                    "smart_filename": item.get("smart_filename"),
+                    "stream_url": item.get("link"),
+                    "size": item.get("filesize", 0),
+                    "playlist_m3u": playlist_path,
+                    "json_manifest": json_path,
+                    "type": "alldebrid_stream"
+                })
+            print(f"   ✓ Successfully processed MEGA URL with {len(items)} stream(s). Playlist: {playlist_path}")
+        else:
+            print(f"   [FAIL] AllDebrid failed to unlock {url}: {res.get('error')}")
+            failed_links.append(url)
 
 
 async def process_direct_downloads(direct_links, browser, downloads, failed_links,

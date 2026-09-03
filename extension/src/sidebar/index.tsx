@@ -13,9 +13,12 @@ import { render } from 'preact';
 import { signal, computed } from '@preact/signals';
 import { ext } from '../common/api';
 import { displayDomain, profileKey } from '../common/domain';
-import { CaptureTab, resetCapture, refreshPeek, loggedCount } from './capture';
+import {
+  CaptureTab, resetCapture, refreshPeek, loggedCount, detectPswp, loadViewPrefs,
+} from './capture';
 import { DownloadsTab, startJobPolling, setDownloadsVisible, serverOnline, jobs } from './downloads';
-import { SettingsTab, loadApiConfig } from './settings';
+import { SettingsTab, loadApiConfig, loadOptions } from './settings';
+import { InsightsTab, refreshInsights } from './insights';
 import './sidebar.css';
 
 // ---- state ------------------------------------------------------------------
@@ -217,6 +220,10 @@ function Rail() {
           onClick={() => {
             activeTab.value = t.id;
             setDownloadsVisible(t.id === 'downloads');
+            // Fetched on open rather than polled: history changes when you
+            // download, which is not something worth asking about every few
+            // seconds in the background.
+            if (t.id === 'insights') void refreshInsights();
           }}
         >
           <t.icon />
@@ -234,8 +241,7 @@ function Body() {
     case 'capture':
       return <CaptureTab />;
     case 'insights':
-      return <Placeholder title="Nothing recorded yet"
-                          body="Totals and trends appear once downloads are being written to history." />;
+      return <InsightsTab />;
     case 'settings':
       return <SettingsTab />;
   }
@@ -274,6 +280,11 @@ function App() {
 void loadSurface();
 void refreshPeek();
 void loadApiConfig();
+void loadOptions();
+void loadViewPrefs();
+// Asked before anything is scanned: on a PhotoSwipe page the quick scan is the
+// misleading option, and saying so up front is the point of the banner.
+void detectPswp();
 startJobPolling();
 watchActiveTab();
 
