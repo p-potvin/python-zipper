@@ -26,6 +26,7 @@ import json
 import signal
 import subprocess
 import threading
+from urllib.parse import urlparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
 from ds_jobs import update_job, complete_job, fail_job, get_job
@@ -186,12 +187,29 @@ def _num(value):
         return None
 
 
+def _sanitize_stream_url(url):
+    if not isinstance(url, str):
+        return None
+    candidate = url.strip()
+    if not candidate:
+        return None
+    parsed = urlparse(candidate)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if not parsed.netloc:
+        return None
+    return candidate
+
+
 def probe_stream(url, headers=None, proxy=None):
     """Return metadata + selectable formats for a stream URL (yt-dlp -j)."""
+    safe_url = _sanitize_stream_url(url)
+    if not safe_url:
+        return {"ok": False, "error": "invalid stream url"}
     cmd = [ytdlp_bin(), "-j", "--no-warnings", "--no-playlist"]
     cmd += _proxy_args(proxy)
     cmd += build_ytdlp_header_args(headers)
-    cmd.append(url)
+    cmd.append(safe_url)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         if result.returncode != 0 or not result.stdout.strip():
