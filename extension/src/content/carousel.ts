@@ -17,7 +17,7 @@
 function normalizeUrl(url, baseUrl = (typeof window !== 'undefined' ? window.location.href : '')) {
     if (!url) return "";
     let value = String(url).trim();
-    if (!value || value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("javascript:")) return "";
+    if (!value || value.startsWith("data:") || value.startsWith("blob:") || value.startsWith("javascript:") || value.startsWith("vbscript:")) return "";
 
     // Strip surrounding quotes or angle brackets if present
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
