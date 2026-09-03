@@ -5,6 +5,7 @@ import threading
 import datetime
 import builtins
 import requests
+import re
 from urllib.parse import urljoin
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
@@ -361,8 +362,15 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 data = json.loads(post_data.decode('utf-8'))
                 log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
                 os.makedirs(log_dir, exist_ok=True)
-                node = data.get('node', 'unknown_node')
-                log_file_path = os.path.join(log_dir, f"{node}.log")
+                node = str(data.get('node', 'unknown_node'))
+                safe_node = os.path.basename(node)
+                safe_node = re.sub(r'[^A-Za-z0-9._-]', '_', safe_node).strip('._-')
+                if not safe_node:
+                    safe_node = 'unknown_node'
+                log_dir_real = os.path.realpath(log_dir)
+                log_file_path = os.path.realpath(os.path.join(log_dir_real, f"{safe_node}.log"))
+                if os.path.commonpath([log_dir_real, log_file_path]) != log_dir_real:
+                    raise ValueError("Invalid node name")
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(data) + "\n")
                 self._send_json({"status": "Log received"})
