@@ -193,10 +193,23 @@ def _sanitize_stream_url(url):
     candidate = url.strip()
     if not candidate:
         return None
+    # Reject obvious command/argument and control-character abuse.
+    if candidate.startswith("-"):
+        return None
+    if any(ch in candidate for ch in ("\r", "\n", "\t")):
+        return None
+    if re.search(r"[\x00-\x1f\x7f\s]", candidate):
+        return None
+
     parsed = urlparse(candidate)
     if parsed.scheme not in ("http", "https"):
         return None
     if not parsed.netloc:
+        return None
+    # Disallow embedded credentials and require a valid hostname.
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if not parsed.hostname:
         return None
     return candidate
 
