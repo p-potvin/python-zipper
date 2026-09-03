@@ -13,7 +13,7 @@ import scraper
 from ds_config import DEST_DIR
 from ds_jobs import update_job
 from ds_helpers import (
-    get_rd_token, unrestrict_link_rd, bypass_linkvertise,
+    get_rd_token, get_ad_token, unrestrict_link_rd, unrestrict_link_alldebrid, bypass_linkvertise,
     download_direct_file, download_and_zip_images,
     NOMOS_MODEL_NAME, IMAGE_EXTENSIONS,
 )
@@ -33,6 +33,7 @@ def download_and_process(page_url, raw_links, batch_size, upscale_enabled=False,
                 headers[k] = v
     url_slug = scraper.get_url_slug(page_url)
     rd_token = get_rd_token()
+    ad_token = get_ad_token()
     unique_urls = []
     seen = set()
     for u in raw_links:
@@ -51,11 +52,15 @@ def download_and_process(page_url, raw_links, batch_size, upscale_enabled=False,
             resolved_url = bypass_linkvertise(url)
             print(f"[Server] Bypassed {url} -> {resolved_url}")
         final_url = resolved_url
+        is_mega = "mega.nz" in resolved_url.lower() or "mega.co.nz" in resolved_url.lower()
         is_premium = any(domain in resolved_url.lower() for domain in [
-            "mega.nz", "keep2share.cc", "k2s.cc", "fileboom.me", "fboom.me",
+            "keep2share.cc", "k2s.cc", "fileboom.me", "fboom.me",
             "rapidgator.net", "rg.to", "katfile.com", "tezfiles.com", "pixeldrain.com"
         ])
-        if is_premium:
+        if is_mega:
+            final_url = unrestrict_link_alldebrid(resolved_url, ad_token)
+            print(f"[Server] Unrestricted MEGA via AllDebrid {resolved_url} -> {final_url}")
+        elif is_premium:
             final_url = unrestrict_link_rd(resolved_url, rd_token)
             print(f"[Server] Unrestricted {resolved_url} -> {final_url}")
         parsed = urlparse(final_url)
@@ -77,14 +82,14 @@ def download_and_process(page_url, raw_links, batch_size, upscale_enabled=False,
             direct_result = download_direct_file(final_url, headers, DEST_DIR, rclone_enabled)
             if direct_result.get("filename"):
                 archives.append(direct_result["filename"])
-                rclone_results.append(direct_result.get("rclone_complete", False))
+                rclone_results.append(direct_result.get("rclone_remote", ""))
         update_job(job_id, processed_links=index, images_count=len(image_urls))
     if image_urls:
         if len(image_urls) == 1 and not upscale_enabled:
             direct_result = download_direct_file(image_urls[0], headers, DEST_DIR, rclone_enabled)
             if direct_result.get("filename"):
                 archives.append(direct_result["filename"])
-                rclone_results.append(direct_result.get("rclone_complete", False))
+                rclone_results.append(direct_result.get("rclone_remote", ""))
         else:
             # Report fetch progress while zipping. Without this the job sat
             # at "running" for the whole download with no visible movement,
@@ -100,7 +105,13 @@ def download_and_process(page_url, raw_links, batch_size, upscale_enabled=False,
             archives.extend(zip_result.get("archives", []))
             rclone_results.extend(zip_result.get("rclone_results", []))
             update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
+    # Which remotes actually took something, in the order they were used. A
+    # job whose files went to two different remotes is a normal outcome when
+    # the first one fills up, and reporting only a boolean hid that entirely.
+    landed = [r for r in rclone_results if r]
     return {
         "archives": archives,
         "rclone_complete": bool(rclone_results) and all(rclone_results),
+        "rclone_remotes": sorted(set(landed)),
+        "local_dir": DEST_DIR,
     }

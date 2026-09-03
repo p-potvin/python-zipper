@@ -97,8 +97,25 @@ export type BgMessage =
   /** What the passive network log already holds — no scan, no page contact. */
   | { kind: 'harvest:peek'; tabId?: number }
   /** Pushed by each frame in response to the background's broadcast. */
-  | { kind: 'harvest:frame-result'; runId: string; isTop?: boolean; candidates: import('./harvest').MediaCandidate[]; scanned?: number }
-  | { kind: 'harvest:send-server'; links: string[]; kinds?: Record<string, string>; pageUrl?: string; tabId?: number }
+  | { kind: 'harvest:frame-result'; runId: string; isTop?: boolean; candidates: import('./harvest').MediaCandidate[]; scanned?: number; photoSwipe?: any }
+  /** Live scanning: a trusted user action revealed media outside any scan. */
+  | { kind: 'harvest:live'; candidates: import('./harvest').MediaCandidate[]; pageUrl?: string; tabId?: number }
+  /** Background -> sidebar: the standing snapshot grew. */
+  | { kind: 'harvest:updated'; snapshot: any }
+  /** One decoded frame of a stream, for the preview thumbnail. */
+  | { kind: 'stream:preview'; url: string; headers?: Record<string, string> }
+  /** Is this a PhotoSwipe page? Answered by the top frame. */
+  | { kind: 'pswp:detect' }
+  /** Disk headroom, what is still staged locally, and each rclone remote. */
+  | { kind: 'storage:get' }
+  /** Aggregated download history: by day, by domain, by kind. */
+  | { kind: 'insights:get'; days?: number }
+  /** Addressed to a worker by name: rclone runs where the files land, not on
+   *  the API, and the worker applies this on its next heartbeat. */
+  | { kind: 'rclone:config:set'; worker: string; remotes?: string[]; enabled?: boolean }
+  /** Fetch a selection, archive it in the background, download the one file. */
+  | { kind: 'downloads:zip'; items: { url: string; filename: string }[]; archiveName?: string; pageUrl?: string; facts?: Record<string, any>; tabId?: number }
+  | { kind: 'harvest:send-server'; links: string[]; kinds?: Record<string, string>; pageUrl?: string; pageDomain?: string; facts?: Record<string, any>; tabId?: number }
   /** Which of these URLs have already been downloaded, and under what filename. */
   | { kind: 'grabbed:lookup'; urls: string[] }
   | { kind: 'grabbed:clear' }
@@ -114,28 +131,41 @@ export type BgMessage =
   | { kind: 'api:config:set'; baseUrl?: string; apiKey?: string }
   | { kind: 'api:health' };
 
+/**
+ * A row from zipper.jobs.
+ *
+ * Renamed from the local server's shape, which is worth stating because the
+ * fields moved rather than merely being added to: bytes are `bytes_done` /
+ * `bytes_total` now, the job type is `kind`, and per-stream details like
+ * quality and the source URL live under `options` because the table is shared
+ * with batch and probe jobs. `archive_paths` is gone entirely — paths on a
+ * worker's disk mean nothing to the browser.
+ */
 export interface StreamJob {
   id: string;
-  type?: string;
+  kind?: string;
   status: string;
   title?: string;
-  stream_url?: string;
   page_url?: string;
-  quality?: string;
-  thumbnail?: string | null;
-  duration?: number | null;
-  is_live?: boolean;
+  page_domain?: string;
   progress?: number;
   speed?: number | null;
   eta?: number | null;
-  downloaded_bytes?: number;
-  total_bytes?: number;
-  save_path?: string | null;
+  bytes_done?: number;
+  bytes_total?: number;
+  total_links?: number;
+  processed_links?: number;
   save_dir?: string | null;
   archives?: string[];
-  archive_paths?: string[];
+  /** Which rclone remotes took the files. Empty means still on the worker. */
+  rclone_remotes?: string[];
+  /** Answer-shaped jobs (a stream probe) return their payload here. */
+  result?: any;
+  /** Per-kind extras: format_id, quality, stream_url, thumbnail, sink. */
+  options?: Record<string, any>;
   error?: string;
-  created_at?: number;
+  claimed_by?: string;
+  created_at?: string;
 }
 
 export type ContentMessage = { kind: 'streams:updated'; tabId: number; count: number };

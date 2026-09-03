@@ -186,15 +186,265 @@
 .cand-origin { color: var(--sb-text-secondary); }
 .cand-up { color: var(--vwsq-signal-online); }
 .cand-score { opacity: .5; }
+.cand-clu { color: var(--vwsq-signal-sync); }
+
+/* The score breakdown. Deliberately quiet and monospaced — it is an evidence
+   trail to read one row at a time, not a thing to scan a list by. */
+.cand-why {
+  flex: 0 0 auto;
+  width: 14px; height: 14px; padding: 0;
+  border: 1px solid var(--sb-border); border-radius: var(--vwsq-radius-control);
+  background: none; color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono); font-size: .55rem; line-height: 1;
+  cursor: pointer;
+}
+.cand-why:hover { color: var(--sb-text-bright); border-color: var(--sb-accent); }
+
+.why {
+  list-style: none; margin: 3px 0 0; padding: var(--vwsq-space-2);
+  background: var(--sb-sunken); border-radius: var(--vwsq-radius-control);
+  display: grid; grid-template-columns: 1fr auto; gap: 1px var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  font-variant-numeric: tabular-nums;
+}
+.why li { display: contents; }
+.why-rule { color: var(--sb-text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.why-delta { text-align: right; }
+.why-up   .why-delta { color: var(--vwsq-signal-online); }
+.why-down .why-delta { color: var(--vwsq-signal-alert); }
+
+/* ---- insights ------------------------------------------------------------ */
+
+.totals { display: flex; gap: var(--vwsq-space-2); margin-top: var(--vwsq-space-2); }
+.total {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+}
+.total-n {
+  font-size: .95rem; color: var(--sb-text-bright);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.total-l {
+  font-family: var(--vwsq-font-mono); font-size: .55rem;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--sb-text-dim);
+}
+
+/* Percentage-height columns rather than an SVG: the sidebar is resizable, and
+   this stays correct at any width with no viewBox to keep in sync. */
+.chart {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+}
+.chart-bars { display: flex; align-items: flex-end; gap: 1px; height: 52px; }
+.chart-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.chart-fill {
+  width: 100%; background: var(--sb-accent); border-radius: 1px 1px 0 0;
+  transition: height 140ms ease;
+}
+.chart-col:hover .chart-fill { background: var(--vwsq-signal-relay); }
+.chart-axis {
+  display: flex; margin-top: 4px;
+  font-family: var(--vwsq-font-mono); font-size: .55rem; color: var(--sb-text-dim);
+}
+
+.ranked { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.rank {
+  position: relative;
+  display: flex; align-items: baseline; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+  font-size: .7rem; overflow: hidden;
+}
+/* The bar sits behind the text rather than beside it, so a long domain name
+   never has to compete with the chart for width. */
+.rank-bar {
+  position: absolute; inset: 0 auto 0 0;
+  background: var(--sb-accent-soft); pointer-events: none;
+}
+.rank-name {
+  position: relative; flex: 1; min-width: 0; color: var(--sb-text-bright);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rank-files, .rank-bytes {
+  position: relative; flex: 0 0 auto;
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  font-variant-numeric: tabular-nums; color: var(--sb-text-dim);
+}
+.rank-bytes { color: var(--sb-text-secondary); min-width: 52px; text-align: right; }
+
+.lnk-on { color: var(--sb-accent); }
+
+/* ---- storage ------------------------------------------------------------- */
+
+/* One card per machine. Grouped rather than merged because the workstation and
+   the VPS have genuinely different disks, and an average across them would
+   hide the small one — which is the one that fills up. */
+.worker {
+  display: flex; flex-direction: column; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2);
+  margin-bottom: var(--vwsq-space-2);
+  background: var(--sb-sunken);
+  border-radius: var(--vwsq-radius-control);
+}
+.worker-head {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); min-width: 0;
+}
+.worker-head .remote-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+
+.store {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.store-path, .store-note {
+  font-family: var(--vwsq-font-mono); font-size: .58rem; color: var(--sb-text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
+}
+
+.remotes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.remote {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.remote-top { display: flex; align-items: center; gap: var(--vwsq-space-2); }
+.remote-order {
+  flex: 0 0 auto; width: 14px; height: 14px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-signal-idle-soft); color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono); font-size: .55rem;
+}
+.remote-name { font-size: .72rem; color: var(--sb-text-bright); }
+
+/* Where a finished job's files ended up. Text, not a button: the server may be
+   another machine, and after an rclone move there is nothing local to open. */
+.job-dest {
+  display: flex; align-items: baseline; gap: var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .58rem; min-width: 0;
+}
+.dest-tag {
+  flex: 0 0 auto; padding: .1em .35em; border-radius: var(--vwsq-radius-control);
+  letter-spacing: .06em; text-transform: uppercase; font-size: .52rem;
+}
+.dest-remote { background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online); }
+.dest-local  { background: var(--vwsq-signal-idle-soft);   color: var(--sb-text-dim); }
+.dest-where {
+  color: var(--sb-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dest-open {
+  border: 0; padding: 0; background: none; cursor: pointer;
+  font: inherit; text-align: left; min-width: 0;
+}
+.dest-open:hover { color: var(--sb-accent); text-decoration: underline; }
+
+/* ---- livestream rows ------------------------------------------------------ */
+
+/* Pinned above the file list and visually separated: a stream is not one of the
+   things you tick into an archive, and reading as part of that list is exactly
+   the confusion that had livestreams and videos treated as the same object. */
+.cands-streams { margin-bottom: var(--vwsq-space-3); }
+.cand-stream {
+  cursor: default;
+  border-left-color: var(--vwsq-coral-500);
+  gap: var(--vwsq-space-2);
+}
+.cand-stream:hover { background: var(--sb-surface); }
+.cand-rec { border-left-color: var(--vwsq-signal-relay); }
+
+/* The preview frame, and the reason there isn't one. A failure is shown at the
+   same size and in the same slot as a success: it is a result, not an absence,
+   and it is the one most worth reading. */
+.stream-prev {
+  border-radius: var(--vwsq-radius-control);
+  overflow: hidden;
+  background: var(--sb-sunken);
+}
+.stream-prev img { display: block; width: 100%; height: auto; }
+.stream-prev-note {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); flex-wrap: wrap;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  color: var(--sb-text-dim);
+}
+.stream-prev-err {
+  flex: 1; min-width: 0; color: var(--sb-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.stream-q { display: flex; flex-wrap: wrap; gap: 3px; }
+.q {
+  border: 1px solid var(--sb-border);
+  background: none; color: var(--sb-text-secondary);
+  border-radius: var(--vwsq-radius-control);
+  padding: .15em .45em; cursor: pointer;
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+}
+.q:hover:not(:disabled) { border-color: var(--sb-accent); color: var(--sb-text-bright); }
+.q-on { border-color: var(--sb-accent); background: var(--sb-accent-soft); color: var(--sb-text-bright); }
+/* Advertised by the playlist but not selectable until the probe names a format
+   yt-dlp will accept. Shown rather than hidden — "1080p exists, not yet
+   pickable" beats an empty list that looks like a failure. */
+.q:disabled { opacity: .45; cursor: default; }
+.q-stop { border-color: var(--vwsq-signal-alert); color: var(--vwsq-signal-alert); }
+
+.stream-go {
+  border: 1px solid var(--sb-accent);
+  background: var(--sb-accent-soft); color: var(--sb-text-bright);
+  border-radius: var(--vwsq-radius-control);
+  padding: .3em .5em; cursor: pointer; font-size: .7rem;
+}
+.stream-go:hover:not(:disabled) { background: var(--sb-accent); }
+.stream-go:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---- photoswipe notice --------------------------------------------------- */
+
+.pswp-note {
+  display: flex; gap: var(--vwsq-space-2); align-items: flex-start;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  margin-top: var(--vwsq-space-2);
+  background: var(--sb-sunken);
+  border-left: 2px solid var(--vwsq-signal-sync);
+  border-radius: var(--vwsq-radius-control);
+}
+.pswp-note-body { min-width: 0; }
+.pswp-note p { margin: 0; font-size: .68rem; line-height: 1.45; color: var(--sb-text-secondary); }
+.pswp-note strong { color: var(--sb-text-bright); font-weight: 600; }
+
+/* ---- options ------------------------------------------------------------- */
+
+.opt {
+  display: flex; gap: var(--vwsq-space-2); align-items: flex-start;
+  padding: var(--vwsq-space-2) 0;
+  cursor: pointer;
+}
+.opt input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--sb-accent); }
+.opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.opt-label { font-size: .74rem; color: var(--sb-text-bright); }
+.opt-hint { font-size: .63rem; line-height: 1.4; color: var(--sb-text-dim); }
 
 /* ---- actions ------------------------------------------------------------ */
 
 .actions {
   position: sticky; bottom: 0;
-  display: grid; grid-template-columns: 2fr 1fr 1fr; gap: var(--vwsq-space-2);
+  /* Equal thirds. The old 2fr/1fr/1fr existed to fit "Zip 16 on server" in the
+     first slot, and squeezed the other two hard enough that a two-word label
+     wrapped onto three lines. With the counts out of the labels nothing needs
+     the extra room. */
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--vwsq-space-2);
   padding: var(--vwsq-space-2) 0;
   background: linear-gradient(to top, var(--sb-bg) 70%, transparent);
 }
+.actions .btn { white-space: nowrap; }
 .btn-alt {
   background: var(--sb-elevated);
   color: var(--sb-text-bright);
@@ -283,21 +533,55 @@
 }
 .job-bar { height: 3px; border-radius: 2px; background: var(--sb-sunken); overflow: hidden; }
 .job-fill { height: 100%; background: var(--sb-accent); transition: width 300ms; }
+
+/* Barber pole, for a capture with no knowable end.
+   A live broadcast has no total, so a percentage is not merely inaccurate — it
+   does not exist. Filling the bar and animating the stripes says "running,
+   duration unknown", where a bar stuck near zero says "barely started" and a
+   bar creeping forward would be inventing a finish line. */
+.job-fill-live {
+  width: 100% !important;
+  transition: none;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--sb-accent) 0 6px,
+    var(--sb-accent-soft) 6px 12px
+  );
+  background-size: 17px 100%;   /* 12px stripe pitch / sin(45°), so it tiles seamlessly */
+  animation: barberPole 700ms linear infinite;
+}
+@keyframes barberPole {
+  from { background-position: 0 0; }
+  to   { background-position: 17px 0; }
+}
+/* Someone who has asked not to see movement gets the filled bar without it —
+   the state is carried by the fill, the animation only reinforces it. */
+@media (prefers-reduced-motion: reduce) {
+  .job-fill-live { animation: none; }
+}
 .job-meta {
   display: flex; align-items: center; gap: var(--vwsq-space-2); flex-wrap: wrap;
   font-family: var(--vwsq-font-mono); font-size: .6rem;
   color: var(--sb-text-dim); font-variant-numeric: tabular-nums;
 }
 .job-archives { display: flex; flex-direction: column; gap: 2px; }
+/* Pressable only when there is something local to open — see `local` in
+   ServerJob. Once rclone has moved an archive there is no local path left, and
+   the plain form is used instead so the UI does not offer what it cannot do. */
 .archive {
-  text-align: left; border: 0; cursor: pointer;
-  background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online);
+  display: block; text-align: left;
+  background: var(--sb-sunken); color: var(--sb-text-secondary);
   border-radius: var(--vwsq-radius-control);
   padding: .2em .45em;
   font-family: var(--vwsq-font-mono); font-size: .6rem;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.archive:hover { background: rgba(86,217,141,.24); }
+.archive-open {
+  border: 0; cursor: pointer;
+  background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online);
+  width: 100%;
+}
+.archive-open:hover { background: rgba(86,217,141,.24); }
 .job-err {
   font-family: var(--vwsq-font-mono); font-size: .6rem;
   color: var(--vwsq-signal-alert); word-break: break-word;
@@ -312,12 +596,16 @@
   background: linear-gradient(to top, var(--sb-bg) 78%, transparent);
 }
 .actions-wrap .actions { position: static; padding: 0; background: none; }
+/* Informational, not a warning. This was amber because its only user was a
+   caution about flooding the download history; that caution is gone, and the
+   remaining uses — "saved, applies on the next heartbeat", "no worker has
+   reported yet" — are statements of fact that should not look like alarms. */
 .hint {
   padding: var(--vwsq-space-2) var(--vwsq-space-3);
-  border-left: 2px solid var(--vwsq-signal-warning);
-  background: var(--vwsq-signal-warning-soft);
+  border-left: 2px solid var(--sb-border-strong);
+  background: var(--sb-sunken);
   border-radius: 0 var(--vwsq-radius-control) var(--vwsq-radius-control) 0;
-  font-size: .7rem; color: var(--sb-text-secondary); line-height: 1.45;
+  font-size: .68rem; color: var(--sb-text-secondary); line-height: 1.45;
 }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 

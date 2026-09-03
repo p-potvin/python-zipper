@@ -5,11 +5,17 @@ import {
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
 import { installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged } from './media_log';
-import { installHarvestStore, runHarvest, getSnapshot, acceptFrameResult } from './harvest_store';
+import {
+  installHarvestStore, runHarvest, getSnapshot, acceptFrameResult, addLiveCandidates,
+} from './harvest_store';
 import { loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed } from './grabbed';
-import { serverGet, serverPost, SERVER_ENDPOINTS } from './server';
-import { Api as VwApi, getConfig as getApiConfig, setConfig as setApiConfig } from '../common/vwapi';
+
+import { zipAndDownload } from './zip_download';
+import {
+  Api as VwApi, awaitJobResult, getConfig as getApiConfig, setConfig as setApiConfig,
+} from '../common/vwapi';
 import { getProxy, setProxy, loadConfig } from './config';
+import { registrableDomain, hostOf } from '../common/domain';
 import type { BgMessage } from '../common/types';
 
 installSniffer();
@@ -44,53 +50,63 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
   const s = getStream(tabId, key);
   if (!s) return { ok: false, error: 'stream not found' };
 
-  // Fetch active jobs
-  const jobsRes = await serverGet('/api/jobs');
-  const activeJobs = Object.values(jobsRes?.jobs || {}).filter(
-    (j: any) => j.type === 'stream' && (j.status === 'running' || j.status === 'queued')
+  const listed = await VwApi.listJobs(100);
+  const activeJobs = (listed.data?.jobs || []).filter(
+    (j: any) => j.kind === 'stream'
+      && (j.status === 'running' || j.status === 'queued' || j.status === 'claimed'),
   );
 
   const newQualityStr = formatId || s.selectedFormat || 'best';
   const newQualityHeight = parseQualityHeight(newQualityStr);
 
-  // Check if there is already an active job for the same stream URL, or same pageURL
+  // Already recording this stream? Keep the better quality and stop the other.
+  // The comparison is on the job's own recorded quality, which now lives in
+  // options rather than a top-level column.
   for (const job of activeJobs as any[]) {
-    const isSameStream = job.stream_url === s.url || job.page_url === s.pageUrl;
-    if (isSameStream) {
-      const existingQualityHeight = parseQualityHeight(job.quality);
-      if (newQualityHeight > existingQualityHeight) {
-        // Stop the existing lower quality job
-        console.log(`Stopping lower quality job ${job.id} (${job.quality}) in favor of ${newQualityStr}`);
-        await serverPost('/api/stream/stop', { job_id: job.id });
-      } else {
-        // Prevent starting this lower quality download
-        return { ok: false, error: `A higher quality download (${job.quality}) is already in progress.` };
-      }
+    const opts = job.options || {};
+    const isSameStream = opts.stream_url === s.url || job.page_url === s.pageUrl;
+    if (!isSameStream) continue;
+    const existingQualityHeight = parseQualityHeight(opts.quality);
+    if (newQualityHeight > existingQualityHeight) {
+      console.log(`Stopping lower quality job ${job.id} (${opts.quality}) in favor of ${newQualityStr}`);
+      await VwApi.abortJob(job.id);
+    } else {
+      return { ok: false, error: `A higher quality download (${opts.quality}) is already in progress.` };
     }
   }
 
-  const res = await serverPost('/api/stream/start', {
-    url: s.url,
-    headers: s.headers,
-    format_id: formatId || s.selectedFormat || null,
+  const res = await VwApi.submitJob({
+    kind: 'stream',
+    links: [s.url],
+    headers: s.headers || {},
     page_url: s.pageUrl,
+    page_domain: registrableDomain(hostOf(s.pageUrl)),
     title: title || s.title || s.meta?.title,
-    thumbnail: s.meta?.thumbnail || null,
-    duration: s.meta?.duration ?? null,
-    is_live: s.meta?.is_live ?? false,
-    quality: formatId || s.selectedFormat || 'best',
-    proxy: getProxy() || undefined,
+    options: {
+      format_id: formatId || s.selectedFormat || null,
+      quality: newQualityStr,
+      stream_url: s.url,
+      thumbnail: s.meta?.thumbnail || null,
+      duration: s.meta?.duration ?? null,
+      is_live: s.meta?.is_live ?? false,
+      proxy: getProxy() || undefined,
+      // 'auto' lands the recording locally while there is room and pipes it
+      // straight to the remote when there is not — see _pick_sink in the
+      // worker. Piping gives up salvage, so it is not the choice to make while
+      // the disk is comfortable.
+      sink: 'auto',
+    },
   });
-  if (res?.ok || res?.correlationId) {
-    s.jobId = res.correlationId;
+  if (res.ok && res.data?.job_id) {
+    s.jobId = res.data.job_id;
     s.started = true;
     let set = tabJobMap.get(tabId);
     if (!set) { set = new Set(); tabJobMap.set(tabId, set); }
-    set.add(res.correlationId);
+    set.add(res.data.job_id);
     touch(tabId);
-    return { ok: true, jobId: res.correlationId };
+    return { ok: true, jobId: res.data.job_id };
   }
-  return { ok: false, error: res?.error || 'server offline — is python-zipper running on :5171?' };
+  return { ok: false, error: res.error || 'could not queue the recording' };
 }
 
 /** Best guess at the filename the server will write, for the already-got mark. */
@@ -109,12 +125,13 @@ ext.tabs.onRemoved.addListener(async (closedTabId: number) => {
   const jobs = tabJobMap.get(closedTabId);
   if (jobs && jobs.size > 0) {
     try {
-      const jobsRes = await serverGet('/api/jobs');
-      const allJobs = jobsRes?.jobs || {};
+      const listed = await VwApi.listJobs(100);
+      const byId: Record<string, any> = {};
+      for (const j of listed.data?.jobs || []) byId[j.id] = j;
       for (const jobId of jobs) {
-        const job = allJobs[jobId];
+        const job = byId[jobId];
         if (job && (job.status === 'completed' || job.status === 'aborted' || job.status === 'failed')) {
-          await serverPost('/api/stream/delete', { job_id: jobId });
+          await VwApi.deleteJob(jobId);
         }
       }
     } catch { /* ignore */ }
@@ -195,9 +212,82 @@ async function handle(msg: BgMessage, sender: any) {
     case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
 
     // Jobs remain server-backed; File Explorer actions use Firefox native messaging only.
-    case 'jobs:get': return await serverGet('/api/jobs');
-    case 'jobs:stop': return await serverPost('/api/stream/stop', { job_id: (msg as any).jobId });
-    case 'jobs:delete': return await serverPost('/api/stream/delete', { job_id: (msg as any).jobId });
+    case 'jobs:get': {
+      // Jobs live in the API now. The local server is only consulted if the
+      // API is unreachable, so the Downloads tab keeps working during the
+      // transition instead of going blank the moment the old service stops.
+      const api = await VwApi.listJobs(50);
+      if (api.ok && api.data?.jobs) {
+        // Normalise to the shape the UI already renders. The API returns an
+        // array; the legacy server returned a map keyed by id.
+        const jobs: Record<string, any> = {};
+        for (const j of api.data.jobs) jobs[j.id] = j;
+        return { jobs, source: 'vaultwares-api' };
+      }
+      // The API is the only source of job state now. It returns an array;
+      // the sidebar and the legacy local server both spoke a keyed object, so
+      // convert here rather than making every consumer handle both.
+      const res = await VwApi.listJobs(100);
+      if (!res.ok) return { error: res.error || 'API unreachable' };
+      const byId: Record<string, any> = {};
+      for (const j of res.data?.jobs || []) byId[j.id] = j;
+      return { jobs: byId };
+    }
+    case 'jobs:stop': {
+      const id = (msg as any).jobId as string;
+      if (id?.startsWith('z-')) {
+        // An API job: mark it aborted rather than killing a local process.
+        const r = await VwApi.abortJob(id);
+        if (r.ok) return { ok: true };
+      }
+      const res = await VwApi.abortJob(id);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
+    case 'jobs:delete': {
+      const id = (msg as any).jobId as string;
+      if (id?.startsWith('z-')) {
+        const r = await VwApi.deleteJob(id);
+        if (r.ok) return { ok: true };
+      }
+      const res = await VwApi.deleteJob(id);
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
+    // Storage lives on the server because that is where the files land and
+    // where rclone runs; the sidebar only renders it.
+    // A preview is a queued job whose answer is an image. Waited on here so the
+    // sidebar gets one call and one result rather than owning the poll itself.
+    case 'stream:preview': {
+      const queued = await VwApi.previewStream(
+        (msg as any).url, (msg as any).headers || {}, getProxy() || undefined,
+      );
+      if (!queued.ok || !queued.data?.job_id) {
+        return { ok: false, error: queued.error || 'could not queue the preview' };
+      }
+      // Longer than a probe's window: the worker's own ffmpeg timeout is 25s,
+      // and it still has to be claimed before that starts.
+      const out = await awaitJobResult(queued.data.job_id, 90_000, 1500);
+      if (!out) return { ok: false, error: 'no answer from a worker' };
+      return out.ok
+        ? { ok: true, image: out.image }
+        : { ok: false, error: out.error || 'no frame' };
+    }
+    case 'insights:get': {
+      const res = await VwApi.insights((msg as any).days || 30);
+      return res.ok ? { ok: true, data: res.data } : { ok: false, error: res.error };
+    }
+    case 'storage:get': {
+      const res = await VwApi.storage();
+      return res.ok
+        ? { ok: true, workers: res.data?.workers || [], staleAfter: res.data?.stale_after ?? 300 }
+        : { ok: false, error: res.error };
+    }
+    case 'rclone:config:set': {
+      const res = await VwApi.setWorkerRclone((msg as any).worker, {
+        remotes: (msg as any).remotes,
+        enabled: (msg as any).enabled,
+      });
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    }
     case 'open:folder': return await revealDefaultDownloadFolder();
     case 'open:path': return await revealPath((msg as any).path || '');
 
@@ -216,6 +306,37 @@ async function handle(msg: BgMessage, sender: any) {
         markGrabbed(dUrl, dFilename, dReferer || '', 'browser');
       }
       return started;
+    }
+    // Zip on this side of the wire. The server route is still there and still
+    // better for very large jobs, but an archive should not require a server to
+    // be running — that was the whole reason multi-file downloads arrived as
+    // eighty loose entries in the download history.
+    case 'downloads:zip': {
+      const zItems = (msg as any).items || [];
+      const zPage = (msg as any).pageUrl || '';
+      const zUrls = zItems.map((i: any) => i.url);
+      const zHeaders = tabId !== undefined ? headersFor(tabId, zUrls, zPage) : {};
+      const res = await zipAndDownload({
+        items: zItems,
+        headers: zHeaders,
+        archiveName: (msg as any).archiveName,
+      });
+      if (res.ok) {
+        // Recorded against the archive rather than each URL's own filename:
+        // that is where the bytes actually are, and the grid's "got" mark
+        // should point at something that exists on disk.
+        const zFacts = (msg as any).facts || {};
+        markManyGrabbed(
+          zItems.map((i: any) => ({
+            url: i.url,
+            savedAs: res.filename || 'archive.zip',
+            facts: zFacts[i.url],
+          })),
+          zPage,
+          'browser',
+        );
+      }
+      return res;
     }
     case 'downloads:list': {
       return { ok: true, downloads: await getBrowserDownloadsList() };
@@ -238,8 +359,25 @@ async function handle(msg: BgMessage, sender: any) {
     // ---- harvest ----------------------------------------------------------
     // A frame pushing its DOM scan back. Fire-and-forget: the collector in
     // harvest_store owns the settle window, this just hands the results over.
+    // Live scanning: a user action changed the page and the content script
+    // found something new. Folded into the standing snapshot and pushed to the
+    // sidebar, which updates in place rather than re-sorting under the cursor.
+    case 'harvest:live': {
+      if (tabId === undefined) return { ok: false };
+      const next = addLiveCandidates(tabId, (msg as any).candidates || []);
+      if (next) {
+        try { void ext.runtime.sendMessage({ kind: 'harvest:updated', snapshot: next }); }
+        catch { /* sidebar closed */ }
+      }
+      return { ok: true, added: !!next };
+    }
     case 'harvest:frame-result': {
-      acceptFrameResult((msg as any).runId, (msg as any).candidates || [], (msg as any).isTop !== false);
+      acceptFrameResult(
+        (msg as any).runId,
+        (msg as any).candidates || [],
+        (msg as any).isTop !== false,
+        (msg as any).photoSwipe,
+      );
       return { ok: true };
     }
     case 'harvest:run': {
@@ -251,6 +389,18 @@ async function handle(msg: BgMessage, sender: any) {
       }
       const mode = (msg as any).mode === 'deep' ? 'deep' : 'quick';
       return { ok: true, snapshot: await runHarvest(tabId, pageUrl, mode, (msg as any).scope || '') };
+    }
+    // Asked before any scan, so the banner can offer the deep run up front —
+    // the whole point being that on a PhotoSwipe page a quick scan sees
+    // thumbnails and the gallery is only reachable by opening the viewer.
+    case 'pswp:detect': {
+      if (tabId === undefined) return { ok: false };
+      try {
+        const r = await ext.tabs.sendMessage(tabId, { kind: 'pswp:detect' });
+        return { ok: true, status: r?.status ?? null };
+      } catch {
+        return { ok: false };
+      }
     }
     case 'harvest:deep-abort': {
       if (tabId === undefined) return { ok: false };
@@ -296,40 +446,20 @@ async function handle(msg: BgMessage, sender: any) {
         options: { batch_size: 50, rclone_enabled: false, upscale_enabled: false },
       });
       if (api.ok && api.data?.job_id) {
+        const sFacts = (msg as any).facts || {};
         markManyGrabbed(
-          links.map((u) => ({ url: u, savedAs: savedNameFor(u) })),
+          links.map((u) => ({ url: u, savedAs: savedNameFor(u), facts: sFacts[u] })),
           pageUrl,
           'server',
         );
         return { ok: true, jobId: api.data.job_id, via: 'api' };
       }
 
-      // Fallback to the local server while the API rollout settles. Reported
-      // rather than silent — "it worked" and "it worked the old way" are
-      // different facts and the difference matters when debugging.
-      const res = await serverPost('/download', {
-        url: pageUrl,
-        links,
-        batch_size: 50,
-        stream_headers,
-        link_kinds: kinds,
-        rclone_enabled: false,
-        upscale_enabled: false,
-      });
-      if (res?.correlationId || res?.status) {
-        markManyGrabbed(
-          links.map((u) => ({ url: u, savedAs: savedNameFor(u) })),
-          pageUrl,
-          'server',
-        );
-        return { ok: true, jobId: res.correlationId, via: 'local' };
-      }
-      return {
-        ok: false,
-        error: api.error
-          ? `API: ${api.error}; local server also unreachable`
-          : 'server offline — is python-zipper running on :5171?',
-      };
+      // No local fallback any more. It existed while the API rollout settled,
+      // and it was actively harmful once the API worked: a job that quietly
+      // took the old path landed on this machine's disk, outside the queue,
+      // invisible to every other client — and looked identical to success.
+      return { ok: false, error: api.error || 'could not queue the job on the API' };
     }
 
     case 'grabbed:lookup':
@@ -515,11 +645,12 @@ async function startBrowserDownload(url: string, filename: string, saveAs: boole
 // Background observer loop for tracking active download states
 async function observeCompletedJobs() {
   try {
-    const res = await serverGet('/api/jobs');
-    const jobs = Object.values(res?.jobs || {});
+    const res = await VwApi.listJobs(100);
+    const jobs = res.data?.jobs || [];
 
     // Track active downloads state for toolbar badge across tabs
-    const activeStreamJobs = jobs.filter((j: any) => (j.type === 'stream' || j.stream_url) && (j.status === 'running' || j.status === 'queued'));
+    const activeStreamJobs = jobs.filter((j: any) => j.kind === 'stream'
+      && (j.status === 'running' || j.status === 'queued' || j.status === 'claimed'));
     setHasActiveDownloads(activeStreamJobs.length);
 
     for (const job of jobs as any[]) {
@@ -537,7 +668,12 @@ async function observeCompletedJobs() {
 }
 
 // Start polling observer
-setInterval(observeCompletedJobs, 2000);
+// Every 2s was fine against a server on localhost. It is not fine now that
+// this is a request to api.vaultwares.ca over the tailnet — that was 30 calls a
+// minute, forever, from every browser running the extension, purely to keep a
+// toolbar badge current. The Downloads tab still polls fast while you are
+// looking at it; the badge does not need to.
+setInterval(observeCompletedJobs, 20_000);
 
 
 async function revealPath(path: string) {
@@ -558,13 +694,47 @@ async function revealPath(path: string) {
   }
 }
 
+/**
+ * Open the folder downloads land in.
+ *
+ * I removed this outright when the local server went away, reasoning that files
+ * land on a worker that might be another machine. That was half right and
+ * wholly wrong as a decision: the worker normally *is* this machine, so the
+ * common case went from working to a permanent error — and the popup's Folder
+ * button became a button that could only fail.
+ *
+ * Workers report their landing directory on every heartbeat, so ask the API and
+ * try them. The native host runs here, so a path belonging to another machine
+ * simply fails to resolve and we move on to the next — which is a probe for
+ * "which of these is local" that costs nothing and needs no hostname matching.
+ */
 async function revealDefaultDownloadFolder() {
-  const jobData = await serverGet('/api/jobs');
-  // Prioritize download_dir (.downloaded) where batch zips land, then streams_dir
-  const path = jobData?.download_dir || jobData?.streams_dir;
-  if (!path) {
-    return { ok: false, code: 'download_folder_unknown', error: 'The download folder is unavailable' };
+  const res = await VwApi.storage();
+  const dirs = (res.data?.workers || [])
+    .map((w: any) => w.dest_dir || w.storage?.disk?.path)
+    .filter((d: any): d is string => !!d);
+
+  if (!dirs.length) {
+    return {
+      ok: false,
+      code: 'download_folder_unknown',
+      error: res.ok
+        ? 'No worker has reported a download folder yet'
+        : `Could not ask the API where downloads land: ${res.error}`,
+    };
   }
-  return await revealPath(path);
+
+  let last: any = null;
+  for (const dir of dirs) {
+    last = await revealPath(dir);
+    if (last?.ok) return last;
+  }
+  return {
+    ok: false,
+    code: last?.code || 'download_folder_unreachable',
+    error: dirs.length === 1
+      ? `${dirs[0]} could not be opened here — that worker is another machine`
+      : 'None of the reported download folders exist on this machine',
+  };
 }
 

@@ -1,0 +1,23 @@
+{
+  "title": "Demo_MEGA_Collection",
+  "group_title": "MEGA Demo Streams",
+  "created_at": "2026-09-02 05:27:09",
+  "total_items": 2,
+  "playlist_m3u": "C:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\playlists\\Demo_MEGA_Collection.m3u",
+  "items": [
+    {
+      "link": "https://debrid.stream.local/dl/sample01/sample_video_01.mp4",
+      "filename": "sample_video_01.mp4",
+      "filesize": 104857600,
+      "host": "mega",
+      "id": "sample01"
+    },
+    {
+      "link": "https://debrid.stream.local/dl/sample02/sample_video_02.mkv",
+      "filename": "sample_video_02.mkv",
+      "filesize": 314572800,
+      "host": "mega",
+      "id": "sample02"
+    }
+  ]
+}

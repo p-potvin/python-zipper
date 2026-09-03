@@ -28,6 +28,10 @@ def create_job(url, links, batch_size, upscale_enabled, upscale_model):
         "upscale_enabled": bool(upscale_enabled),
         "upscale_model": upscale_model,
         "rclone_complete": False,
+        # Where the files ended up. Empty means they are still on local disk,
+        # which is a real and common outcome rather than a failure.
+        "rclone_remotes": [],
+        "local_dir": None,
         "created_at": now,
         "updated_at": now,
         "source": "local-python-zipper",
@@ -98,13 +102,16 @@ def update_job(job_id, **changes):
         job["updated_at"] = int(time.time() * 1000)
 
 
-def complete_job(job_id, archives=None, rclone_complete=False):
+def complete_job(job_id, archives=None, rclone_complete=False,
+                 rclone_remotes=None, local_dir=None):
     update_job(
         job_id,
         status="completed",
         progress=100,
         archives=list(archives or []),
         rclone_complete=bool(rclone_complete),
+        rclone_remotes=list(rclone_remotes or []),
+        local_dir=local_dir,
     )
     try:
         from win11toast import toast

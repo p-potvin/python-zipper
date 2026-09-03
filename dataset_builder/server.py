@@ -223,6 +223,28 @@ class ScraperHandler(BaseHTTPRequestHandler):
             except Exception:
                 self.close_connection = True
             return
+        elif self.path == '/api/storage':
+            # Disk headroom on the landing volume, what is still staged there,
+            # and what each configured remote reports about itself. Answers the
+            # three questions a finished download actually raises: where did it
+            # go, did rclone take it, and will the next one fit.
+            try:
+                from ds_storage import storage_report
+                self._send_json(storage_report())
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        elif self.path == '/api/rclone/config':
+            try:
+                from ds_storage import load_config, known_remotes, rclone_available
+                cfg = load_config()
+                self._send_json({
+                    "remotes": cfg["remotes"],
+                    "enabled": cfg["enabled"],
+                    "available": rclone_available(),
+                    "known": known_remotes(),
+                })
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
         elif self.path == '/api/upscaler/status':
             self._handle_upscaler_status()
         elif self.path == '/api/jobs':
@@ -346,6 +368,20 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "Log received"})
             except Exception as e:
                 self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
+        elif self.path == '/api/rclone/config':
+            # Reordering remotes is the whole point: the first one that accepts
+            # a file wins, so priority is the only knob that decides whether a
+            # gallery lands on Drive or on Proton.
+            data = self._read_json() or {}
+            try:
+                from ds_storage import save_config
+                cfg = save_config(
+                    remotes=data.get("remotes"),
+                    enabled=data.get("enabled"),
+                )
+                self._send_json({"ok": True, **cfg})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
         elif self.path == '/api/open-downloaded':
             # Compatibility bridge for signed extension v1.32. This resolves
             # paths only; Firefox native messaging performs the desktop action.
@@ -387,6 +423,11 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 job_id,
                 archives=archives,
                 rclone_complete=result.get("rclone_complete", False),
+                # Which remote actually has the files, so the panel can say
+                # "on Google Drive" rather than a bare tick that means nothing
+                # once you go looking for them.
+                rclone_remotes=result.get("rclone_remotes", []),
+                local_dir=result.get("local_dir") or os.path.abspath(DEST_DIR),
             )
         except Exception as e:
             fail_job(job_id, e)

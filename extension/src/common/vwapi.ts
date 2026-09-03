@@ -121,6 +121,48 @@ export interface JobSubmit {
   options?: Record<string, any>;
 }
 
+/**
+ * Wait for an answer-shaped job to finish.
+ *
+ * Polling rather than a socket: a probe is answered within a worker's poll
+ * interval, so the wait is seconds, and a persistent connection for a
+ * once-per-stream question is not worth the machinery. Resolves null on
+ * timeout instead of throwing — a probe that never came back means "no
+ * metadata", which every caller already handles.
+ */
+export async function awaitJobResult(
+  jobId: string,
+  timeoutMs = 60_000,
+  everyMs = 1200,
+): Promise<any | null> {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, everyMs));
+    const res = await Api.getJob(jobId);
+    const job = res.data?.job;
+    if (!job) continue;
+    if (job.status === 'completed') return job.result ?? null;
+    if (job.status === 'failed' || job.status === 'aborted') {
+      return { ok: false, error: job.error || `probe ${job.status}` };
+    }
+  }
+  return null;
+}
+
+export interface WorkerRow {
+  name: string;
+  host?: string;
+  platform?: string;
+  dest_dir?: string;
+  storage: any;
+  rclone_desired?: { remotes?: string[]; enabled?: boolean } | null;
+  seen_at: string;
+  age_seconds: number;
+  /** The worker has not reported recently. Shown, never hidden — a machine that
+   *  went quiet is the one worth looking at. */
+  stale: boolean;
+}
+
 export const Api = {
   health: () => call('/api/zipper/health'),
 
@@ -128,6 +170,11 @@ export const Api = {
   listJobs: (limit = 50) => call<{ jobs: any[] }>(`/api/zipper/jobs?limit=${limit}`),
   getJob: (id: string) => call<{ job: any }>(`/api/zipper/jobs/${encodeURIComponent(id)}`),
   deleteJob: (id: string) => call(`/api/zipper/jobs/${encodeURIComponent(id)}`, 'DELETE'),
+  /** Progress is also how a job is stopped — status is just another field. */
+  updateJob: (id: string, patch: Record<string, any>) =>
+    call(`/api/zipper/jobs/${encodeURIComponent(id)}/progress`, 'POST', patch),
+  abortJob: (id: string) =>
+    call(`/api/zipper/jobs/${encodeURIComponent(id)}/progress`, 'POST', { status: 'aborted' }),
 
   // ---- history / already-downloaded ----
   recordGrabs: (records: any[]) => call('/api/zipper/history', 'POST', records),
@@ -144,6 +191,48 @@ export const Api = {
     call(`/api/zipper/profile/${encodeURIComponent(domain)}`, 'PATCH', patch),
   resetProfile: (domain: string) =>
     call(`/api/zipper/profile/${encodeURIComponent(domain)}`, 'DELETE'),
+
+  // ---- streams ----
+  //
+  // A probe is a job like any other, because yt-dlp has to run where the
+  // captured headers and the browser's session are. The API cannot do it and
+  // neither can the extension, so it goes on the queue and the answer comes
+  // back on the job row.
+  probeStream: (url: string, headers: Record<string, string>, proxy?: string) =>
+    call<{ job_id: string }>('/api/zipper/jobs', 'POST', {
+      kind: 'probe',
+      links: [url],
+      headers,
+      options: proxy ? { proxy } : {},
+    }),
+
+  /**
+   * One decoded frame of a stream.
+   *
+   * Queued like a probe, and for a reason that is not about convenience: a
+   * cross-origin video drawn onto a canvas taints it, so the browser cannot
+   * read the pixels back. The frame has to be produced where ffmpeg and the
+   * captured headers are.
+   */
+  previewStream: (url: string, headers: Record<string, string>, proxy?: string) =>
+    call<{ job_id: string }>('/api/zipper/jobs', 'POST', {
+      kind: 'preview',
+      links: [url],
+      headers,
+      options: proxy ? { proxy } : {},
+    }),
+
+  // ---- workers and storage ----
+  //
+  // Storage is per *worker*, not per server, because that is where files
+  // actually land. Workers report inward on their own heartbeat, so this reads
+  // a last-known state that exists even when the machine is off — with the age
+  // of the report attached, rather than a number pretending to be current.
+  storage: () => call<{ workers: WorkerRow[]; stale_after: number }>('/api/zipper/storage'),
+  /** Ask a worker to change its rclone remote priority. Applied on its next
+   *  heartbeat — nothing here reaches into the worker. */
+  setWorkerRclone: (name: string, patch: { remotes?: string[]; enabled?: boolean }) =>
+    call(`/api/zipper/workers/${encodeURIComponent(name)}/rclone`, 'PATCH', patch),
 
   // ---- quotas ----
   quota: () => call('/api/zipper/quota'),

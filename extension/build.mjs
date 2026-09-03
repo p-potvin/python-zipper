@@ -34,6 +34,10 @@ const entries = {
   // Emits dist/sidebar.js plus dist/sidebar.css — esbuild splits the imported
   // stylesheet out beside the entry, and public/ carries no sidebar.css to clobber it.
   sidebar: 'src/sidebar/index.tsx',
+  // Runs in the page's own JS world (manifest "world": "MAIN"). Separate
+  // entry because it must not pull in anything that expects the extension
+  // APIs -- it has none of them.
+  pagehook: 'src/pagehook/index.ts',
 };
 
 const shared = {

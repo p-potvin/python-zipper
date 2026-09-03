@@ -19,12 +19,13 @@
  */
 
 import { ext, IS_FIREFOX } from '../common/api';
+import { getStreams } from './sniffer';
 import { registrableDomain, hostOf } from '../common/domain';
 import {
   type MediaCandidate, kindFromMime, kindFromUrl, isRejectedExtension,
   dedupKey, makeCandidate,
 } from '../common/harvest';
-import { scoreCandidate, SCORE } from '../common/scoring';
+import { explainCandidate, SCORE } from '../common/scoring';
 
 /** Per tab, keyed by dedupKey so token-rotated re-requests collapse. */
 const log = new Map<number, Map<string, MediaCandidate>>();
@@ -78,6 +79,63 @@ export function headersFor(tabId: number, urls: string[], pageUrl: string): Reco
   }
   if (pageUrl && !out['Referer'] && !out['referer']) out['Referer'] = pageUrl;
   return out;
+}
+
+/**
+ * Is this one chunk of a stream rather than a file?
+ *
+ * The single worst thing in the list on any livestream page. A playing HLS
+ * stream fetches a `.ts` segment every few seconds, each one arrives as a
+ * `video/mp2t` response, and the classifier — correctly, in isolation — calls
+ * every one of them a video. The result is hundreds of "videos" that are two
+ * seconds long, cannot be downloaded on their own, and bury everything real on
+ * the page. Fetching one succeeds and produces a file that plays for a moment,
+ * which is why it reads as a broken download rather than a wrong candidate.
+ *
+ * The sniffer has `isSegmentOrChunkUrl`, but it answers a different question —
+ * "is this worth tracking as a stream?" — and rejects `.jpg`, `.png` and `.mp3`
+ * outright. Reusing it here would delete every image and audio file from the
+ * harvest.
+ *
+ * Three tests, cheapest first, and the last is the one that actually
+ * generalises: a URL sitting in the same directory as a manifest we are already
+ * tracking on this tab is a segment of it, whatever it happens to be called.
+ */
+function isStreamSegment(tabId: number, url: string, mime: string): boolean {
+  const m = mime.toLowerCase();
+  // MPEG-TS and CMAF/fMP4 segments have their own content types and are never
+  // a standalone download.
+  if (m.startsWith('video/mp2t') || m.startsWith('video/iso.segment')
+      || m === 'application/vnd.apple.mpegurl') return true;
+
+  let path = '';
+  let dir = '';
+  try {
+    const u = new URL(url);
+    path = u.pathname.toLowerCase();
+    dir = u.origin + path.slice(0, path.lastIndexOf('/') + 1);
+  } catch {
+    return false;
+  }
+
+  // Extensions that only ever exist as part of a stream.
+  if (/\.(ts|m4s|cmfv|cmfa)(?:$|\?)/.test(path)) return true;
+
+  // Numbered fragments: seg-12.mp4, chunk_003.m4a, frag5.aac, init.mp4.
+  if (/(^|[/_-])(seg|segment|chunk|frag|fragment|part)[_.-]?\d+\./.test(path)) return true;
+  if (/(^|\/)init[_.-]?\d*\.(mp4|m4s)$/.test(path)) return true;
+
+  // Living in a tracked manifest's directory. This is what catches the hosts
+  // that number their segments in a query string, or name them nothing at all.
+  try {
+    for (const s of getStreams(tabId)) {
+      const su = new URL(s.url);
+      const sdir = su.origin + su.pathname.toLowerCase().slice(0, su.pathname.lastIndexOf('/') + 1);
+      if (sdir && dir === sdir) return true;
+    }
+  } catch { /* no streams on this tab */ }
+
+  return false;
 }
 
 /** Cap per tab. A media-heavy feed can fire thousands of requests. */
@@ -191,6 +249,12 @@ async function record(d: any): Promise<void> {
   // header capture. Logging them here too would double-list them.
   if (kind === 'stream') return;
 
+  // ...and neither are the segments the stream is made of. Dropped at ingest
+  // rather than scored down: a chunk is not a weak candidate, it is not a
+  // candidate at all, and a thousand of them would blow the per-tab cap and
+  // push out the real media before anything got the chance to rank it.
+  if (isStreamSegment(d.tabId, d.url, ct)) return;
+
   // Skip obvious chrome so the cap isn't spent on tracking pixels. Only when we
   // actually know the size — an absent Content-Length must never mean "drop".
   if (len !== undefined && len > 0 && len < MIN_INTERESTING_BYTES) return;
@@ -216,7 +280,9 @@ async function record(d: any): Promise<void> {
     mime: ct.split(';')[0].trim() || undefined,
     frameId: d.frameId,
   });
-  c.score = scoreCandidate(c);
+  const s = explainCandidate(c);
+  c.score = s.score;
+  c.reasons = s.rules;
 
   // Deliberately NOT filtered by score here. A network sighting has no
   // dimensions and no repeat count yet, so its score is the least informed it

@@ -77,6 +77,7 @@ DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton:python-zipper"
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "svg"}
 UPSCALE_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
+AD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\alldebrid.token.txt"
 
 VAULT_COMMANDER_ROOT = r"C:\Users\Administrator\Desktop\Github Repos\vault-commander"
 VAULT_COMMANDER_UPSCALERS_DIR = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", "models", "upscalers")
@@ -294,13 +295,34 @@ def check_upscaler_capabilities(force_refresh=False):
 
 
 def _configured_rclone_remotes():
+    """Remotes in priority order.
+
+    Reads the persisted config first so that reordering them from the extension
+    takes effect without a restart, falling back to the environment. Imported
+    lazily to keep ds_storage out of the import cycle at module load.
+    """
+    try:
+        from ds_storage import configured_remotes
+        remotes = configured_remotes()
+        if remotes:
+            return remotes
+    except Exception as e:
+        print(f"[Server] Falling back to env rclone remotes: {e}")
     raw = os.environ.get("PYTHON_ZIPPER_RCLONE_REMOTES", DEFAULT_RCLONE_REMOTES)
     return [remote.strip() for remote in raw.split(",") if remote.strip()]
 
 
 def handoff_to_rclone(file_path):
+    """Move a finished file to the first remote that accepts it.
+
+    Returns the remote it landed on, or "" if it is still local. It used to
+    return a bare bool, which meant a completed job could say the handoff
+    happened but never which of Google Drive or Proton actually has the file —
+    the first question anyone asks when looking for it afterwards. A non-empty
+    string is still truthy, so every existing caller keeps working.
+    """
     if not file_path or not os.path.exists(file_path):
-        return False
+        return ""
     for remote in _configured_rclone_remotes():
         destination = remote if remote.endswith(("/", ":")) else f"{remote}/"
         try:
@@ -311,15 +333,15 @@ def handoff_to_rclone(file_path):
             )
             if result.returncode == 0:
                 print(f"[Server] rclone handoff complete: {remote}")
-                return True
+                return remote
             print(f"[Server] rclone handoff failed for {remote}: {result.stderr.strip()}")
         except FileNotFoundError:
             print("[Server] rclone executable was not found. Keeping local file.")
-            return False
+            return ""
         except Exception as e:
             print(f"[Server] rclone handoff exception for {remote}: {e}")
     print(f"[Server] All rclone remotes failed. Keeping local file: {file_path}")
-    return False
+    return ""
 
 
 def upscale_image_content(content, ext, model):
@@ -471,6 +493,19 @@ def get_rd_token():
     return None
 
 
+def get_ad_token():
+    try:
+        env_token = os.environ.get("ALLDEBRID_API_KEY", "").strip()
+        if env_token:
+            return env_token
+        if os.path.exists(AD_TOKEN_PATH):
+            with open(AD_TOKEN_PATH, 'r') as f:
+                return f.read().strip()
+    except Exception as e:
+        print(f"[Server] Failed to read AllDebrid token: {e}")
+    return None
+
+
 def unrestrict_link_rd(url, rd_token):
     if not rd_token:
         print("[Server] Real-Debrid token not available. Skipping unrestriction.")
@@ -494,6 +529,30 @@ def unrestrict_link_rd(url, rd_token):
             print(f"[Server] Real-Debrid error {resp.status_code}: {resp.text}")
     except Exception as e:
         print(f"[Server] Real-Debrid unrestriction exception: {e}")
+    return url
+
+
+def unrestrict_link_alldebrid(url, ad_token=None):
+    """Unrestrict link via AllDebrid API and generate playlist if it's a folder."""
+    token = ad_token or get_ad_token()
+    if not token:
+        print("[Server] AllDebrid token not available. Skipping unrestriction.")
+        return url
+    try:
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "telegram")))
+        from tlr_alldebrid import process_mega_url, unlock_link_alldebrid
+        if "/folder/" in url.lower():
+            res = process_mega_url(url, api_key=token)
+            if res.get("status") == "success" and res.get("unrestricted_urls"):
+                print(f"[Server] AllDebrid expanded folder into {len(res['unrestricted_urls'])} streams (playlist: {res.get('playlist_path')})")
+                return res["unrestricted_urls"][0]
+        else:
+            unlocked = unlock_link_alldebrid(url, api_key=token)
+            if unlocked and unlocked.get("link"):
+                print(f"[Server] AllDebrid successfully unrestricted: {url} -> {unlocked['link']}")
+                return unlocked["link"]
+    except Exception as e:
+        print(f"[Server] AllDebrid unrestriction exception: {e}")
     return url
 
 
@@ -566,8 +625,8 @@ def download_via_ytdlp(url, dest_dir, headers=None, rclone_enabled=False):
                 if f.startswith(f"video_{h}_"):
                     file_path = os.path.join(dest_dir, f)
                     print(f"[Server] Completed yt-dlp download: {f}")
-                    rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
-                    return {"filename": f, "rclone_complete": rclone_complete}
+                    landed = handoff_to_rclone(file_path) if rclone_enabled else ""
+                    return {"filename": f, "rclone_complete": bool(landed), "rclone_remote": landed}
             print(f"[Server] yt-dlp completed but could not locate file starting with video_{h}_ in {dest_dir}")
         else:
             print(f"[Server] yt-dlp failed: {result.stderr}")
@@ -614,8 +673,8 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
                 if chunk:
                     f.write(chunk)
         print(f"[Server] Completed download: {filename}")
-        rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
-        return {"filename": filename, "rclone_complete": rclone_complete}
+        landed = handoff_to_rclone(file_path) if rclone_enabled else ""
+        return {"filename": filename, "rclone_complete": bool(landed), "rclone_remote": landed}
     except Exception as e:
         print(f"[Server] Error downloading {url}: {e}")
         return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
@@ -714,7 +773,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
         if count > 0 and count % batch_size == 0:
             zip_writer.close()
             archives.append(os.path.basename(zip_path))
-            rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
+            rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else "")
             zip_writer = None
             print(f"[Server] Closed zip: {zip_path}")
             count = 0
@@ -722,7 +781,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
     if zip_writer is not None:
         zip_writer.close()
         archives.append(os.path.basename(zip_path))
-        rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
+        rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else "")
         print(f"[Server] Closed final zip: {zip_path}")
 
     print(f"[Server] Finished downloading and zipping task for: {page_url}")

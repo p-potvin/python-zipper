@@ -38,7 +38,26 @@ export interface DeepScanProgress {
   elapsedMs: number;
 }
 
-const DEFAULTS = { maxMs: 90_000, maxHeightPx: 0, openViewer: true };
+const DEFAULTS = { maxMs: 180_000, maxHeightPx: 0, openViewer: true };
+
+/**
+ * How long the bottom of the page has to stay quiet before we believe it.
+ *
+ * Six checks half a second apart, so roughly five seconds of no growth after
+ * the last scroll step. The previous three-at-500ms gave up after about a
+ * second and a half, which is inside the normal round trip of a feed that
+ * fetches its next page on reaching the bottom — so a slow site looked
+ * identical to a finished one, and the scan stopped one page short of the end
+ * without ever saying so. Waiting longer costs seconds on an already-slow
+ * operation; stopping early costs content, silently.
+ */
+const STABLE_CHECKS = 6;
+const SETTLE_MS = 800;
+
+/** Neither the page nor the scroll position moving means something is holding
+ *  us — a scroll lock, a modal. Worth a few more tries than the old 4 before
+ *  concluding that, for the same reason. */
+const STUCK_CHECKS = 6;
 
 let aborted = false;
 export function abortDeepScan(): void { aborted = true; }
@@ -150,9 +169,9 @@ export async function deepScan(
         continue;
       }
       stuckChecks++;
-      if (stuckChecks >= 4) break;
+      if (stuckChecks >= STUCK_CHECKS) break;
       report('settling');
-      await sleep(400);
+      await sleep(SETTLE_MS);
       continue;
     }
 
@@ -165,8 +184,8 @@ export async function deepScan(
     }
     stableChecks++;
     report('settling');
-    if (stableChecks >= 3) break;
-    await sleep(500);
+    if (stableChecks >= STABLE_CHECKS) break;
+    await sleep(SETTLE_MS);
   }
 
   if (aborted) {

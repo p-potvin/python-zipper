@@ -1,0 +1,36 @@
+{
+  "title": "Alex Adams & Jane Doe - Crazy Weekend",
+  "group_title": "Alex Adams & Jane Doe - Crazy Weekend",
+  "created_at": "2026-09-02 05:51:51",
+  "total_items": 3,
+  "playlist_m3u": "C:\\Users\\Administrator\\Desktop\\Github Repos\\python-zipper\\playlists\\Alex Adams & Jane Doe - Crazy Weekend.m3u",
+  "items": [
+    {
+      "link": "https://debrid.stream.local/dl/sample01/cryptic_raw_name_1080p (1).mp4",
+      "filename": "Alex Adams & Jane Doe - Crazy Weekend (1).mp4",
+      "filesize": 104857600,
+      "host": "mega",
+      "id": "sample01",
+      "original_filename": "cryptic_raw_name_1080p (1).mp4",
+      "smart_filename": "Alex Adams & Jane Doe - Crazy Weekend (1).mp4"
+    },
+    {
+      "link": "https://debrid.stream.local/dl/sample02/random_hash_720p (02).mkv",
+      "filename": "Alex Adams & Jane Doe - Crazy Weekend (02).mkv",
+      "filesize": 314572800,
+      "host": "mega",
+      "id": "sample02",
+      "original_filename": "random_hash_720p (02).mkv",
+      "smart_filename": "Alex Adams & Jane Doe - Crazy Weekend (02).mkv"
+    },
+    {
+      "link": "https://debrid.stream.local/dl/sample03/bonus_clip.mp4",
+      "filename": "Alex Adams & Jane Doe - Crazy Weekend (3).mp4",
+      "filesize": 52428800,
+      "host": "mega",
+      "id": "sample03",
+      "original_filename": "bonus_clip.mp4",
+      "smart_filename": "Alex Adams & Jane Doe - Crazy Weekend (3).mp4"
+    }
+  ]
+}
