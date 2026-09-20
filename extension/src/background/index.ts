@@ -1,7 +1,7 @@
 import { ext } from '../common/api';
 import {
   installSniffer, getStreams, getStream, removeStream, clearTab, touch,
-  updatePanelOpenTime, setHasActiveDownloads,
+  updatePanelOpenTime, setHasActiveDownloads, setOnNewStream,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
 import {
@@ -28,6 +28,23 @@ installSniffer();
 installMediaLog();
 installHarvestStore();
 
+/**
+ * Probe a stream the moment it is detected, not when the popup is opened.
+ *
+ * This is the difference in feel between this and a helper that always knows:
+ * enrichment used to be triggered only by `streams:get`, so the first thing
+ * opening the popup did was start a probe and show "reading qualities…" for as
+ * long as the worker's poll interval. The detection was already there — only
+ * the asking waited for an audience.
+ *
+ * Safe to do eagerly because the cost was already bounded for the popup's
+ * sake: `enrichIfNeeded` refuses a repeat within 15s, skips anything already
+ * in flight, and does nothing at all for a stream that has been probed. The
+ * popup's own call stays, since a stream detected while the extension was
+ * reloading has nobody to tell.
+ */
+setOnNewStream((s) => enrichIfNeeded(s));
+
 // Tell any open sidebar that the passive log grew, so a page still loading
 // fills the list in place instead of needing a manual re-scan. Fire-and-forget:
 // nobody may be listening, and that is the normal case.
@@ -40,8 +57,6 @@ onMediaLogged((tabId: number) => {
 });
 void loadGrabbed();
 void loadConfig();
-// Note: enrichment (yt-dlp probe) is triggered lazily from streams:get — i.e.
-// only while the popup is open — not on every detected request.
 
 function parseQualityHeight(q: string | null | undefined): number {
   if (!q) return 0;
@@ -228,7 +243,9 @@ async function handle(msg: BgMessage, sender: any) {
     case 'streams:get': {
       updatePanelOpenTime();
       const streams = getStreams(tabId);
-      for (const s of streams) enrichIfNeeded(s); // lazy probe while popup is open
+      // Belt and braces: detection already probes eagerly (see setOnNewStream),
+      // but a stream found while the background was restarting had no listener.
+      for (const s of streams) enrichIfNeeded(s);
       return { streams };
     }
     case 'streams:clear': clearTab(tabId); return { ok: true };

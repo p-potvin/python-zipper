@@ -12,13 +12,26 @@
  */
 
 import { render } from 'preact';
-import { signal } from '@preact/signals';
+import { signal, computed } from '@preact/signals';
 import { ext } from '../common/api';
 import type { DetectedStream, StreamJob } from '../common/types';
-import { qualities, activeJobFor, progressLabel } from '../common/streams';
+import {
+  qualities, activeJobFor, progressLabel, isIndeterminate, isIdleStream,
+} from '../common/streams';
 import './popup.css';
 
 const streams = signal<DetectedStream[]>([]);
+/**
+ * Whether the idle ones are folded away.
+ *
+ * A page left open collects streams — an ad break, a quality switch, a player
+ * that reloaded — and after an hour the one that is actually playing is
+ * somewhere down a list of corpses. They are kept and one click away rather
+ * than dropped: idleness is a heuristic on "nothing has requested it lately",
+ * and a stream that goes quiet is still recordable while its token holds.
+ */
+const showIdle = signal(false);
+const idleCount = computed(() => streams.value.filter((s) => isIdleStream(s)).length);
 const jobs = signal<StreamJob[]>([]);
 const serverUp = signal<boolean | null>(null);
 const logged = signal(0);
@@ -142,10 +155,10 @@ function Stream({ s }: { s: DetectedStream }) {
       {running ? (
         <>
           <div class="bar">
-            {job!.bytes_total ? (
-              <div class="bar-fill" style={`width:${Math.max(2, Math.round(job!.progress || 0))}%`} />
-            ) : (
+            {isIndeterminate(job!) ? (
               <div class="bar-fill bar-fill-live" />
+            ) : (
+              <div class="bar-fill" style={`width:${Math.max(2, Math.round(job!.progress || 0))}%`} />
             )}
           </div>
           <div class="stream-foot">
@@ -203,7 +216,15 @@ function App() {
 
       {st.length ? (
         <div class="streams">
-          {st.map((s) => <Stream key={s.key} s={s} />)}
+          {(showIdle.value ? st : st.filter((s) => !isIdleStream(s)))
+            .map((s) => <Stream key={s.key} s={s} />)}
+          {idleCount.value ? (
+            <button class="foot-btn" onClick={() => { showIdle.value = !showIdle.value; }}>
+              {showIdle.value
+                ? `Hide ${idleCount.value} idle`
+                : `${idleCount.value} idle — show`}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

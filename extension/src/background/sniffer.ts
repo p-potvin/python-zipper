@@ -154,6 +154,52 @@ function isBadAuthUrl(url: string): boolean {
 
 type TabStreams = Map<string, DetectedStream>;
 const store = new Map<number, TabStreams>();
+
+/**
+ * Streams belonging to pages that have been navigated away from.
+ *
+ * Detection is passive — a stream is only known because a request for it went
+ * past — so discarding a page's streams on navigation means that going back
+ * shows an empty list until the player happens to re-request its manifest.
+ * That wait is the difference between the extension feeling instant and
+ * feeling broken, and it is entirely avoidable: the streams were already
+ * found, they just belong to a page that is not on screen.
+ *
+ * Keyed by page URL rather than by tab, so the same page reopened in a
+ * different tab is served from here too. Bounded and oldest-first, because
+ * this is a convenience cache and not a session history.
+ */
+const parked = new Map<string, { at: number; streams: DetectedStream[] }>();
+const MAX_PARKED_PAGES = 30;
+
+function park(pageUrl: string, streams: DetectedStream[]): void {
+  if (!pageUrl || !streams.length) return;
+  parked.set(pageUrl, { at: Date.now(), streams });
+  while (parked.size > MAX_PARKED_PAGES) {
+    const oldest = [...parked.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (!oldest) break;
+    parked.delete(oldest[0]);
+  }
+}
+
+/**
+ * Put a page's previously-found streams back, if we still have them.
+ *
+ * The tab id is rewritten on the way out: the same page may well be open in a
+ * different tab this time, and every lookup downstream — headers, badge, the
+ * recorder — keys on the tab the stream is currently in.
+ */
+function unpark(tabId: number, pageUrl: string): void {
+  const held = parked.get(pageUrl);
+  if (!held) return;
+  const m = tabMap(tabId);
+  for (const s of held.streams) {
+    if (m.has(s.key)) continue;
+    m.set(s.key, { ...s, tabId });
+  }
+  parked.delete(pageUrl);
+  notify(tabId);
+}
 // Variant playlist keys that belong to a detected master — hidden from the list.
 const childKeys = new Map<number, Set<string>>();
 const pending = new Map<string, { tabId: number; headers: Record<string, string> }>();
@@ -337,15 +383,22 @@ export function clearTab(tabId: number): void {
  * going. Everything else is stale the moment the page changes — that is the
  * whole point of clearing.
  */
-export function clearTabOnNavigate(tabId: number): void {
+export function clearTabOnNavigate(tabId: number, toUrl = ''): void {
   childKeys.delete(tabId);
   const m = store.get(tabId);
-  if (!m) { notify(tabId); return; }
-  for (const [key, s] of Array.from(m)) {
-    if (s.jobId) continue;
-    m.delete(key);
+  if (m) {
+    const leaving: DetectedStream[] = [];
+    for (const [key, s] of Array.from(m)) {
+      if (s.jobId) continue;             // a recording outlives its page
+      leaving.push(s);
+      m.delete(key);
+    }
+    // Parked rather than dropped, under the page they were found on — coming
+    // back to it should not mean waiting for the player to reveal them again.
+    if (leaving.length) park(leaving[0].pageUrl, leaving);
+    if (!m.size) store.delete(tabId);
   }
-  if (!m.size) store.delete(tabId);
+  if (toUrl) unpark(tabId, toUrl);
   notify(tabId);
 }
 
@@ -412,7 +465,7 @@ export function installSniffer(): void {
   ext.webRequest.onBeforeRequest.addListener(
     (d: any) => {
       if (d.tabId < 0 || d.type !== 'main_frame' || d.frameId !== 0) return;
-      clearTabOnNavigate(d.tabId);
+      clearTabOnNavigate(d.tabId, d.url);
     },
     { urls: ['<all_urls>'], types: ['main_frame'] },
   );

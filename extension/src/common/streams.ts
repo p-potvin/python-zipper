@@ -9,6 +9,28 @@
 
 import type { DetectedStream, StreamJob } from './types';
 
+/**
+ * How long a stream goes unrequested before it counts as idle.
+ *
+ * A live player re-requests its media playlist every few seconds, so a stream
+ * nothing has asked for in two minutes is finished, switched away from, or
+ * belongs to a player that has been closed.
+ */
+export const IDLE_AFTER_MS = 120_000;
+
+/**
+ * Is this stream still being served?
+ *
+ * Idle streams are kept, not deleted — the URL is often still recordable, and
+ * deleting on a timer would make a stream vanish while you were reading it.
+ * The list folds them away instead, behind a count, because a silent filter on
+ * a heuristic is how a working stream disappears with nowhere to look for it.
+ */
+export function isIdleStream(s: DetectedStream, now = Date.now()): boolean {
+  if (s.jobId) return false;              // recording: never idle
+  return now - s.lastSeen > IDLE_AFTER_MS;
+}
+
 export interface Quality {
   /** yt-dlp format id. Empty means "advertised but not selectable" — see below. */
   id: string;
@@ -62,6 +84,23 @@ export function activeJobFor(s: DetectedStream, jobs: StreamJob[]): StreamJob | 
   const j = jobs.find((x) => x.id === s.jobId);
   if (!j) return undefined;
   return j.status === 'running' || j.status === 'queued' || j.status === 'claimed' ? j : undefined;
+}
+
+/**
+ * Should this capture show an indeterminate bar rather than a percentage?
+ *
+ * "No total" alone is not a reliable test. yt-dlp's progress template falls
+ * back to `total_bytes_estimate`, and an estimate is often non-zero even for a
+ * broadcast with no end — which put a live capture on the determinate branch,
+ * creeping towards a finish line that does not exist.
+ *
+ * The stream's own `is_live`, recorded in the job's options when the recording
+ * was started, is the fact; the missing total is only the fallback for a job
+ * that predates it.
+ */
+export function isIndeterminate(j: StreamJob): boolean {
+  if (j.options?.is_live === true) return true;
+  return !j.bytes_total;
 }
 
 export function progressLabel(j: StreamJob): string {

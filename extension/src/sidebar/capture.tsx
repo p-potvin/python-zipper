@@ -16,7 +16,10 @@ import { defaultSelection } from '../common/page_rank';
 import { loadSettings, onSettingsChanged } from '../common/settings';
 import { serverOnline, jobs } from './downloads';
 import type { DetectedStream } from '../common/types';
-import { qualities, hasSelectableQuality, activeJobFor, progressLabel } from '../common/streams';
+import {
+  qualities, hasSelectableQuality, activeJobFor, progressLabel, isIndeterminate,
+  isIdleStream,
+} from '../common/streams';
 
 interface Snapshot {
   candidates: MediaCandidate[];
@@ -100,6 +103,26 @@ export const pageStreams = signal<DetectedStream[]>([]);
 
 /** format_id chosen per stream key, before it is started. */
 const pickedQuality = signal<Record<string, string>>({});
+
+/**
+ * Whether streams that have gone quiet are shown.
+ *
+ * A page left open for an hour collects them: an ad break, a quality switch, a
+ * player that reloaded. They are kept rather than dropped — "nothing has
+ * requested it lately" is a heuristic, and a quiet stream is still recordable
+ * while its token holds — but they are folded behind a count so the one that
+ * is playing is not buried under the ones that are not.
+ */
+const showIdleStreams = signal(false);
+
+function isIdleCandidate(c: MediaCandidate): boolean {
+  const s = c.streamKey && pageStreams.value.find((x) => x.key === c.streamKey);
+  return !!s && isIdleStream(s);
+}
+
+/** Stream candidates currently folded away. */
+const idleStreams = computed(() => (snapshot.value?.candidates ?? [])
+  .filter((c) => c.kind === 'stream' && isIdleCandidate(c)).length);
 
 /**
  * One decoded frame per stream, and why there isn't one.
@@ -259,6 +282,9 @@ const filtered = computed(() => {
 
   const out = s.candidates.filter((c) => {
     if (k !== 'all' && c.kind !== k) return false;
+    // A stream nothing has requested in minutes is folded away, not deleted —
+    // see idleStreams below for the count that offers them back.
+    if (c.kind === 'stream' && !showIdleStreams.value && isIdleCandidate(c)) return false;
     // An unknown width/size must not be silently dropped by a filter the user
     // didn't aim at it — only exclude when we actually know it falls short.
     if (mw > 0 && c.width !== undefined && c.width < mw) return false;
@@ -884,13 +910,14 @@ function StreamRow({ c }: { c: MediaCandidate }) {
       {job ? (
         <>
           <div class="job-bar">
-            {/* Indeterminate whenever the job has no total to measure against,
-                which for a live capture is always. A VOD recording does have
-                one and still gets a real percentage. */}
-            {job.bytes_total ? (
-              <div class="job-fill" style={`width:${Math.max(2, Math.round(job.progress || 0))}%`} />
-            ) : (
+            {/* Indeterminate for a live capture, which has no end to measure
+                against. A VOD recording does have one and still gets a real
+                percentage — see isIndeterminate for why a missing total is
+                not enough to tell them apart. */}
+            {isIndeterminate(job) ? (
               <div class="job-fill job-fill-live" />
+            ) : (
+              <div class="job-fill" style={`width:${Math.max(2, Math.round(job.progress || 0))}%`} />
             )}
           </div>
           <div class="cand-meta">
@@ -1097,6 +1124,13 @@ export function CaptureTab() {
                 </button>
               );
             })}
+            {idleStreams.value ? (
+              <button class={`chip${showIdleStreams.value ? ' chip-on' : ''}`}
+                      title="Streams nothing has requested for a couple of minutes"
+                      onClick={() => { showIdleStreams.value = !showIdleStreams.value; }}>
+                idle <span class="chip-n">{idleStreams.value}</span>
+              </button>
+            ) : null}
           </div>
 
           <div class="fields">

@@ -10,6 +10,8 @@
  *   npm run check
  */
 
+import { kindFromMime, kindFromUrl, isRejectedExtension } from '../src/common/harvest';
+
 let failures = 0;
 let checks = 0;
 
@@ -86,6 +88,44 @@ console.log('\nsiblings of a tracked manifest are segments whatever they are cal
   // ...but only its own directory. A photo elsewhere on the same CDN stays.
   ok('an unrelated directory is untouched',
     !segmentTest('https://cdn.example.com/images/pic.jpg', 'image/jpeg', [manifest]));
+}
+
+console.log('\na name is not evidence when the server has spoken');
+{
+  // Some hosts serve their media — and the segments of a stream — as .js, .css
+  // or .woff with nothing else changed. The ingest gate used to reject on the
+  // extension before the Content-Type was consulted, so a `video/mp4` served
+  // as `player.js` was thrown away while the server sat there saying what it
+  // was.
+  //
+  // Mirrors the gate in media_log.record: the blocklist applies only when the
+  // MIME told us nothing.
+  const admitted = (url: string, mime: string, manifests: string[] = []): boolean => {
+    const byMime = kindFromMime(mime);
+    const kind = byMime ?? kindFromUrl(url);
+    if (!kind || kind === 'other') return false;
+    if (!byMime && isRejectedExtension(url)) return false;
+    if (kind === 'stream') return false;
+    return !segmentTest(url, mime, manifests);
+  };
+
+  ok('an mp4 served as .js is admitted',
+    admitted('https://cdn.example.com/assets/clip.js', 'video/mp4'));
+  ok('a jpeg served as .woff2 is admitted',
+    admitted('https://cdn.example.com/assets/photo.woff2', 'image/jpeg'));
+  ok('a real script is still refused',
+    !admitted('https://cdn.example.com/assets/app.js', 'application/javascript'));
+  ok('a stylesheet is still refused',
+    !admitted('https://cdn.example.com/assets/site.css', 'text/css'));
+  ok('a real font is still refused',
+    !admitted('https://cdn.example.com/assets/inter.woff2', 'font/woff2'));
+
+  // The point is not to let disguised *segments* through with them.
+  ok('a disguised segment is still rejected on its MIME',
+    !admitted('https://cdn.example.com/live/abc/00042.js', 'video/mp2t'));
+  ok('...and on its manifest directory when the MIME is unhelpful',
+    !admitted('https://cdn.example.com/hls/xyz/00042.css', 'video/mp4',
+      ['https://cdn.example.com/hls/xyz/master.m3u8']));
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

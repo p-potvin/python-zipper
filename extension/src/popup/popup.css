@@ -146,6 +146,9 @@ body {
   background: var(--vwsq-console-sunken); overflow: hidden;
   margin: 0 var(--vwsq-space-3) var(--vwsq-space-2);
 }
+/* See the sidebar's copy: 3px is too short for a diagonal stripe to render as
+   anything but a smear, which is why the animation appeared dead. */
+.bar:has(.bar-fill-live) { height: 8px; border-radius: 4px; }
 .bar-fill { height: 100%; background: var(--vwsq-iris-500); transition: width 300ms; }
 
 /* Barber pole — see the sidebar's copy for the reasoning. A live capture has no

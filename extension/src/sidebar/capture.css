@@ -532,6 +532,12 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .job-bar { height: 3px; border-radius: 2px; background: var(--sb-sunken); overflow: hidden; }
+/* A barber pole needs vertical room. At 3px a 45 degree stripe is one or two
+   pixels of each colour and reads as a slightly mottled solid fill — the
+   animation was running the whole time with nothing to show. The determinate
+   bar keeps its hairline; only the indeterminate one grows, and only when it
+   is actually present. */
+.job-bar:has(.job-fill-live) { height: 8px; border-radius: 4px; }
 .job-fill { height: 100%; background: var(--sb-accent); transition: width 300ms; }
 
 /* Barber pole, for a capture with no knowable end.

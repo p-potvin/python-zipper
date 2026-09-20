@@ -240,10 +240,23 @@ async function record(d: any): Promise<void> {
 
   // Classify by MIME first — a URL with no extension is common on CDNs, and the
   // server's own content-type is more reliable than guessing from the path.
-  let kind = kindFromMime(ct);
+  const byMime = kindFromMime(ct);
+  let kind = byMime;
   if (!kind) kind = kindFromUrl(d.url);
   if (!kind || kind === 'other') return;
-  if (isRejectedExtension(d.url)) return;
+
+  // The extension blocklist only applies when the server did not identify the
+  // response itself. Some sites serve real media — and the segments of a
+  // stream — under `.js`, `.css`, `.woff` and `.woff2`, with no other
+  // obfuscation than the name. Rejecting on the extension threw those away
+  // while the Content-Type sat right there saying `video/mp4`. Believing the
+  // server costs nothing: a genuine script is `application/javascript` and
+  // never reaches this line, because `kindFromMime` returns nothing for it.
+  //
+  // Disguised *segments* are still dropped — that happens below, on the MIME
+  // and on the manifest's directory, neither of which cares what the file is
+  // called.
+  if (!byMime && isRejectedExtension(d.url)) return;
 
   // Streams are the sniffer's job; it already handles variant folding and
   // header capture. Logging them here too would double-list them.
