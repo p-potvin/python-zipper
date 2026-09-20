@@ -372,6 +372,20 @@ export function getStream(tabId: number, key: string): DetectedStream | undefine
   return store.get(tabId)?.get(key);
 }
 
+/**
+ * Every stream, on any tab, that a recording is running for.
+ *
+ * Across tabs on purpose: the recorder does not care which tab a stream was
+ * found in, and the URL refresher needs all of them.
+ */
+export function getRecordingStreams(): DetectedStream[] {
+  const out: DetectedStream[] = [];
+  for (const m of store.values()) {
+    for (const s of m.values()) if (s.jobId) out.push(s);
+  }
+  return out;
+}
+
 export function removeStream(tabId: number, key: string): void {
   store.get(tabId)?.delete(key);
   notify(tabId);

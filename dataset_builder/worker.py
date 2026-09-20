@@ -384,6 +384,22 @@ def run_stream(job: dict) -> None:
                 ds_streams.stop_stream(job_id)
                 return
 
+    def fresh_stream_url() -> str:
+        """The newest URL the browser has published for this stream.
+
+        The extension cannot reach this machine, and the API's progress
+        endpoint takes a fixed set of fields — `result` is the only free-form
+        one, and a stream job does not otherwise use it (it is where a probe
+        and a preview put their answers). So that is where the tab writes the
+        URL it is currently being served, and this is where the recorder picks
+        it up when the one it has stops working.
+        """
+        row = get_job(job_id) or {}
+        result = row.get("result")
+        if not isinstance(result, dict):
+            return ""
+        return str(result.get("stream_url") or "").strip()
+
     threading.Thread(target=watch_for_abort, daemon=True).start()
     try:
         ds_streams.download_stream(
@@ -396,6 +412,7 @@ def run_stream(job: dict) -> None:
             sink=sink,
             rcat_remote=remote,
             title=job.get("title") or "",
+            refresh_url=fresh_stream_url,
         )
     finally:
         watcher_stop.set()

@@ -26,6 +26,7 @@ import json
 import signal
 import subprocess
 import threading
+import time
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
@@ -714,9 +715,91 @@ def _format_selector(format_id):
     return f"{fid}+ba/{fid}"
 
 
+def _find_outputs(prefix):
+    """Every finished file for this job, oldest first.
+
+    A resumed recording leaves one file per attempt. Ordered by mtime rather
+    than by name because the first attempt is named from the stream's title and
+    the resumes are not, so there is no lexical order to rely on.
+    """
+    if not os.path.isdir(STREAMS_DIR):
+        return []
+    matches = [
+        f for f in os.listdir(STREAMS_DIR)
+        if f.startswith(prefix) and not f.endswith((".part", ".ytdl", ".txt"))
+    ]
+    matches.sort(key=lambda f: os.path.getmtime(os.path.join(STREAMS_DIR, f)))
+    return [os.path.join(STREAMS_DIR, f) for f in matches]
+
+
+def _concat_parts(paths, job_id):
+    """Join a resumed recording's pieces into one file, without re-encoding.
+
+    `-c copy` throughout: the pieces are MPEG-TS from the same broadcast at the
+    same settings, so this is a container-level join and costs seconds rather
+    than a re-encode of an hour of video. A failure here is not fatal — the
+    caller keeps the longest piece, which is a worse outcome than a joined file
+    but a far better one than no file.
+    """
+    if len(paths) < 2:
+        return paths[0] if paths else None
+
+    ff = os.path.join(ffmpeg_location(), "ffmpeg") if ffmpeg_location() else "ffmpeg"
+    listing = os.path.join(STREAMS_DIR, f"pzstream_{job_id}_concat.txt")
+    joined = os.path.join(STREAMS_DIR, f"pzstream_{job_id}_joined.ts")
+    try:
+        with open(listing, "w", encoding="utf-8") as fh:
+            for pth in paths:
+                # ffmpeg's concat demuxer takes single quotes literally; the
+                # documented escape is to close, escape, and reopen.
+                escaped = pth.replace("'", "'\\''")
+                fh.write("file '" + escaped + "'\n")
+        result = subprocess.run(
+            [ff, "-nostdin", "-loglevel", "error", "-f", "concat", "-safe", "0",
+             "-i", listing, "-c", "copy", "-y", joined],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode == 0 and os.path.exists(joined) and os.path.getsize(joined) > 0:
+            for pth in paths:
+                try:
+                    os.remove(pth)
+                except OSError:
+                    pass
+            print(f"[Stream] {job_id} joined {len(paths)} pieces -> {os.path.basename(joined)}")
+            return joined
+        print(f"[Stream] {job_id} join failed ({(result.stderr or '').strip()[:200]}); keeping pieces")
+    except Exception as e:
+        print(f"[Stream] {job_id} join failed ({e}); keeping pieces")
+    finally:
+        try:
+            os.remove(listing)
+        except OSError:
+            pass
+    # Keep the longest piece rather than an arbitrary one.
+    return max(paths, key=lambda pth: os.path.getsize(pth))
+
+
+# How many times a capture will pick up a fresh URL before giving up, and how
+# soon after starting an attempt a restart is allowed. Together they bound the
+# case where the refreshed URL is just as dead as the last one: without the
+# interval, a stream failing instantly would burn all attempts in a second.
+MAX_RESUMES = 20
+MIN_ATTEMPT_SECONDS = 20
+
+
 def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
-                    report=None, sink="local", rcat_remote=None, title=None):
-    """Run yt-dlp with progress tracking; manages the job status end to end."""
+                    report=None, sink="local", rcat_remote=None, title=None,
+                    refresh_url=None):
+    """Run yt-dlp with progress tracking; manages the job status end to end.
+
+    `refresh_url` is a callable returning the freshest URL the browser has seen
+    for this stream, or "" when it has none. It exists because a live edge
+    stops serving a URL long before the broadcast ends — the signature expires,
+    or the CDN drops a viewer it can no longer see — and the only thing that
+    still holds a working URL is the tab, which keeps requesting one every few
+    seconds. Without it, leaving the page ended the recording a few minutes
+    later and there was nothing on this side that could have known better.
+    """
     report = report or _Reporter()
     # The captured URL is whatever request the player happened to make, which
     # for a low-latency stream is a request for one specific part. Cleaned once
@@ -739,87 +822,153 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         "PZPROG:%(progress.downloaded_bytes)s/%(progress.total_bytes)s/"
         "%(progress.total_bytes_estimate)s/%(progress.speed)s/%(progress.eta)s"
     )
-    cmd = [
-        ytdlp_bin(),
-        # "-" writes the media to stdout so rclone can take it on stdin. The
-        # progress template then has to leave on stderr, which is why the two
-        # streams are read separately in _run_rcat.
-        "-o", "-" if to_remote else outtmpl,
-        "--no-warnings", "--no-playlist",
-        "--newline", "--progress-template", progress_tmpl,
-        # Keep partial live recordings valid & recoverable if the stream drops.
-        # Doing double duty when piping: mpegts is the container that stays
-        # playable while it is still being written.
-        "--hls-use-mpegts", "--retries", "15", "--fragment-retries", "15",
-    ]
-    ff = ffmpeg_location()
-    if ff:
-        cmd += ["--ffmpeg-location", ff]
-    cmd += _proxy_args(proxy)
-    cmd += build_ytdlp_header_args(headers)
-    cmd += ["-f", _format_selector(format_id)]
-    cmd.append(url)
+
+    def build_cmd(target_url, out):
+        cmd = [
+            ytdlp_bin(),
+            # "-" writes the media to stdout so rclone can take it on stdin. The
+            # progress template then has to leave on stderr, which is why the two
+            # streams are read separately in _run_rcat.
+            "-o", out,
+            "--no-warnings", "--no-playlist",
+            "--newline", "--progress-template", progress_tmpl,
+            # Keep partial live recordings valid & recoverable if the stream drops.
+            # Doing double duty when piping: mpegts is the container that stays
+            # playable while it is still being written.
+            "--hls-use-mpegts", "--retries", "15", "--fragment-retries", "15",
+        ]
+        ff = ffmpeg_location()
+        if ff:
+            cmd += ["--ffmpeg-location", ff]
+        cmd += _proxy_args(proxy)
+        cmd += build_ytdlp_header_args(headers)
+        cmd += ["-f", _format_selector(format_id)]
+        cmd.append(target_url)
+        return cmd
+
+    cmd = build_cmd(url, "-" if to_remote else outtmpl)
 
     if to_remote:
         target = _rcat_target(rcat_remote, title, job_id)
         print(f"[Stream] {job_id} streaming to {target}")
         return _run_rcat(cmd, target, report, job_id)
 
-    print(f"[Stream] {job_id} downloading: {url}")
     # New process group on Windows so we can send CTRL_BREAK for a *graceful*
     # stop — yt-dlp then finalizes/muxes the partial live recording into a real
     # file instead of leaving a .part behind.
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, encoding="utf-8", errors="replace",
-            creationflags=creationflags,
-        )
-    except FileNotFoundError:
-        report.fail(job_id, "yt-dlp not installed")
-        return
-    except Exception as e:
-        report.fail(job_id, e)
-        return
+    # Bytes banked by attempts that have already finished. A resumed recording
+    # reports the running total, so the readout keeps climbing instead of
+    # dropping back to zero every time the URL is refreshed.
+    banked_bytes = 0
+    # The last process started, for the exit code the failure branch reports.
+    last = {"proc": None}
 
-    with PROCESSES_LOCK:
-        PROCESSES[job_id] = proc
+    def run_attempt(attempt_cmd, attempt_url):
+        """One yt-dlp run, start to finish. Returns (tail, outcome)."""
+        nonlocal banked_bytes
+        print(f"[Stream] {job_id} downloading: {attempt_url}")
+        try:
+            proc = subprocess.Popen(
+                attempt_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, encoding="utf-8", errors="replace",
+                creationflags=creationflags,
+            )
+        except FileNotFoundError:
+            return ["yt-dlp not installed"], "missing"
+        except Exception as e:
+            return [str(e)], "error"
 
-    tail = []
-    try:
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line.startswith("PZPROG:"):
-                parts = line[len("PZPROG:"):].split("/")
-                if len(parts) == 5:
-                    downloaded = _num(parts[0])
-                    total = _num(parts[1]) or _num(parts[2])
-                    speed = _num(parts[3])
-                    eta = _num(parts[4])
-                    percent = None
-                    if downloaded is not None and total:
-                        percent = round(min(100.0, downloaded / total * 100.0), 1)
-                    report.update(
-                        job_id,
-                        progress=percent if percent is not None else 0,
-                        downloaded_bytes=int(downloaded) if downloaded else 0,
-                        total_bytes=int(total) if total else 0,
-                        speed=speed, eta=eta,
-                    )
-            else:
-                tail.append(line)
-                if len(tail) > 15:
-                    tail.pop(0)
-    finally:
-        proc.wait()
+        last["proc"] = proc
         with PROCESSES_LOCK:
-            PROCESSES.pop(job_id, None)
+            PROCESSES[job_id] = proc
+
+        lines = []
+        attempt_bytes = 0
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if line.startswith("PZPROG:"):
+                    parts = line[len("PZPROG:"):].split("/")
+                    if len(parts) == 5:
+                        downloaded = _num(parts[0])
+                        total = _num(parts[1]) or _num(parts[2])
+                        speed = _num(parts[3])
+                        eta = _num(parts[4])
+                        if downloaded:
+                            attempt_bytes = int(downloaded)
+                        percent = None
+                        if downloaded is not None and total:
+                            percent = round(min(100.0, downloaded / total * 100.0), 1)
+                        report.update(
+                            job_id,
+                            progress=percent if percent is not None else 0,
+                            downloaded_bytes=banked_bytes + attempt_bytes,
+                            total_bytes=int(total) if total else 0,
+                            speed=speed, eta=eta,
+                        )
+                else:
+                    lines.append(line)
+                    if len(lines) > 15:
+                        lines.pop(0)
+        finally:
+            proc.wait()
+            with PROCESSES_LOCK:
+                PROCESSES.pop(job_id, None)
+        banked_bytes += attempt_bytes
+        return lines, "ran"
+
+    # The capture, and as many resumptions of it as the browser can supply URLs
+    # for. A live edge stops serving a URL well before the broadcast ends, and
+    # nothing on this side can tell that from the broadcast having ended — the
+    # tab can, because it is still being served.
+    tail = []
+    resumes = 0
+    while True:
+        began = time.monotonic()
+        tail, outcome = run_attempt(cmd, url)
+        ran_for = time.monotonic() - began
+
+        if outcome != "ran" or job_id in STOPPED or resumes >= MAX_RESUMES:
+            break
+        if not refresh_url:
+            break
+
+        # Rate limit, and give the tab a moment to publish a newer URL than the
+        # one that just died. Without this a stream failing instantly would
+        # burn every attempt in a second and report a confusing pile of them.
+        if ran_for < MIN_ATTEMPT_SECONDS:
+            time.sleep(MIN_ATTEMPT_SECONDS - ran_for)
+            if job_id in STOPPED:
+                break
+
+        try:
+            fresh = _sanitize_stream_url((refresh_url() or "").strip())
+        except Exception as e:
+            print(f"[Stream] {job_id} could not read a fresh URL ({e})")
+            fresh = None
+        # No fresher URL than the one that just failed means the tab is gone or
+        # the broadcast is over. Either way there is nothing left to try.
+        if not fresh or fresh == url:
+            break
+
+        resumes += 1
+        url = fresh
+        cmd = build_cmd(url, os.path.join(STREAMS_DIR, prefix + f"resume{resumes:02d}.ts"))
+        print(f"[Stream] {job_id} the tab has a newer URL; resuming (#{resumes})")
+        report.update(job_id, status="running")
 
     was_stopped = job_id in STOPPED
-    # Prefer a finalized file; otherwise rescue a leftover .part (dropped
-    # connection or hard kill) so we never throw away a recording.
-    path = _find_output(prefix) or _salvage_part(prefix)
+    # Every attempt left a file. One is the ordinary case; several mean the
+    # recording was resumed, and they are joined into the single file the user
+    # was expecting — a container-level join of MPEG-TS from one broadcast, so
+    # it costs seconds rather than a re-encode.
+    produced = _find_outputs(prefix)
+    path = _concat_parts(produced, job_id) if produced else None
+    # Otherwise rescue a leftover .part (dropped connection or hard kill) so we
+    # never throw away a recording.
+    if not path:
+        path = _salvage_part(prefix)
 
     # yt-dlp produced nothing and the user did not stop it: try ffmpeg before
     # calling it a failure. See record_with_ffmpeg for why the two disagree.
@@ -849,14 +998,17 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         report.update(job_id, save_path=os.path.abspath(path), save_dir=STREAMS_DIR)
         report.complete(job_id, archives=[filename], rclone_complete=False)
         print(f"[Stream] {job_id} saved -> {path}")
-    elif was_stopped or (proc.returncode is not None and proc.returncode < 0):
+    elif was_stopped or ((last['proc'] is not None)
+                         and last['proc'].returncode is not None
+                         and last['proc'].returncode < 0):
         report.update(job_id, status="aborted", progress=0)
         print(f"[Stream] {job_id} stopped with no output")
     else:
         # Show the reason on the server console. yt-dlp does not echo secret
         # headers, so this tail is safe to print.
-        err = "\n".join(tail[-8:]) or f"yt-dlp exited {proc.returncode}"
-        print(f"[Stream] {job_id} FAILED (exit {proc.returncode}):\n{err}")
+        code = last["proc"].returncode if last["proc"] is not None else "?"
+        err = "\n".join(tail[-8:]) or f"yt-dlp exited {code}"
+        print(f"[Stream] {job_id} FAILED (exit {code}):\n{err}")
         report.fail(job_id, err)
 
 

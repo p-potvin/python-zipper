@@ -16,6 +16,7 @@
   },
   "permissions": [
     "webRequest",
+    "alarms",
     "storage",
     "notifications",
     "downloads",

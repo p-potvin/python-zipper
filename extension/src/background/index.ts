@@ -1,7 +1,7 @@
 import { ext } from '../common/api';
 import {
   installSniffer, getStreams, getStream, removeStream, clearTab, touch,
-  updatePanelOpenTime, setHasActiveDownloads, setOnNewStream,
+  updatePanelOpenTime, setHasActiveDownloads, setOnNewStream, getRecordingStreams,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
 import {
@@ -44,6 +44,71 @@ installHarvestStore();
  * reloading has nobody to tell.
  */
 setOnNewStream((s) => enrichIfNeeded(s));
+
+/**
+ * Keep a running recording supplied with a URL that still works.
+ *
+ * A live edge stops serving a given URL long before the broadcast ends — the
+ * signature expires, or the CDN drops a viewer it can no longer see — and the
+ * worker cannot tell that from the broadcast having finished. The tab can: it
+ * is still being served, and the sniffer already overwrites a stream's URL
+ * every time a newer request for it goes past. All that was missing was
+ * telling the worker.
+ *
+ * The channel is the job's `result` field, which is the only free-form one the
+ * API's progress endpoint accepts and which a stream job does not otherwise
+ * use. The worker reads it when — and only when — the URL it has stops
+ * working, so this is a publication, not a command.
+ *
+ * Published only when the URL has actually changed. A stream whose URL is
+ * stable costs one comparison a minute and no requests at all.
+ */
+const REFRESH_EVERY_MS = 60_000;
+const publishedUrls = new Map<string, string>();
+
+async function publishFreshStreamUrls(): Promise<void> {
+  const recording = getRecordingStreams();
+  if (!recording.length) {
+    publishedUrls.clear();
+    return;
+  }
+  const live = new Set<string>();
+  for (const s of recording) {
+    const jobId = s.jobId!;
+    live.add(jobId);
+    if (publishedUrls.get(jobId) === s.url) continue;
+    try {
+      const res = await VwApi.updateJob(jobId, {
+        result: { stream_url: s.url, at: Date.now() },
+      });
+      if (res.ok) publishedUrls.set(jobId, s.url);
+    } catch { /* the worker still has the URL it started with */ }
+  }
+  for (const jobId of [...publishedUrls.keys()]) {
+    if (!live.has(jobId)) publishedUrls.delete(jobId);
+  }
+}
+
+/**
+ * Driven by an alarm rather than a timer.
+ *
+ * The background is an event page: it is suspended when nothing is happening,
+ * and a `setInterval` goes with it. That matters precisely here, because the
+ * case this exists for — a long recording of a page nobody is touching — is
+ * the case where the background is most likely to have been put to sleep.
+ * An alarm wakes it; a timer would simply have stopped.
+ */
+const REFRESH_ALARM = 'zipper-refresh-stream-urls';
+try {
+  ext.alarms?.create(REFRESH_ALARM, { periodInMinutes: REFRESH_EVERY_MS / 60_000 });
+  ext.alarms?.onAlarm.addListener((a: any) => {
+    if (a?.name === REFRESH_ALARM) void publishFreshStreamUrls();
+  });
+} catch {
+  // No alarms permission (an older install): the timer still covers the common
+  // case, where stream traffic keeps the background awake anyway.
+  setInterval(() => { void publishFreshStreamUrls(); }, REFRESH_EVERY_MS);
+}
 
 // Tell any open sidebar that the passive log grew, so a page still loading
 // fills the list in place instead of needing a manual re-scan. Fire-and-forget:
