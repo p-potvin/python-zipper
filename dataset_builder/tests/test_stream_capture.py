@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from ds_streams import (
     _finalize_stream_name, _format_selector, _sanitize_stream_url,
-    strip_delivery_directives,
+    strip_delivery_directives, stream_label, site_label,
 )
 
 
@@ -125,6 +125,83 @@ class DeliveryDirectiveTests(unittest.TestCase):
         self.assertIsNone(_sanitize_stream_url("ftp://cdn.example.com/x.m3u8"))
         self.assertIsNone(_sanitize_stream_url("https://user:pw@cdn.example.com/x.m3u8"))
         self.assertIsNone(_sanitize_stream_url(""))
+
+
+class StreamLabelTests(unittest.TestCase):
+    """Every step of the naming chain, because every one of them used to be
+    skipped: naming read an always-empty job store, so a recording was named
+    from its URL and the answer was usually "chunklist"."""
+
+    def test_the_performer_wins(self):
+        self.assertEqual(
+            stream_label("[chaturbate.com] blissdilley",
+                         "https://chaturbate.com/blissdilley/", "chunklist_3_video"),
+            "blissdilley",
+        )
+
+    def test_the_whole_tab_title_when_there_is_nothing_to_cut_at(self):
+        self.assertEqual(
+            stream_label("[site.com] Live Cam Shows", "https://site.com/x", "master"),
+            "Live Cam Shows",
+        )
+
+    def test_the_file_name_when_it_carries_a_real_title(self):
+        self.assertEqual(stream_label("", "", "Real Stream Title"), "Real Stream Title")
+
+    def test_the_site_when_the_title_gives_nothing(self):
+        self.assertEqual(
+            stream_label("", "https://www.camsoda.com/sophie", "master"), "camsoda.com",
+        )
+
+    def test_generic_file_names_are_not_labels(self):
+        for junk in ("master", "chunklist", "index", "playlist", "stream"):
+            self.assertEqual(stream_label("", "", junk), "", junk)
+
+    def test_nothing_anywhere_is_reported_as_nothing(self):
+        # The caller falls back to the job id; this must not invent a label.
+        self.assertEqual(stream_label("", "", ""), "")
+
+    def test_the_host_comes_from_the_title_when_there_is_no_page_url(self):
+        self.assertEqual(site_label("", "[chaturbate.com] anything"), "chaturbate.com")
+
+    def test_www_goes_but_the_tld_stays(self):
+        self.assertEqual(site_label("https://www.example.com/x"), "example.com")
+
+
+class SiteNamedRecordingTests(unittest.TestCase):
+    """A recording named after its site is still numbered."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def _recording(self, name):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as fh:
+            fh.write(b"0")
+        return path
+
+    def test_a_site_named_recording_is_numbered(self):
+        out = _finalize_stream_name(
+            self._recording("pzstream_abc123_master [x].ts"), "abc123",
+            "", "https://camsoda.com/sophie",
+        )
+        self.assertEqual(os.path.basename(out), "camsoda.com Stream #01.ts")
+
+    def test_the_second_one_does_not_read_as_a_duplicate_file(self):
+        _finalize_stream_name(
+            self._recording("pzstream_a_master [x].ts"), "a", "", "https://camsoda.com/x")
+        out = _finalize_stream_name(
+            self._recording("pzstream_b_master [x].ts"), "b", "", "https://camsoda.com/x")
+        self.assertEqual(os.path.basename(out), "camsoda.com Stream #02.ts")
+
+    def test_a_resumed_recording_is_not_named_after_its_own_part_file(self):
+        # _concat_parts produces "..._joined.ts"; that is this module talking to
+        # itself, not a title.
+        out = _finalize_stream_name(
+            self._recording("pzstream_abc123_joined.ts"), "abc123",
+            "[chaturbate.com] blissdilley", "https://chaturbate.com/blissdilley/",
+        )
+        self.assertEqual(os.path.basename(out), "blissdilley Stream #01.ts")
 
 
 if __name__ == "__main__":

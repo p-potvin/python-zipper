@@ -413,6 +413,7 @@ def run_stream(job: dict) -> None:
             rcat_remote=remote,
             title=job.get("title") or "",
             refresh_url=fresh_stream_url,
+            page_url=job.get("page_url") or "",
         )
     finally:
         watcher_stop.set()

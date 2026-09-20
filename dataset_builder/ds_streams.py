@@ -140,39 +140,111 @@ def stream_filename(title, directory):
     return f"{base} Stream #{next_stream_index(directory, base):02d}"
 
 
-def _finalize_stream_name(path, job_id, title=""):
-    """Rename a finished recording to `<subject> Stream #dd`.
+# Labels that identify nothing: either the generic name of a playlist file, or
+# the word the site puts in every tab title.
+_GENERIC_LABELS = {
+    "stream", "streams", "master", "playlist", "chunklist", "index", "live",
+    "video", "media", "manifest", "hls", "dash", "channel", "cam", "cams",
+}
+
+
+def site_label(page_url="", title=""):
+    """The site a recording came from, as something worth putting in a name.
+
+    Two sources, because either may be missing. The job carries the page URL;
+    and failing that, the extension prefixes every title it sends with the
+    hostname in brackets, so the title itself usually still has it.
+
+    `www.` goes — it identifies nothing — but the TLD stays: "chaturbate.com"
+    is what you would type, and "chaturbate" alone reads like a word rather
+    than a source.
+    """
+    host = ""
+    if page_url:
+        try:
+            host = (urlparse(page_url).hostname or "").strip()
+        except Exception:
+            host = ""
+    if not host and title:
+        m = _HOST_PREFIX_RE.match(title)
+        if m:
+            host = m.group(0).strip().strip("[]").strip()
+    host = re.sub(r"^www\d*\.", "", host, flags=re.I)
+    return _sanitize_title(host)
+
+
+def stream_label(title="", page_url="", fallback_name=""):
+    """What to call this recording, best source first.
+
+    The chain matters more than any one step, because every step above the
+    last used to be skipped: naming asked a job store that was always empty,
+    so a recording was named from its URL and the answer was usually
+    "chunklist" or "master".
+
+      1. The person or channel out of the tab title — the useful one.
+      2. The whole tab title, when there was no room/live/cam word to cut at.
+      3. Whatever yt-dlp called the file, which on some hosts is the real
+         stream title from the manifest.
+      4. The site. Not identifying, but "chaturbate.com Stream #03" tells you
+         where to look; "stream_a1b2c3d4e5f6" tells you nothing at all.
+
+    Returns "" only when all four are empty, which leaves the caller to fall
+    back on the job id.
+    """
+    subject = stream_basename(title)
+    if subject and subject.lower() not in _GENERIC_LABELS:
+        return subject
+
+    whole = _sanitize_title(_HOST_PREFIX_RE.sub("", title or ""))
+    if whole and whole.lower() not in _GENERIC_LABELS:
+        return whole
+
+    named = _sanitize_title(fallback_name or "")
+    if named and named.lower() not in _GENERIC_LABELS:
+        return named
+
+    return site_label(page_url, title)
+
+
+def _finalize_stream_name(path, job_id, title="", page_url=""):
+    """Rename a finished recording to `<label> Stream #dd`.
 
     `title` is passed in rather than looked up. It used to come from
     `get_job(job_id)`, which reads the *in-process* store belonging to the
     retired local server; worker jobs live in the API's Postgres, so that
     lookup returned None every time, the title was always empty, and naming
     silently fell through to the URL-derived path on every single recording.
+
+    Every recording that has a label at all is numbered, including the ones
+    named after the site. Two recordings from the same place on the same day
+    are the normal case, and `(1)` appended by a collision check reads like a
+    duplicate file rather than a second session.
     """
     if not path or not os.path.exists(path):
         return path
     title = title or ""
 
-    # Preferred: the subject out of the tab title, numbered. Falls through to
-    # the old behaviour when the title has nothing in it worth keeping.
-    clean_title = stream_filename(title, os.path.dirname(path) or STREAMS_DIR)
+    # What yt-dlp called it, cleaned up: on some hosts this is the real stream
+    # title out of the manifest, which beats the site name.
+    from_file = os.path.basename(path)
+    if from_file.startswith(f"pzstream_{job_id}_"):
+        from_file = from_file[len(f"pzstream_{job_id}_"):]
+    from_file = re.sub(r'\s*\[[^\]]+\](?=\.[^.]+$)', '', from_file)
+    from_file = re.sub(r'\.[^.]+$', '', from_file)
+    # Names this module itself produced are not evidence of anything.
+    if re.fullmatch(r'(resume\d+|capture|joined|concat)', from_file, re.I):
+        from_file = ""
 
-    if not clean_title:
-        clean_title = _sanitize_title(title)
-    if not clean_title or clean_title.lower() in ('stream', 'master', 'playlist', 'chunklist', 'index'):
-        orig_name = os.path.basename(path)
-        clean_title = orig_name
-        if clean_title.startswith(f"pzstream_{job_id}_"):
-            clean_title = clean_title[len(f"pzstream_{job_id}_"):]
-        clean_title = re.sub(r'\s*\[[^\]]+\](?=\.[^.]+$)', '', clean_title)
-        clean_title = re.sub(r'\.[^.]+$', '', clean_title)
-        clean_title = _sanitize_title(clean_title)
-
-    if not clean_title or clean_title.lower() in ('master', 'index'):
+    label = stream_label(title, page_url, from_file)
+    parent_dir = os.path.dirname(path)
+    if label:
+        index = next_stream_index(parent_dir or STREAMS_DIR, label)
+        clean_title = f"{label} Stream #{index:02d}"
+    else:
+        # Nothing to go on anywhere: no title, no page, no usable filename.
         clean_title = f"stream_{job_id[:12]}"
 
     ext = os.path.splitext(path)[1] or '.mp4'
-    parent_dir = os.path.dirname(path)
     target_path = os.path.join(parent_dir, f"{clean_title}{ext}")
 
     counter = 1
@@ -789,7 +861,7 @@ MIN_ATTEMPT_SECONDS = 20
 
 def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
                     report=None, sink="local", rcat_remote=None, title=None,
-                    refresh_url=None):
+                    refresh_url=None, page_url=""):
     """Run yt-dlp with progress tracking; manages the job status end to end.
 
     `refresh_url` is a callable returning the freshest URL the browser has seen
@@ -990,7 +1062,7 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     # A produced file is a success even on non-zero exit — that's the normal
     # outcome of stopping/losing a live recording.
     if path:
-        path = _finalize_stream_name(path, job_id, title)
+        path = _finalize_stream_name(path, job_id, title, page_url)
         if os.environ.get("PYTHON_ZIPPER_STREAM_RCLONE") == "1":
             handoff_to_rclone(path)
             path = _find_output(prefix) or path  # may have moved
