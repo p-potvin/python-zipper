@@ -47,13 +47,20 @@ class ServerPipelineTests(unittest.TestCase):
                     server.resolve_legacy_reveal_path({"filename": "missing.zip"})
 
     def test_upscaler_models_put_nomos_model_before_pillow_fallback(self):
+        # Indexes past the first are deliberately not asserted: the list grows
+        # with whatever upscalers are installed on the machine, and pinning
+        # position 1 to the fallback made this fail the moment a second model
+        # appeared in the vault-commander directory.
         models = server.get_available_upscale_models()
+        names = [m["name"] for m in models]
 
         self.assertGreaterEqual(len(models), 2)
         self.assertEqual(models[0]["name"], "4xNomos8k_atd")
         self.assertEqual(models[0]["kind"], "spandrel")
-        self.assertEqual(models[1]["name"], "pillow-lanczos")
-        self.assertEqual(models[1]["kind"], "pillow")
+        self.assertIn("pillow-lanczos", names)
+        self.assertLess(names.index("4xNomos8k_atd"), names.index("pillow-lanczos"))
+        pillow = models[names.index("pillow-lanczos")]
+        self.assertEqual(pillow["kind"], "pillow")
 
     def test_local_job_registry_tracks_started_and_completed_jobs(self):
         with patch.object(server, "JOBS", {}):

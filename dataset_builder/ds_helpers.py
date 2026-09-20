@@ -221,6 +221,13 @@ def get_available_upscale_models():
     # 4. Include ImageMagick enhancement operations
     for op in ENHANCE_OPERATIONS:
         models.append(op)
+
+    # The recommended model leads, whatever the directory listing said. Order
+    # here used to be whatever `sorted(os.listdir(...))` produced, which put
+    # "4xNomos8kDAT" ahead of "4xNomos8k_atd" purely because "D" sorts before
+    # "_" — so the default model was not the one the UI offered first, on a
+    # machine that happened to have both files.
+    models.sort(key=lambda m: 0 if m.get("name") == NOMOS_MODEL_NAME else 1)
     return models
 
 
