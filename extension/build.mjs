@@ -2,9 +2,10 @@ import { build, context } from 'esbuild';
 import { cpSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
+const noVersionBump = process.argv.includes('--no-version-bump');
 const outdir = 'dist';
 
-if (!watch) {
+if (!watch && !noVersionBump) {
   try {
     const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
     const versionParts = pkg.version.split('.').map(Number);
@@ -29,7 +30,14 @@ mkdirSync(outdir, { recursive: true });
 const entries = {
   background: 'src/background/index.ts',
   content: 'src/content/index.ts',
-  popup: 'src/popup/popup.ts',
+  popup: 'src/popup/popup.tsx',
+  // Emits dist/sidebar.js plus dist/sidebar.css — esbuild splits the imported
+  // stylesheet out beside the entry, and public/ carries no sidebar.css to clobber it.
+  sidebar: 'src/sidebar/index.tsx',
+  // Runs in the page's own JS world (manifest "world": "MAIN"). Separate
+  // entry because it must not pull in anything that expects the extension
+  // APIs -- it has none of them.
+  pagehook: 'src/pagehook/index.ts',
 };
 
 const shared = {
@@ -38,6 +46,11 @@ const shared = {
   target: ['firefox115', 'chrome109'],
   logLevel: 'info',
   sourcemap: watch ? 'inline' : false,
+  jsx: 'automatic',
+  jsxImportSource: 'preact',
+  // Font files are copied verbatim by copyStatic(); leave their url() alone
+  // rather than having esbuild try to resolve them from src/.
+  external: ['*.woff2'],
 };
 
 function copyStatic() {

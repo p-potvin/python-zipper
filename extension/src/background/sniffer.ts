@@ -69,9 +69,25 @@ export function isSegmentOrChunkUrl(url: string): boolean {
     const path = u.pathname.toLowerCase();
     const search = u.search.toLowerCase();
 
-    // Discard variant playlists and llhls streams
-    if (/(chunklist|llhls|variant-list|stream-inf|rendition|subtitles|audio-track|video-track)/i.test(path) ||
-        /(chunklist|llhls|variant-list|stream-inf|rendition|subtitles|audio-track|video-track)/i.test(search)) {
+    // A manifest is never a segment, and on a live site it is frequently the
+    // *only* thing published. Chaturbate and friends serve no master playlist
+    // at all — just `chunklist_..._llhls.m3u8` — so rejecting chunklists on
+    // name meant those streams could never be offered, let alone recorded.
+    // Where a master does exist, its variants are folded into it by
+    // `foldVariants` after the master is parsed, which is the right place to
+    // collapse them: by membership, not by guessing from the filename.
+    const isManifest = /\.(m3u8|mpd|f4m|ism)(?:$|\?)/i.test(path);
+
+    // Renditions that are not the video: recording one gets you subtitles or a
+    // bare audio track where you wanted the stream.
+    if (/(subtitles|audio[-_]track|webvtt)/i.test(path) ||
+        /(subtitles|audio[-_]track|webvtt)/i.test(search)) {
+      return true;
+    }
+
+    if (!isManifest &&
+        (/(chunklist|llhls|variant-list|stream-inf|rendition|video-track)/i.test(path) ||
+         /(chunklist|llhls|variant-list|stream-inf|rendition|video-track)/i.test(search))) {
       return true;
     }
 
@@ -84,9 +100,12 @@ export function isSegmentOrChunkUrl(url: string): boolean {
     if (chunkKeywords.test(path) || chunkKeywords.test(search)) {
       return true;
     }
-    // Discard paths with segment index/number at the end
+    // A bare numeric suffix on a playlist — `stream_3.m3u8` — is usually one
+    // quality of a master we will also see. Kept as a rejection, but only when
+    // there is nothing else identifying it: a live media playlist that happens
+    // to be numbered is still the stream.
     const endsWithDigits = /[\-_/]\d+\.m3u8$/i;
-    if (endsWithDigits.test(path)) {
+    if (endsWithDigits.test(path) && !/(live|chunklist|llhls)/i.test(path)) {
       return true;
     }
     return false;

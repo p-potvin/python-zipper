@@ -64,6 +64,10 @@ from tlr_url_classifier import (
     convert_bunkr_link, normalize_url, classify_and_filter_url,
     check_pyload_api, queue_links_to_pyload,
 )
+from tlr_pipeline import (
+    process_direct_downloads, process_rd_links, process_mega_links_with_alldebrid,
+)
+from tlr_alldebrid import clean_telegram_first_line
 
 from tlr_config import (
     SCRIPT_DIR, API_ID, API_HASH, CHANNEL_NAME, MESSAGE_LIMIT, MESSAGE_SKIP,
@@ -71,6 +75,7 @@ from tlr_config import (
     BROWSER_PROFILE_DIR, RIP_API_KEY, RIP_API_ENDPOINT,
     FIREFOX_AVAILABLE, CHROME_AVAILABLE,
     REALDEBRID_API_TOKEN, REALDEBRID_API_BASE,
+    ALLDEBRID_API_KEY, ALLDEBRID_API_BASE, PLAYLISTS_DIR,
     KATFILE_API_KEY, KATFILE_API_BASE, KATFILE_UPLOAD_SERVER_ENDPOINT, KATFILE_DOMAIN,
     PIXELDRAIN_KEY, ONEFICHIER_KEY, GOFILE_KEY,
     PYLOAD_API_URL, PYLOAD_API_KEY, PYLOAD_ENABLED,
@@ -111,6 +116,7 @@ async def main():
         print(f"[INFO] Skipping first {MESSAGE_SKIP} messages per channel (MESSAGE_SKIP={MESSAGE_SKIP})")
     
     links = set()
+    url_titles = {}  # Map URL -> clean Telegram post title (first line without emojis)
     failed_channels = []
     
     # Iterate through each channel and collect links
@@ -124,6 +130,8 @@ async def main():
                     continue  # Skip first N messages
                 if not message.text or not message.entities:
                     continue
+                
+                clean_title = clean_telegram_first_line(message.text)
                     
                 # Telethon conveniently parses embedded links natively
                 for entity, text in message.get_entities_text():
@@ -135,6 +143,8 @@ async def main():
                         
                     if url:
                         links.add(url)
+                        if clean_title:
+                            url_titles[url] = clean_title
             print(f"    [OK] Found {message_count - MESSAGE_SKIP} valid messages from {channel}")
         except ValueError as e:
             error_msg = f"Channel error: {channel} - {str(e)}"
@@ -177,15 +187,23 @@ async def main():
         if is_link_redirector:
             # Resolve redirect to get the actual linkvertise URL
             actual_url = resolve_initial_url(raw_url)
+            orig_title = url_titles.get(raw_url, "")
+            if orig_title:
+                url_titles[actual_url] = orig_title
             if 'linkvertise.com' in actual_url.lower():
                 converted = actual_url.replace('linkvertise.com', 'linkvertise.lol')
                 linkvertise_links[actual_url] = converted
+                if orig_title:
+                    url_titles[converted] = orig_title
                 print(f"[{idx}/{len(links)}] Link redirector -> Linkvertise: {raw_url} -> {actual_url}")
             else:
                 print(f"[{idx}/{len(links)}] Link redirector but didn't resolve to linkvertise: {raw_url} -> {actual_url}")
         elif 'linkvertise.com' in url_lower:
             converted = raw_url.replace('linkvertise.com', 'linkvertise.lol')
             linkvertise_links[raw_url] = converted
+            orig_title = url_titles.get(raw_url, "")
+            if orig_title:
+                url_titles[converted] = orig_title
             print(f"[{idx}/{len(links)}] Found Linkvertise: {raw_url}")
         elif 'rentry.co' in url_lower or 'rentry.org' in url_lower:
             # Rentry pages — scrape directly for download links (skip utility pages)
@@ -254,17 +272,33 @@ async def main():
         except ImportError:
             proxy_config = None
         
+        chrome_exe = None
+        for candidate in [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Users\Administrator\AppData\Local\ms-playwright\chromium-1234\chrome-win64\chrome.exe",
+        ]:
+            if os.path.exists(candidate):
+                chrome_exe = candidate
+                break
+
+        artifacts_dir = r"G:\artifacts" if os.path.exists(r"G:\artifacts") else ARTIFACTS_DIR
+
         for attempt in range(1, 4):
             try:
-                browser = await p.chromium.launch_persistent_context(
-                    channel="chrome",                 # Uses your stable Google Chrome app binary
-                    headless=False,                  # OPENS THE BROWSER VISUALLY
-                    no_viewport=True,
-                    user_data_dir=user_data_dir,
-                    executable_path=r"C:\Users\Administrator\AppData\Local\ms-playwright\chromium-1228\chrome-win64\chrome.exe",
-                    artifacts_dir=r"G:\artifacts",
-                    proxy=proxy_config
-                )
+                launch_kwargs = {
+                    "headless": False,
+                    "no_viewport": True,
+                    "user_data_dir": user_data_dir,
+                    "artifacts_dir": artifacts_dir,
+                    "proxy": proxy_config
+                }
+                if chrome_exe:
+                    launch_kwargs["executable_path"] = chrome_exe
+                else:
+                    launch_kwargs["channel"] = "chrome"
+
+                browser = await p.chromium.launch_persistent_context(**launch_kwargs)
                 break
             except Exception as launch_err:
                 print(f"[WARN] Attempt {attempt}/3 to launch browser failed: {launch_err}")
@@ -297,6 +331,7 @@ async def main():
         for idx, hub_url in enumerate(sorted(hub_links), 1):
             print(f"[{idx}/{len(hub_links)}] Extracting links from: {hub_url}")
             extracted_links = await extract_links_from_rentry(hub_url, browser, idx)
+            hub_title = url_titles.get(hub_url, "")
             for l in extracted_links:
                 l_lower = l.lower()
                 # Skip utility/navigation URLs (export-page, edit, raw, etc.)
@@ -305,11 +340,15 @@ async def main():
                 # Skip bare domain roots
                 if l_lower in ('https://rentry.co/', 'https://rentry.org/', 'https://rentry.co', 'https://rentry.org'):
                     continue
+                if hub_title:
+                    url_titles[l] = hub_title
                 # Check for linkvertise links
                 if 'linkvertise.com' in l_lower:
                     if l not in linkvertise_links:
                         converted = l.replace('linkvertise.com', 'linkvertise.lol')
                         linkvertise_links[l] = converted
+                        if hub_title:
+                            url_titles[converted] = hub_title
                         print(f"   [HUB] Found new linkvertise: {l}")
                 elif any(p in l_lower for p in link_redirector_patterns):
                     # link-hub/link-target redirectors → resolve to linkvertise
@@ -317,11 +356,14 @@ async def main():
                     if 'linkvertise.com' in actual.lower() and actual not in linkvertise_links:
                         converted = actual.replace('linkvertise.com', 'linkvertise.lol')
                         linkvertise_links[actual] = converted
+                        if hub_title:
+                            url_titles[actual] = hub_title
+                            url_titles[converted] = hub_title
                         print(f"   [HUB] Found link redirector -> linkvertise: {l} -> {actual}")
                 # Also collect any direct download links found on hub pages
                 else:
                     action, _ = classify_and_filter_url(l)
-                    if action in ('rd', 'direct', 'pyload'):
+                    if action in ('rd', 'direct', 'pyload', 'mega'):
                         direct_links_from_telegram.add(l)
                         print(f"   [HUB] Found direct link ({action}): {l}")
 
@@ -339,6 +381,9 @@ async def main():
             rentry_link = await bypass_linkvertise_in_browser(link_com, browser, idx)
             if rentry_link:
                 rentry_links[link_com] = rentry_link
+                orig_title = url_titles.get(link_com, "")
+                if orig_title:
+                    url_titles[rentry_link] = orig_title
                 print(f"   [OK] Got rentry link: {rentry_link}")
             else:
                 print(f"   [FAIL] Failed to bypass")
@@ -359,6 +404,7 @@ async def main():
             for idx, (linkvertise, rentry) in enumerate(rentry_links.items(), 1):
                 print(f"[{idx}/{len(rentry_links)}] Extracting links from: {rentry}")
                 extracted_links = await extract_links_from_rentry(rentry, browser, idx)
+                rentry_title = url_titles.get(rentry, "") or url_titles.get(linkvertise, "")
                 for l in extracted_links:
                     l_lower = l.lower()
                     # Skip utility/navigation URLs
@@ -366,6 +412,8 @@ async def main():
                         continue
                     if l_lower in ('https://rentry.co/', 'https://rentry.org/', 'https://rentry.co', 'https://rentry.org'):
                         continue
+                    if rentry_title:
+                        url_titles[l] = rentry_title
                     all_extracted_urls.add(l)
                     resolved.add(l)
                 
@@ -381,6 +429,7 @@ async def main():
         #bg_dual_uploader_task = asyncio.create_task(background_dual_uploader())
 
         # Classify all links first (with deduplication)
+        mega_links = []
         rd_links = []
         direct_links = []
         pyload_links = []
@@ -393,6 +442,8 @@ async def main():
             action, processed_url = classify_and_filter_url(url)
             if action == 'skip':
                 continue
+            elif action == 'mega':
+                mega_links.append(processed_url)
             elif action == 'pyload':
                 pyload_links.append(processed_url)
             elif action == 'direct':
@@ -400,7 +451,7 @@ async def main():
             elif action == 'rd':
                 rd_links.append(processed_url)
 
-        print(f"\n[CLASSIFICATION] RD: {len(rd_links)} | Direct: {len(direct_links)} | pyLoad: {len(pyload_links)} | Skipped/Duped: {len(all_extracted_urls) - len(rd_links) - len(direct_links) - len(pyload_links)}")
+        print(f"\n[CLASSIFICATION] MEGA (AllDebrid): {len(mega_links)} | RD: {len(rd_links)} | Direct: {len(direct_links)} | pyLoad: {len(pyload_links)} | Skipped/Duped: {len(all_extracted_urls) - len(mega_links) - len(rd_links) - len(direct_links) - len(pyload_links)}")
 
         # Send 20% of pyload-classified links to pyLoad in parallel with cloud uploads
         pyload_parallel_count = max(1, len(pyload_links) // 5) if pyload_links else 0
@@ -424,6 +475,16 @@ async def main():
 
         failed_links = []
 
+        # Process MEGA links via AllDebrid API and generate M3U streaming playlists
+        if mega_links:
+            process_mega_links_with_alldebrid(
+                mega_links, downloads, failed_links,
+                playlists_dir=PLAYLISTS_DIR,
+                output_dir=OUTPUT_DIR,
+                api_key=ALLDEBRID_API_KEY,
+                url_titles=url_titles
+            )
+
         # Process direct-download links via pipeline module
         await process_direct_downloads(
             direct_links, browser, downloads, failed_links,
@@ -434,17 +495,18 @@ async def main():
         )
 
         # Process RD-classified links via pipeline module
-        await process_rd_links(
-            rd_links, browser, downloads, failed_links, OUTPUT_DIR,
-            DOWNLOAD_DIR, _current_run_files, args,
-            mega_folder_rd_extension_automation,
-            download_file_with_browser,
-            upload_local_with_fallbacks,
-            get_google_drive_service, upload_to_google_drive,
-            upload_to_katfile, can_upload_to_katfile,
-            KATFILE_API_KEY, KATFILE_UPLOAD_DIR,
-            script_dir=SCRIPT_DIR,
-        )
+        if rd_links:
+            await process_rd_links(
+                rd_links, browser, downloads, failed_links, OUTPUT_DIR,
+                DOWNLOAD_DIR, _current_run_files, args,
+                mega_folder_rd_extension_automation,
+                download_file_with_browser,
+                upload_local_with_fallbacks,
+                get_google_drive_service, upload_to_google_drive,
+                upload_to_katfile, can_upload_to_katfile,
+                KATFILE_API_KEY, KATFILE_UPLOAD_DIR,
+                script_dir=SCRIPT_DIR,
+            )
 
         await browser.close()
         

@@ -1,0 +1,685 @@
+/* Capture tab — the grid, filter row, and selection actions.
+ * Kept separate from sidebar.css because it is the one view with real density. */
+
+.cap { display: flex; flex-direction: column; gap: var(--vwsq-space-3); }
+
+.cap-bar { display: flex; align-items: center; gap: var(--vwsq-space-3); }
+.cap-bar .btn { flex: 1; }
+.cap-bar .btn:disabled { opacity: .6; cursor: default; }
+.cap-count {
+  font-family: var(--vwsq-font-mono); font-size: .7rem;
+  color: var(--sb-text-dim); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+
+.cap-prov {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); flex-wrap: wrap;
+  font-family: var(--vwsq-font-mono); font-size: .62rem; color: var(--sb-text-dim);
+}
+
+.cap-err {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  border-left: 2px solid var(--vwsq-signal-alert);
+  background: var(--vwsq-signal-alert-soft);
+  color: var(--vwsq-signal-alert);
+  font-family: var(--vwsq-font-mono); font-size: .7rem;
+  border-radius: 0 var(--vwsq-radius-control) var(--vwsq-radius-control) 0;
+}
+
+/* ---- inputs ------------------------------------------------------------- */
+
+.inp {
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--vwsq-space-2);
+  background: var(--sb-sunken);
+  border: 1px solid var(--sb-border-strong);
+  border-radius: var(--vwsq-radius-control);
+  color: var(--sb-text);
+  font-family: var(--vwsq-font-sans);
+  font-size: .76rem;
+}
+.inp::placeholder { color: var(--sb-text-dim); }
+.inp-sm { height: 24px; font-family: var(--vwsq-font-mono); font-size: .68rem; }
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: var(--vwsq-space-2); }
+.fields .field:last-child { grid-column: 1 / -1; }
+.field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.field > span {
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--sb-text-dim);
+}
+
+/* ---- chips -------------------------------------------------------------- */
+
+.chips { display: flex; flex-wrap: wrap; gap: var(--vwsq-space-1); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: .2em .6em;
+  border: 1px solid var(--sb-border);
+  border-radius: var(--vwsq-radius-pill);
+  background: transparent; color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono); font-size: .62rem;
+  letter-spacing: .06em; text-transform: uppercase; cursor: pointer;
+  transition: color var(--vwsq-motion-snap), border-color var(--vwsq-motion-snap),
+              background var(--vwsq-motion-snap);
+}
+.chip:hover { color: var(--sb-text-bright); border-color: var(--sb-border-strong); }
+.chip-on { color: var(--sb-accent); border-color: var(--sb-accent); background: var(--sb-accent-soft); }
+.chip-n { opacity: .65; font-variant-numeric: tabular-nums; }
+
+/* ---- selection bar ------------------------------------------------------ */
+
+.selbar {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  padding-top: var(--vwsq-space-1);
+  border-top: 1px solid var(--sb-border);
+}
+.selbar-n {
+  font-family: var(--vwsq-font-mono); font-size: .64rem;
+  color: var(--sb-text-secondary); font-variant-numeric: tabular-nums;
+}
+.lnk {
+  border: 0; background: none; padding: 2px 4px; cursor: pointer;
+  color: var(--sb-accent);
+  font-family: var(--vwsq-font-mono); font-size: .62rem;
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.lnk:hover { text-decoration: underline; }
+.lnk-more {
+  width: 100%; padding: var(--vwsq-space-2);
+  border: 1px dashed var(--sb-border-strong);
+  border-radius: var(--vwsq-radius-control);
+  text-transform: none; letter-spacing: 0;
+}
+
+/* ---- grid --------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--vwsq-space-2);
+}
+
+.cell {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  text-align: left; min-width: 0;
+}
+.cell-thumb {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: var(--vwsq-radius-control);
+  overflow: hidden;
+  background: var(--sb-sunken);
+  border: 2px solid transparent;
+  transition: border-color var(--vwsq-motion-snap);
+}
+.cell:hover .cell-thumb { border-color: var(--sb-border-strong); }
+.cell-on .cell-thumb { border-color: var(--sb-accent); }
+
+.thumb-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-ph, .thumb-ph-fallback {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--vwsq-font-mono); font-size: .62rem;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--sb-text-dim);
+}
+.thumb-ph { position: relative; }
+
+.cell-check {
+  position: absolute; top: 3px; right: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--sb-accent); color: #FFFFFF;
+  font-size: .62rem; line-height: 16px; text-align: center;
+}
+.cell .kind { position: absolute; left: 3px; bottom: 3px; }
+
+.cell-meta {
+  display: flex; align-items: center; gap: 4px;
+  font-family: var(--vwsq-font-mono); font-size: .56rem;
+  color: var(--sb-text-dim); font-variant-numeric: tabular-nums;
+}
+.cell-spring { flex: 1; }
+
+/* ---- list --------------------------------------------------------------- */
+
+.cands { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.cand {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-left: 2px solid transparent;
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 3px; cursor: pointer;
+}
+.cand:hover { background: var(--sb-hover); }
+/* A high score is a hint, not a state — muted. Selection is the loud one. */
+.cand-hot { border-left-color: var(--vwsq-signal-idle); }
+.cand-on { border-left-color: var(--sb-accent); background: var(--sb-accent-soft); }
+
+.cand-top { display: flex; align-items: baseline; gap: var(--vwsq-space-2); min-width: 0; }
+.cand-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: .74rem; color: var(--sb-text-bright);
+}
+.cand-check { color: var(--sb-accent); font-size: .7rem; }
+
+.kind {
+  flex: 0 0 auto;
+  font-family: var(--vwsq-font-mono); font-size: .54rem; font-weight: 500;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .15em .4em; border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-signal-idle-soft); color: var(--vwsq-signal-idle);
+}
+.kind-image    { background: var(--vwsq-signal-relay-soft);   color: var(--vwsq-signal-relay); }
+.kind-video    { background: var(--vwsq-signal-sync-soft);    color: var(--vwsq-signal-sync); }
+.kind-audio    { background: var(--vwsq-signal-online-soft);  color: var(--vwsq-signal-online); }
+.kind-stream   { background: var(--vwsq-coral-soft);          color: var(--vwsq-coral-500); }
+.kind-document { background: var(--vwsq-signal-warning-soft); color: var(--vwsq-signal-warning); }
+
+.cand-meta {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  color: var(--sb-text-dim); font-variant-numeric: tabular-nums;
+}
+.cand-spring { flex: 1; }
+.cand-origin { color: var(--sb-text-secondary); }
+.cand-up { color: var(--vwsq-signal-online); }
+.cand-score { opacity: .5; }
+.cand-clu { color: var(--vwsq-signal-sync); }
+
+/* The score breakdown. Deliberately quiet and monospaced — it is an evidence
+   trail to read one row at a time, not a thing to scan a list by. */
+.cand-why {
+  flex: 0 0 auto;
+  width: 14px; height: 14px; padding: 0;
+  border: 1px solid var(--sb-border); border-radius: var(--vwsq-radius-control);
+  background: none; color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono); font-size: .55rem; line-height: 1;
+  cursor: pointer;
+}
+.cand-why:hover { color: var(--sb-text-bright); border-color: var(--sb-accent); }
+
+.why {
+  list-style: none; margin: 3px 0 0; padding: var(--vwsq-space-2);
+  background: var(--sb-sunken); border-radius: var(--vwsq-radius-control);
+  display: grid; grid-template-columns: 1fr auto; gap: 1px var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  font-variant-numeric: tabular-nums;
+}
+.why li { display: contents; }
+.why-rule { color: var(--sb-text-secondary); overflow: hidden; text-overflow: ellipsis; }
+.why-delta { text-align: right; }
+.why-up   .why-delta { color: var(--vwsq-signal-online); }
+.why-down .why-delta { color: var(--vwsq-signal-alert); }
+
+/* ---- insights ------------------------------------------------------------ */
+
+.totals { display: flex; gap: var(--vwsq-space-2); margin-top: var(--vwsq-space-2); }
+.total {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+}
+.total-n {
+  font-size: .95rem; color: var(--sb-text-bright);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.total-l {
+  font-family: var(--vwsq-font-mono); font-size: .55rem;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--sb-text-dim);
+}
+
+/* Percentage-height columns rather than an SVG: the sidebar is resizable, and
+   this stays correct at any width with no viewBox to keep in sync. */
+.chart {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+}
+.chart-bars { display: flex; align-items: flex-end; gap: 1px; height: 52px; }
+.chart-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+.chart-fill {
+  width: 100%; background: var(--sb-accent); border-radius: 1px 1px 0 0;
+  transition: height 140ms ease;
+}
+.chart-col:hover .chart-fill { background: var(--vwsq-signal-relay); }
+.chart-axis {
+  display: flex; margin-top: 4px;
+  font-family: var(--vwsq-font-mono); font-size: .55rem; color: var(--sb-text-dim);
+}
+
+.ranked { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.rank {
+  position: relative;
+  display: flex; align-items: baseline; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface); border-radius: var(--vwsq-radius-control);
+  font-size: .7rem; overflow: hidden;
+}
+/* The bar sits behind the text rather than beside it, so a long domain name
+   never has to compete with the chart for width. */
+.rank-bar {
+  position: absolute; inset: 0 auto 0 0;
+  background: var(--sb-accent-soft); pointer-events: none;
+}
+.rank-name {
+  position: relative; flex: 1; min-width: 0; color: var(--sb-text-bright);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rank-files, .rank-bytes {
+  position: relative; flex: 0 0 auto;
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  font-variant-numeric: tabular-nums; color: var(--sb-text-dim);
+}
+.rank-bytes { color: var(--sb-text-secondary); min-width: 52px; text-align: right; }
+
+.lnk-on { color: var(--sb-accent); }
+
+/* ---- storage ------------------------------------------------------------- */
+
+/* One card per machine. Grouped rather than merged because the workstation and
+   the VPS have genuinely different disks, and an average across them would
+   hide the small one — which is the one that fills up. */
+.worker {
+  display: flex; flex-direction: column; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2);
+  margin-bottom: var(--vwsq-space-2);
+  background: var(--sb-sunken);
+  border-radius: var(--vwsq-radius-control);
+}
+.worker-head {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); min-width: 0;
+}
+.worker-head .remote-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+
+.store {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.store-path, .store-note {
+  font-family: var(--vwsq-font-mono); font-size: .58rem; color: var(--sb-text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;
+}
+
+.remotes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.remote {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.remote-top { display: flex; align-items: center; gap: var(--vwsq-space-2); }
+.remote-order {
+  flex: 0 0 auto; width: 14px; height: 14px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-signal-idle-soft); color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono); font-size: .55rem;
+}
+.remote-name { font-size: .72rem; color: var(--sb-text-bright); }
+
+/* Where a finished job's files ended up. Text, not a button: the server may be
+   another machine, and after an rclone move there is nothing local to open. */
+.job-dest {
+  display: flex; align-items: baseline; gap: var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .58rem; min-width: 0;
+}
+.dest-tag {
+  flex: 0 0 auto; padding: .1em .35em; border-radius: var(--vwsq-radius-control);
+  letter-spacing: .06em; text-transform: uppercase; font-size: .52rem;
+}
+.dest-remote { background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online); }
+.dest-local  { background: var(--vwsq-signal-idle-soft);   color: var(--sb-text-dim); }
+.dest-where {
+  color: var(--sb-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dest-open {
+  border: 0; padding: 0; background: none; cursor: pointer;
+  font: inherit; text-align: left; min-width: 0;
+}
+.dest-open:hover { color: var(--sb-accent); text-decoration: underline; }
+
+/* ---- livestream rows ------------------------------------------------------ */
+
+/* Pinned above the file list and visually separated: a stream is not one of the
+   things you tick into an archive, and reading as part of that list is exactly
+   the confusion that had livestreams and videos treated as the same object. */
+.cands-streams { margin-bottom: var(--vwsq-space-3); }
+.cand-stream {
+  cursor: default;
+  border-left-color: var(--vwsq-coral-500);
+  gap: var(--vwsq-space-2);
+}
+.cand-stream:hover { background: var(--sb-surface); }
+.cand-rec { border-left-color: var(--vwsq-signal-relay); }
+
+/* The preview frame, and the reason there isn't one. A failure is shown at the
+   same size and in the same slot as a success: it is a result, not an absence,
+   and it is the one most worth reading. */
+.stream-prev {
+  border-radius: var(--vwsq-radius-control);
+  overflow: hidden;
+  background: var(--sb-sunken);
+}
+.stream-prev img { display: block; width: 100%; height: auto; }
+.stream-prev-note {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); flex-wrap: wrap;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  color: var(--sb-text-dim);
+}
+.stream-prev-err {
+  flex: 1; min-width: 0; color: var(--sb-text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.stream-q { display: flex; flex-wrap: wrap; gap: 3px; }
+.q {
+  border: 1px solid var(--sb-border);
+  background: none; color: var(--sb-text-secondary);
+  border-radius: var(--vwsq-radius-control);
+  padding: .15em .45em; cursor: pointer;
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+}
+.q:hover:not(:disabled) { border-color: var(--sb-accent); color: var(--sb-text-bright); }
+.q-on { border-color: var(--sb-accent); background: var(--sb-accent-soft); color: var(--sb-text-bright); }
+/* Advertised by the playlist but not selectable until the probe names a format
+   yt-dlp will accept. Shown rather than hidden — "1080p exists, not yet
+   pickable" beats an empty list that looks like a failure. */
+.q:disabled { opacity: .45; cursor: default; }
+.q-stop { border-color: var(--vwsq-signal-alert); color: var(--vwsq-signal-alert); }
+
+.stream-go {
+  border: 1px solid var(--sb-accent);
+  background: var(--sb-accent-soft); color: var(--sb-text-bright);
+  border-radius: var(--vwsq-radius-control);
+  padding: .3em .5em; cursor: pointer; font-size: .7rem;
+}
+.stream-go:hover:not(:disabled) { background: var(--sb-accent); }
+.stream-go:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---- photoswipe notice --------------------------------------------------- */
+
+.pswp-note {
+  display: flex; gap: var(--vwsq-space-2); align-items: flex-start;
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  margin-top: var(--vwsq-space-2);
+  background: var(--sb-sunken);
+  border-left: 2px solid var(--vwsq-signal-sync);
+  border-radius: var(--vwsq-radius-control);
+}
+.pswp-note-body { min-width: 0; }
+.pswp-note p { margin: 0; font-size: .68rem; line-height: 1.45; color: var(--sb-text-secondary); }
+.pswp-note strong { color: var(--sb-text-bright); font-weight: 600; }
+
+/* ---- options ------------------------------------------------------------- */
+
+.opt {
+  display: flex; gap: var(--vwsq-space-2); align-items: flex-start;
+  padding: var(--vwsq-space-2) 0;
+  cursor: pointer;
+}
+.opt input { margin: 2px 0 0; flex: 0 0 auto; accent-color: var(--sb-accent); }
+.opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.opt-label { font-size: .74rem; color: var(--sb-text-bright); }
+.opt-hint { font-size: .63rem; line-height: 1.4; color: var(--sb-text-dim); }
+
+/* ---- actions ------------------------------------------------------------ */
+
+.actions {
+  position: sticky; bottom: 0;
+  /* Equal thirds. The old 2fr/1fr/1fr existed to fit "Zip 16 on server" in the
+     first slot, and squeezed the other two hard enough that a two-word label
+     wrapped onto three lines. With the counts out of the labels nothing needs
+     the extra room. */
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) 0;
+  background: linear-gradient(to top, var(--sb-bg) 70%, transparent);
+}
+.actions .btn { white-space: nowrap; }
+.btn-alt {
+  background: var(--sb-elevated);
+  color: var(--sb-text-bright);
+  border: 1px solid var(--sb-border-strong);
+}
+.btn-alt:hover { background: var(--sb-active); }
+
+.toast {
+  position: fixed; left: 50%; bottom: 64px; transform: translateX(-50%);
+  max-width: 90%;
+  padding: var(--vwsq-space-2) var(--vwsq-space-4);
+  background: var(--vwsq-console-elevated);
+  color: var(--vwsq-console-text-bright);
+  border: 1px solid var(--vwsq-console-border-strong);
+  border-radius: var(--vwsq-radius-pill);
+  font-size: .74rem; text-align: center; z-index: 20;
+  animation: toastIn var(--vwsq-motion-ui) ease-out;
+}
+@keyframes toastIn { from { opacity: 0; transform: translate(-50%, 6px); } }
+
+/* ---- sort direction ----------------------------------------------------- */
+
+.sortrow { display: flex; gap: var(--vwsq-space-1); align-items: stretch; }
+.sortrow .inp { flex: 1; min-width: 0; }
+.sortrow .iconbtn { width: 24px; height: 24px; flex: 0 0 auto; font-size: .8rem; }
+
+.iconbtn-on {
+  color: var(--sb-accent);
+  border-color: var(--sb-accent);
+  background: var(--sb-accent-soft);
+}
+
+/* ---- already downloaded -------------------------------------------------
+ * Green is the system's "operational / exit 0" signal, so it reads as done
+ * rather than as another selection state. Deliberately quieter than the accent:
+ * these are things you no longer need to look at. */
+
+.cell-got .cell-thumb { border-color: var(--vwsq-signal-online); }
+.cell-got .thumb-img { opacity: .55; }
+.cell-got-badge {
+  position: absolute; top: 3px; right: 3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--vwsq-signal-online); color: #06210F;
+  font-size: .62rem; line-height: 16px; text-align: center;
+}
+.cell-name {
+  font-family: var(--vwsq-font-mono); font-size: .54rem;
+  color: var(--sb-text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cell-got .cell-name { color: var(--vwsq-signal-online); }
+
+.cand-got { border-left-color: var(--vwsq-signal-online); }
+.cand-got .cand-name { color: var(--vwsq-signal-online); }
+.cand-got-tag {
+  font-family: var(--vwsq-font-mono); font-size: .52rem;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: .12em .38em; border-radius: var(--vwsq-radius-control);
+  background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online);
+}
+
+/* ---- downloads tab ------------------------------------------------------ */
+
+.sect {
+  display: flex; align-items: baseline; gap: var(--vwsq-space-2);
+  font-family: var(--vwsq-font-mono); font-size: .58rem;
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--sb-text-dim);
+  padding-top: var(--vwsq-space-2);
+  border-top: 1px solid var(--sb-border);
+}
+.sect-note { text-transform: none; letter-spacing: 0; opacity: .8; }
+
+.jobs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--vwsq-space-1); }
+.job {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-surface);
+  border-radius: var(--vwsq-radius-control);
+  display: flex; flex-direction: column; gap: 5px;
+}
+.job-thin { padding: var(--vwsq-space-1) var(--vwsq-space-3); }
+.job-top { display: flex; align-items: center; gap: var(--vwsq-space-2); min-width: 0; }
+.job-name {
+  flex: 1; min-width: 0; font-size: .74rem; color: var(--sb-text-bright);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.job-bar { height: 3px; border-radius: 2px; background: var(--sb-sunken); overflow: hidden; }
+.job-fill { height: 100%; background: var(--sb-accent); transition: width 300ms; }
+
+/* Barber pole, for a capture with no knowable end.
+   A live broadcast has no total, so a percentage is not merely inaccurate — it
+   does not exist. Filling the bar and animating the stripes says "running,
+   duration unknown", where a bar stuck near zero says "barely started" and a
+   bar creeping forward would be inventing a finish line. */
+.job-fill-live {
+  width: 100% !important;
+  transition: none;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--sb-accent) 0 6px,
+    var(--sb-accent-soft) 6px 12px
+  );
+  background-size: 17px 100%;   /* 12px stripe pitch / sin(45°), so it tiles seamlessly */
+  animation: barberPole 700ms linear infinite;
+}
+@keyframes barberPole {
+  from { background-position: 0 0; }
+  to   { background-position: 17px 0; }
+}
+/* Someone who has asked not to see movement gets the filled bar without it —
+   the state is carried by the fill, the animation only reinforces it. */
+@media (prefers-reduced-motion: reduce) {
+  .job-fill-live { animation: none; }
+}
+.job-meta {
+  display: flex; align-items: center; gap: var(--vwsq-space-2); flex-wrap: wrap;
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  color: var(--sb-text-dim); font-variant-numeric: tabular-nums;
+}
+.job-archives { display: flex; flex-direction: column; gap: 2px; }
+/* Pressable only when there is something local to open — see `local` in
+   ServerJob. Once rclone has moved an archive there is no local path left, and
+   the plain form is used instead so the UI does not offer what it cannot do. */
+.archive {
+  display: block; text-align: left;
+  background: var(--sb-sunken); color: var(--sb-text-secondary);
+  border-radius: var(--vwsq-radius-control);
+  padding: .2em .45em;
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.archive-open {
+  border: 0; cursor: pointer;
+  background: var(--vwsq-signal-online-soft); color: var(--vwsq-signal-online);
+  width: 100%;
+}
+.archive-open:hover { background: rgba(86,217,141,.24); }
+.job-err {
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  color: var(--vwsq-signal-alert); word-break: break-word;
+}
+
+/* ---- bulk routing hint --------------------------------------------------- */
+
+.actions-wrap {
+  position: sticky; bottom: 0;
+  display: flex; flex-direction: column; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) 0;
+  background: linear-gradient(to top, var(--sb-bg) 78%, transparent);
+}
+.actions-wrap .actions { position: static; padding: 0; background: none; }
+/* Informational, not a warning. This was amber because its only user was a
+   caution about flooding the download history; that caution is gone, and the
+   remaining uses — "saved, applies on the next heartbeat", "no worker has
+   reported yet" — are statements of fact that should not look like alarms. */
+.hint {
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  border-left: 2px solid var(--sb-border-strong);
+  background: var(--sb-sunken);
+  border-radius: 0 var(--vwsq-radius-control) var(--vwsq-radius-control) 0;
+  font-size: .68rem; color: var(--sb-text-secondary); line-height: 1.45;
+}
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---- deep scan progress -------------------------------------------------- */
+
+.deep {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--vwsq-signal-relay-soft);
+  border-left: 2px solid var(--vwsq-signal-relay);
+  border-radius: 0 var(--vwsq-radius-control) var(--vwsq-radius-control) 0;
+  font-family: var(--vwsq-font-mono); font-size: .62rem;
+  color: var(--sb-text-secondary); font-variant-numeric: tabular-nums;
+}
+.cap-bar .btn-alt { flex: 0 0 auto; padding: 0 var(--vwsq-space-3); }
+
+/* A secondary path: present, legible, and clearly not the main action.
+   Text-weight rather than a filled button so Scan keeps the visual lead. */
+.btn-quiet {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 var(--vwsq-space-3);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--vwsq-radius-control);
+  background: transparent;
+  color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono);
+  font-size: .62rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--vwsq-motion-snap), border-color var(--vwsq-motion-snap);
+}
+.btn-quiet:hover:not(:disabled) {
+  color: var(--sb-text-bright);
+  border-color: var(--sb-border-strong);
+}
+.btn-quiet:disabled { opacity: .45; cursor: default; }
+
+/* ---- container scope ----------------------------------------------------- */
+
+.scoperow {
+  display: flex; align-items: center; gap: var(--vwsq-space-2);
+  min-width: 0;
+}
+.scope-sel {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--vwsq-font-mono); font-size: .62rem;
+  color: var(--sb-accent);
+  background: var(--sb-accent-soft);
+  border: 1px solid var(--sb-border);
+  border-radius: var(--vwsq-radius-control);
+  padding: .2em .45em;
+}
+.scope-n {
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  color: var(--sb-text-dim); font-variant-numeric: tabular-nums;
+}
+.scope-none {
+  flex: 1;
+  font-family: var(--vwsq-font-mono); font-size: .6rem;
+  color: var(--sb-text-dim);
+}
+.btn-quiet-on {
+  color: var(--vwsq-coral-500);
+  border-color: var(--vwsq-coral-500);
+  background: var(--vwsq-coral-soft);
+}
+
+.hint-note {
+  margin: 0;
+  font-size: .72rem;
+  line-height: 1.5;
+  color: var(--sb-text-dim);
+}
+.actions span { display: block; }

@@ -10,6 +10,7 @@ import sys
 import random
 import shutil
 import subprocess
+import threading
 import requests
 from urllib.parse import urlparse
 
@@ -76,32 +77,252 @@ DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton:python-zipper"
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "svg"}
 UPSCALE_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
+AD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\alldebrid.token.txt"
+
+VAULT_COMMANDER_ROOT = r"C:\Users\Administrator\Desktop\Github Repos\vault-commander"
+VAULT_COMMANDER_UPSCALERS_DIR = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", "models", "upscalers")
+VAULT_COMMANDER_PYTHON = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", ".venv", "Scripts", "python.exe")
+VAULT_COMMANDER_UPSCALE_SCRIPT = os.path.join(VAULT_COMMANDER_ROOT, "cli", "utils", "upscale.py")
+VAULT_COMMANDER_ENHANCE_SCRIPT = os.path.join(VAULT_COMMANDER_ROOT, "cli", "Enhance-Image.ps1")
+
+ENHANCE_OPERATIONS = [
+    {
+        "name": "magick-enhance",
+        "label": "Auto Enhance — Denoise + Level + Sharpen",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "enhance",
+        "desc": "Balanced general enhancement combining gentle despeckle, auto-level color balance, and unsharp mask"
+    },
+    {
+        "name": "magick-sharpen",
+        "label": "Sharpen — Unsharp Mask",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "sharpen",
+        "desc": "High quality unsharp mask for edge clarity and crisp details"
+    },
+    {
+        "name": "magick-denoise",
+        "label": "Denoise — 3x3 Median Filter",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "denoise",
+        "desc": "3x3 median noise reduction for clean grain removal"
+    },
+    {
+        "name": "magick-contrast",
+        "label": "Contrast — Sigmoidal Curve",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "contrast",
+        "desc": "Sigmoidal non-linear contrast enhancement for rich depth"
+    },
+    {
+        "name": "magick-autolevel",
+        "label": "Auto Level — Dynamic Range",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "auto-level",
+        "desc": "Channel-wise contrast stretch for perfect highlights/shadows"
+    },
+    {
+        "name": "magick-clarity",
+        "label": "Clarity — Local Micro-Contrast",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "clarity",
+        "desc": "Local contrast adjustment for vivid texture definition"
+    },
+    {
+        "name": "magick-vibrance",
+        "label": "Vibrance — Color Saturation",
+        "group": "Enhancement",
+        "kind": "magick",
+        "op": "vibrance",
+        "desc": "Intelligent color boost preserving skin tones"
+    }
+]
+
+UPSCALE_LABELS = {
+    "4xNomos8k_atd": {
+        "label": "4x Nomos8k ATD — AI High-Fidelity (Recommended)",
+        "desc": "Trained for maximum fidelity on textures, skin, and fine details",
+        "group": "Upscaling"
+    },
+    "4xNomos8kDAT": {
+        "label": "4x Nomos8k DAT — AI Transformer Detail",
+        "desc": "Transformer-based 4x upscaler with advanced attention mechanism",
+        "group": "Upscaling"
+    },
+    "4xRealWebPhoto_v4_dat2": {
+        "label": "4x RealWebPhoto v4 — AI Photo & Web",
+        "desc": "Optimized specifically for web photos, portraits, and compressed JPEG artifacts",
+        "group": "Upscaling"
+    },
+    "pillow-lanczos": {
+        "label": "4x Fast Lanczos — Lightweight Resampling",
+        "desc": "Fast CPU-based 4x Lanczos interpolation (no GPU required)",
+        "group": "Upscaling"
+    }
+}
 
 
 def get_available_upscale_models():
+    """Discover all available upscaler models and enhancement operations."""
     models = []
-    if os.path.exists(NOMOS_MODEL_PATH):
-        models.append({
-            "name": NOMOS_MODEL_NAME,
-            "kind": "spandrel",
-            "path": os.path.abspath(NOMOS_MODEL_PATH),
-        })
+    # 1. Scan vault-commander upscaler models
+    if os.path.exists(VAULT_COMMANDER_UPSCALERS_DIR):
+        for fname in sorted(os.listdir(VAULT_COMMANDER_UPSCALERS_DIR)):
+            if fname.lower().endswith((".safetensors", ".pth", ".pt", ".bin")):
+                name = os.path.splitext(fname)[0]
+                meta = UPSCALE_LABELS.get(name, {
+                    "label": f"4x {name} — AI Upscaling",
+                    "desc": "Neural AI 4x Super-Resolution",
+                    "group": "Upscaling"
+                })
+                models.append({
+                    "name": name,
+                    "label": meta["label"],
+                    "desc": meta.get("desc", ""),
+                    "group": meta.get("group", "Upscaling"),
+                    "kind": "spandrel",
+                    "path": os.path.abspath(os.path.join(VAULT_COMMANDER_UPSCALERS_DIR, fname)),
+                })
+    # 2. Add local models if present
+    if os.path.exists(MODELS_DIR):
+        for fname in sorted(os.listdir(MODELS_DIR)):
+            if fname.lower().endswith((".safetensors", ".pth", ".pt")):
+                name = os.path.splitext(fname)[0]
+                if not any(m["name"] == name for m in models):
+                    meta = UPSCALE_LABELS.get(name, {
+                        "label": f"4x {name} — AI Upscaling",
+                        "desc": "Neural AI 4x Super-Resolution",
+                        "group": "Upscaling"
+                    })
+                    models.append({
+                        "name": name,
+                        "label": meta["label"],
+                        "desc": meta.get("desc", ""),
+                        "group": meta.get("group", "Upscaling"),
+                        "kind": "spandrel",
+                        "path": os.path.abspath(os.path.join(MODELS_DIR, fname)),
+                    })
+    # 3. Always include Pillow Lanczos
+    p_meta = UPSCALE_LABELS["pillow-lanczos"]
     models.append({
         "name": "pillow-lanczos",
+        "label": p_meta["label"],
+        "desc": p_meta["desc"],
+        "group": p_meta["group"],
         "kind": "pillow",
         "path": "",
     })
+    # 4. Include ImageMagick enhancement operations
+    for op in ENHANCE_OPERATIONS:
+        models.append(op)
     return models
 
 
+_CAPABILITIES_CACHE = None
+_CAPABILITIES_LOCK = threading.Lock()
+_UPSCALE_SEMAPHORE = threading.Semaphore(1)
+
+
+def check_upscaler_capabilities(force_refresh=False):
+    """Verify upscaler availability, CUDA support, and model discovery.
+    Cached in-memory to prevent repeated heavy subprocess invocations."""
+    global _CAPABILITIES_CACHE
+    if _CAPABILITIES_CACHE is not None and not force_refresh:
+        return _CAPABILITIES_CACHE
+
+    with _CAPABILITIES_LOCK:
+        if _CAPABILITIES_CACHE is not None and not force_refresh:
+            return _CAPABILITIES_CACHE
+
+        models = get_available_upscale_models()
+        model_names = [m["name"] for m in models]
+        has_vc_env = os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT)
+        cuda_available = False
+        device_name = ""
+        error = None
+
+        if has_vc_env:
+            # Check capabilities via vault-commander venv once and cache it
+            try:
+                cmd = [
+                    VAULT_COMMANDER_PYTHON,
+                    "-c",
+                    "import torch, spandrel, PIL; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+                ]
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if res.returncode == 0:
+                    lines = res.stdout.strip().splitlines()
+                    if len(lines) >= 1 and lines[0].strip().lower() == "true":
+                        cuda_available = True
+                    if len(lines) >= 2:
+                        device_name = lines[1].strip()
+                else:
+                    error = res.stderr.strip()
+            except Exception as e:
+                error = str(e)
+        else:
+            # Fallback to current process venv
+            try:
+                import importlib.util
+                if importlib.util.find_spec("PIL") is None:
+                    error = "Pillow not installed"
+                if importlib.util.find_spec("spandrel") is None and any(m.get("kind") == "spandrel" for m in models):
+                    error = "spandrel not installed"
+                import torch
+                cuda_available = torch.cuda.is_available()
+                if cuda_available:
+                    device_name = torch.cuda.get_device_name(0)
+            except Exception as e:
+                if not error:
+                    error = str(e)
+
+        available = bool(len(model_names) > 0 and (has_vc_env or not error))
+        _CAPABILITIES_CACHE = {
+            "available": available,
+            "models": model_names,
+            "model_details": models,
+            "cuda": cuda_available,
+            "device": device_name or ("NVIDIA CUDA" if cuda_available else "CPU"),
+            "error": error if not available else None
+        }
+        return _CAPABILITIES_CACHE
+
+
 def _configured_rclone_remotes():
+    """Remotes in priority order.
+
+    Reads the persisted config first so that reordering them from the extension
+    takes effect without a restart, falling back to the environment. Imported
+    lazily to keep ds_storage out of the import cycle at module load.
+    """
+    try:
+        from ds_storage import configured_remotes
+        remotes = configured_remotes()
+        if remotes:
+            return remotes
+    except Exception as e:
+        print(f"[Server] Falling back to env rclone remotes: {e}")
     raw = os.environ.get("PYTHON_ZIPPER_RCLONE_REMOTES", DEFAULT_RCLONE_REMOTES)
     return [remote.strip() for remote in raw.split(",") if remote.strip()]
 
 
 def handoff_to_rclone(file_path):
+    """Move a finished file to the first remote that accepts it.
+
+    Returns the remote it landed on, or "" if it is still local. It used to
+    return a bare bool, which meant a completed job could say the handoff
+    happened but never which of Google Drive or Proton actually has the file —
+    the first question anyone asks when looking for it afterwards. A non-empty
+    string is still truthy, so every existing caller keeps working.
+    """
     if not file_path or not os.path.exists(file_path):
-        return False
+        return ""
     for remote in _configured_rclone_remotes():
         destination = remote if remote.endswith(("/", ":")) else f"{remote}/"
         try:
@@ -112,20 +333,148 @@ def handoff_to_rclone(file_path):
             )
             if result.returncode == 0:
                 print(f"[Server] rclone handoff complete: {remote}")
-                return True
+                return remote
             print(f"[Server] rclone handoff failed for {remote}: {result.stderr.strip()}")
         except FileNotFoundError:
             print("[Server] rclone executable was not found. Keeping local file.")
-            return False
+            return ""
         except Exception as e:
             print(f"[Server] rclone handoff exception for {remote}: {e}")
     print(f"[Server] All rclone remotes failed. Keeping local file: {file_path}")
-    return False
+    return ""
 
 
 def upscale_image_content(content, ext, model):
     if ext.lower() not in UPSCALE_IMAGE_EXTENSIONS:
         return content
+    if not model or model == "off":
+        return content
+
+    with _UPSCALE_SEMAPHORE:
+        return _do_upscale_image_content(content, ext, model)
+
+
+def _do_upscale_image_content(content, ext, model):
+    # 1. ImageMagick / VW CLI quality enhancement operations
+    magick_op = None
+    if model.startswith("magick-"):
+        magick_op = model.replace("magick-", "")
+    elif model in ["enhance", "sharpen", "denoise", "contrast", "auto-level", "autolevel", "clarity", "vibrance"]:
+        magick_op = model
+
+    if magick_op:
+        if magick_op in ["autolevel", "auto-level"]:
+            magick_op = "auto-level"
+        import tempfile
+        tmp_in = None
+        tmp_out = None
+        try:
+            clean_ext = ext.lstrip(".").lower()
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_in:
+                f_in.write(content)
+                tmp_in = f_in.name
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_out:
+                tmp_out = f_out.name
+
+            # Preferred: Execute via vault-commander CLI script
+            if os.path.exists(VAULT_COMMANDER_ENHANCE_SCRIPT):
+                cmd = [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", VAULT_COMMANDER_ENHANCE_SCRIPT,
+                    "-InputPath", tmp_in,
+                    "-Operation", magick_op,
+                    "-OutputPath", tmp_out
+                ]
+            else:
+                args = ["magick", tmp_in]
+                if magick_op == "enhance":
+                    args.extend(["-despeckle", "-auto-level", "-unsharp", "0x1.0+1.2+0.05"])
+                elif magick_op == "sharpen":
+                    args.extend(["-unsharp", "0x1.2+1.5+0.04"])
+                elif magick_op == "denoise":
+                    args.extend(["-statistic", "median", "3x3"])
+                elif magick_op == "contrast":
+                    args.extend(["-sigmoidal-contrast", "3,50%"])
+                elif magick_op == "auto-level":
+                    args.extend(["-auto-level"])
+                elif magick_op == "clarity":
+                    args.extend(["-unsharp", "0x5.0+0.8+0.0", "-auto-gamma"])
+                elif magick_op == "vibrance":
+                    args.extend(["-modulate", "100,120,100"])
+                args.append(tmp_out)
+                cmd = args
+
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+                with open(tmp_out, "rb") as f:
+                    return f.read()
+            else:
+                print(f"[Server] ImageMagick enhancement error ({res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        except Exception as e:
+            print(f"[Server] ImageMagick enhancement exception: {e}")
+        finally:
+            if tmp_in and os.path.exists(tmp_in):
+                try: os.remove(tmp_in)
+                except Exception: pass
+            if tmp_out and os.path.exists(tmp_out):
+                try: os.remove(tmp_out)
+                except Exception: pass
+
+    # 2. Pillow Lanczos mode
+    if model == "pillow-lanczos":
+        try:
+            import io
+            from PIL import Image
+            img = Image.open(io.BytesIO(content))
+            new_w, new_h = img.width * 4, img.height * 4
+            upscaled = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            out_buf = io.BytesIO()
+            fmt = "JPEG" if ext.lower() in ["jpg", "jpeg"] else ext.upper()
+            upscaled.save(out_buf, format=fmt)
+            return out_buf.getvalue()
+        except Exception as e:
+            print(f"[Server] Pillow Lanczos upscaling failed: {e}")
+            return content
+
+    # 3. Vault-commander CUDA Spandrel upscaling
+    if os.path.exists(VAULT_COMMANDER_PYTHON) and os.path.exists(VAULT_COMMANDER_UPSCALE_SCRIPT):
+        import tempfile
+        tmp_in = None
+        tmp_out = None
+        try:
+            clean_ext = ext.lstrip(".").lower()
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_in:
+                f_in.write(content)
+                tmp_in = f_in.name
+            with tempfile.NamedTemporaryFile(suffix=f".{clean_ext}", delete=False) as f_out:
+                tmp_out = f_out.name
+
+            cmd = [
+                VAULT_COMMANDER_PYTHON,
+                VAULT_COMMANDER_UPSCALE_SCRIPT,
+                "--input", tmp_in,
+                "--model", model,
+                "--output", tmp_out
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if res.returncode == 0 and os.path.exists(tmp_out) and os.path.getsize(tmp_out) > 0:
+                with open(tmp_out, "rb") as f:
+                    return f.read()
+            else:
+                print(f"[Server] Vault-commander upscaling exited ({res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        except Exception as e:
+            print(f"[Server] Vault-commander upscaling exception: {e}")
+        finally:
+            if tmp_in and os.path.exists(tmp_in):
+                try: os.remove(tmp_in)
+                except Exception: pass
+            if tmp_out and os.path.exists(tmp_out):
+                try: os.remove(tmp_out)
+                except Exception: pass
+
+    # 4. Fallback local Python upscale
     try:
         from upscale_image import upscale_bytes
         return upscale_bytes(content, model=model)
@@ -141,6 +490,19 @@ def get_rd_token():
                 return f.read().strip()
     except Exception as e:
         print(f"[Server] Failed to read Real-Debrid token: {e}")
+    return None
+
+
+def get_ad_token():
+    try:
+        env_token = os.environ.get("ALLDEBRID_API_KEY", "").strip()
+        if env_token:
+            return env_token
+        if os.path.exists(AD_TOKEN_PATH):
+            with open(AD_TOKEN_PATH, 'r') as f:
+                return f.read().strip()
+    except Exception as e:
+        print(f"[Server] Failed to read AllDebrid token: {e}")
     return None
 
 
@@ -167,6 +529,30 @@ def unrestrict_link_rd(url, rd_token):
             print(f"[Server] Real-Debrid error {resp.status_code}: {resp.text}")
     except Exception as e:
         print(f"[Server] Real-Debrid unrestriction exception: {e}")
+    return url
+
+
+def unrestrict_link_alldebrid(url, ad_token=None):
+    """Unrestrict link via AllDebrid API and generate playlist if it's a folder."""
+    token = ad_token or get_ad_token()
+    if not token:
+        print("[Server] AllDebrid token not available. Skipping unrestriction.")
+        return url
+    try:
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "telegram")))
+        from tlr_alldebrid import process_mega_url, unlock_link_alldebrid
+        if "/folder/" in url.lower():
+            res = process_mega_url(url, api_key=token)
+            if res.get("status") == "success" and res.get("unrestricted_urls"):
+                print(f"[Server] AllDebrid expanded folder into {len(res['unrestricted_urls'])} streams (playlist: {res.get('playlist_path')})")
+                return res["unrestricted_urls"][0]
+        else:
+            unlocked = unlock_link_alldebrid(url, api_key=token)
+            if unlocked and unlocked.get("link"):
+                print(f"[Server] AllDebrid successfully unrestricted: {url} -> {unlocked['link']}")
+                return unlocked["link"]
+    except Exception as e:
+        print(f"[Server] AllDebrid unrestriction exception: {e}")
     return url
 
 
@@ -239,8 +625,8 @@ def download_via_ytdlp(url, dest_dir, headers=None, rclone_enabled=False):
                 if f.startswith(f"video_{h}_"):
                     file_path = os.path.join(dest_dir, f)
                     print(f"[Server] Completed yt-dlp download: {f}")
-                    rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
-                    return {"filename": f, "rclone_complete": rclone_complete}
+                    landed = handoff_to_rclone(file_path) if rclone_enabled else ""
+                    return {"filename": f, "rclone_complete": bool(landed), "rclone_remote": landed}
             print(f"[Server] yt-dlp completed but could not locate file starting with video_{h}_ in {dest_dir}")
         else:
             print(f"[Server] yt-dlp failed: {result.stderr}")
@@ -261,7 +647,11 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
         return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
     try:
         print(f"[Server] Starting direct download for: {url}")
-        resp = requests.get(url, headers=headers, stream=True, timeout=120)
+        try:
+            resp = requests.get(url, headers=headers, stream=True, timeout=120)
+        except requests.exceptions.ProxyError as pe:
+            print(f"[Server] Proxy failed for {url} ({pe}), falling back to direct...")
+            resp = requests.get(url, headers=headers, stream=True, timeout=120, proxies={"http": None, "https": None})
         if resp.status_code != 200:
             print(f"[Server] Direct download failed for {url}: status {resp.status_code}")
             return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
@@ -283,8 +673,8 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
                 if chunk:
                     f.write(chunk)
         print(f"[Server] Completed download: {filename}")
-        rclone_complete = handoff_to_rclone(file_path) if rclone_enabled else False
-        return {"filename": filename, "rclone_complete": rclone_complete}
+        landed = handoff_to_rclone(file_path) if rclone_enabled else ""
+        return {"filename": filename, "rclone_complete": bool(landed), "rclone_remote": landed}
     except Exception as e:
         print(f"[Server] Error downloading {url}: {e}")
         return download_via_ytdlp(url, dest_dir, headers, rclone_enabled)
@@ -292,24 +682,74 @@ def download_direct_file(url, headers, dest_dir, rclone_enabled=False):
 
 def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
                             upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, dest_dir=None,
-                            download_image_fn=None, rclone_enabled=False):
+                            download_image_fn=None, rclone_enabled=False,
+                            job_id=None, progress_fn=None):
+    """Download a gallery and pack it into batched zips.
+
+    Downloads run in a small thread pool; the zip writes stay on this thread
+    because ``zipfile`` is not thread-safe and because filenames are numbered in
+    order. Fetching was the entire cost here - the loop used to block on one
+    image at a time, so a 200-image gallery paid 200 sequential round trips.
+
+    Memory is bounded by fetching a window at a time rather than everything up
+    front: a large gallery of multi-megabyte images would otherwise be held in
+    RAM all at once before a single byte was written.
+
+    Concurrency is deliberately modest. Every image in a gallery usually comes
+    from one host, so the worker count *is* the per-host request rate, and a
+    gallery host that decides we look like a scraper is a worse outcome than a
+    slower download. Override with PYTHON_ZIPPER_FETCH_WORKERS if a given host
+    tolerates more.
+    """
     import zipfile
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        workers = int(os.environ.get("PYTHON_ZIPPER_FETCH_WORKERS", "6"))
+    except ValueError:
+        workers = 6
+    workers = max(1, min(workers, 16))
+    window = workers * 2
+
     zip_writer = None
     zip_path = None
     count = 0
     zip_file_count = 0
     archives = []
     rclone_results = []
+    fetched = 0
 
-    print(f"[Server] Downloading {len(img_urls)} images for slug '{url_slug}'...")
+    print(f"[Server] Downloading {len(img_urls)} images for slug '{url_slug}' "
+          f"({workers} parallel fetches)...")
 
-    for i, img_url in enumerate(img_urls):
+    def _fetch(u):
+        try:
+            return download_image_fn(u, headers) if download_image_fn else None
+        except Exception as e:
+            print(f"[Server] Fetch failed for {u}: {e}")
+            return None
+
+    def _pairs():
+        """Yield (url, content) in the original order, a window at a time."""
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for start in range(0, len(img_urls), window):
+                chunk = img_urls[start:start + window]
+                for u, content in zip(chunk, pool.map(_fetch, chunk)):
+                    yield u, content
+
+    for img_url, content in _pairs():
+        fetched += 1
+        if progress_fn and fetched % 5 == 0:
+            try:
+                progress_fn(job_id, fetched, len(img_urls))
+            except Exception:
+                pass
+
         parsed_img = urlparse(img_url)
         ext = os.path.splitext(parsed_img.path)[1].lower().strip(".")
         if ext not in IMAGE_EXTENSIONS:
             ext = "jpg"
 
-        content = download_image_fn(img_url, headers) if download_image_fn else None
         if not content:
             continue
 
@@ -333,7 +773,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
         if count > 0 and count % batch_size == 0:
             zip_writer.close()
             archives.append(os.path.basename(zip_path))
-            rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
+            rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else "")
             zip_writer = None
             print(f"[Server] Closed zip: {zip_path}")
             count = 0
@@ -341,7 +781,7 @@ def download_and_zip_images(url_slug, page_url, img_urls, batch_size, headers,
     if zip_writer is not None:
         zip_writer.close()
         archives.append(os.path.basename(zip_path))
-        rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else False)
+        rclone_results.append(handoff_to_rclone(zip_path) if rclone_enabled else "")
         print(f"[Server] Closed final zip: {zip_path}")
 
     print(f"[Server] Finished downloading and zipping task for: {page_url}")

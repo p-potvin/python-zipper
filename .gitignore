@@ -41,3 +41,8 @@ video/
 *.log
 *.logs
 
+
+# rclone remote priority, written by the extension via /api/rclone/config
+.zipper-rclone.json
+.thumbs/
+playlists/.thumbs/

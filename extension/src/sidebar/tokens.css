@@ -1,0 +1,183 @@
+/* vaultsqware tokens — mirrored from vaultwares-themes/vaultsqware/vaultsqware.css.
+ *
+ * Console and warm are simultaneous regions in the source system, not day/night
+ * modes. The sidebar keeps that idea but adds one thing the desktop apps don't
+ * need: a dominance toggle. `data-surface` decides which region is the working
+ * surface and which is the rail. Components only ever read the `--sb-*` aliases
+ * at the bottom, so nothing downstream has to know which region is active.
+ *
+ * Rule inherited from the system: never a raw hex outside this file.
+ */
+
+/* Bundled locally: extension pages can't reach fonts.googleapis.com, and the
+ * fallback to Segoe UI / Consolas changed the metrics enough to matter. Both
+ * are variable fonts covering 400-700 in one file, latin subset — 79 KB total.
+ * Paths resolve against dist/ at runtime; esbuild leaves them alone via
+ * `external: ['*.woff2']` in build.mjs. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/inter-var.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/jetbrains-mono-var.woff2") format("woff2");
+}
+
+:root {
+  /* ---- console — obsidian ------------------------------------------------ */
+  --vwsq-console-bg: #0A0C11;
+  --vwsq-console-surface: #11141B;
+  --vwsq-console-sunken: #070810;
+  --vwsq-console-raised: #191D27;
+  --vwsq-console-elevated: #242935;
+  --vwsq-console-active: #323847;
+  --vwsq-console-hover: #1F2430;
+  --vwsq-console-text: #BAC2D2;
+  --vwsq-console-text-secondary: rgba(186, 194, 210, .72);
+  --vwsq-console-text-dim: rgba(186, 194, 210, .46);
+  --vwsq-console-text-bright: #E6EAF2;
+  --vwsq-console-border: rgba(255, 255, 255, .06);
+  --vwsq-console-border-strong: rgba(255, 255, 255, .12);
+
+  /* ---- warm — bone ------------------------------------------------------- */
+  --vwsq-warm-bg: #EDECE8;
+  --vwsq-warm-raised: #F8F7F4;
+  --vwsq-warm-muted: #DEDCD6;
+  --vwsq-warm-sunken: #E4E2DD;
+  --vwsq-warm-ink: #0F1116;
+  --vwsq-warm-ink-secondary: rgba(15, 17, 22, .66);
+  --vwsq-warm-ink-dim: rgba(15, 17, 22, .42);
+  --vwsq-warm-border: rgba(15, 17, 22, .10);
+  --vwsq-warm-border-strong: rgba(15, 17, 22, .18);
+
+  /* ---- iris — primary accent --------------------------------------------- */
+  --vwsq-iris-050: #EEF0FE;
+  --vwsq-iris-200: #BAC0FB;
+  --vwsq-iris-300: #98A1F7;
+  --vwsq-iris-500: #6E7BF2;
+  --vwsq-iris-600: #5866DC;
+  --vwsq-iris-700: #4551B8;
+  --vwsq-iris-soft: rgba(110, 123, 242, .14);
+  --vwsq-iris-softer: rgba(110, 123, 242, .07);
+  --vwsq-iris-glow: rgba(110, 123, 242, .32);
+
+  /* ---- coral — secondary accent, focus rings ----------------------------- */
+  --vwsq-coral-300: #FFA88B;
+  --vwsq-coral-500: #FF8A6B;
+  --vwsq-coral-600: #E86F4F;
+  --vwsq-coral-soft: rgba(255, 138, 107, .14);
+
+  /* ---- signals — hardware-LED semantics ---------------------------------- */
+  --vwsq-signal-online: #56D98D;
+  --vwsq-signal-relay: #5AB8F0;
+  --vwsq-signal-warning: #E9B054;
+  --vwsq-signal-alert: #F45D6B;
+  --vwsq-signal-sync: #A585F5;
+  --vwsq-signal-idle: #6B7385;
+  --vwsq-signal-online-soft: rgba(86, 217, 141, .14);
+  --vwsq-signal-relay-soft: rgba(90, 184, 240, .14);
+  --vwsq-signal-warning-soft: rgba(233, 176, 84, .14);
+  --vwsq-signal-alert-soft: rgba(244, 93, 107, .14);
+  --vwsq-signal-sync-soft: rgba(165, 133, 245, .14);
+  --vwsq-signal-idle-soft: rgba(107, 115, 133, .16);
+
+  /* ---- type -------------------------------------------------------------- */
+  /* Both faces are bundled above. The stacks stay as written so the panel still
+     renders if a woff2 fails to load. */
+  --vwsq-font-sans: "Inter", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --vwsq-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+  /* ---- geometry ---------------------------------------------------------- */
+  --vwsq-radius-card: 28px;
+  --vwsq-radius-panel: 16px;
+  --vwsq-radius-pill: 20px;
+  --vwsq-radius-control: 4px;
+
+  --vwsq-space-1: 4px;
+  --vwsq-space-2: 8px;
+  --vwsq-space-3: 12px;
+  --vwsq-space-4: 16px;
+  --vwsq-space-5: 24px;
+  --vwsq-space-6: 32px;
+
+  --vwsq-titlebar-h: 32px;
+
+  /* ---- motion ------------------------------------------------------------ */
+  --vwsq-motion-snap: 90ms;
+  --vwsq-motion-ui: 160ms;
+  --vwsq-motion-enter: 400ms cubic-bezier(.16, 1, .3, 1);
+
+  --vwsq-focus-ring: 2px solid var(--vwsq-coral-500);
+}
+
+/* ---- surface aliases -----------------------------------------------------
+ * Everything below this line is what components actually consume. Swapping
+ * `data-surface` re-points all of them at the other region in one move.
+ * -------------------------------------------------------------------------- */
+
+:root,
+:root[data-surface="console"] {
+  --sb-bg: var(--vwsq-console-bg);
+  --sb-surface: var(--vwsq-console-surface);
+  --sb-sunken: var(--vwsq-console-sunken);
+  --sb-raised: var(--vwsq-console-raised);
+  --sb-elevated: var(--vwsq-console-elevated);
+  --sb-hover: var(--vwsq-console-hover);
+  --sb-active: var(--vwsq-console-active);
+  --sb-text: var(--vwsq-console-text);
+  --sb-text-secondary: var(--vwsq-console-text-secondary);
+  --sb-text-dim: var(--vwsq-console-text-dim);
+  --sb-text-bright: var(--vwsq-console-text-bright);
+  --sb-border: var(--vwsq-console-border);
+  --sb-border-strong: var(--vwsq-console-border-strong);
+
+  /* the rail takes the opposite region — this is the console/warm pairing */
+  --sb-rail-bg: var(--vwsq-warm-bg);
+  --sb-rail-raised: var(--vwsq-warm-raised);
+  --sb-rail-sunken: var(--vwsq-warm-sunken);
+  --sb-rail-text: var(--vwsq-warm-ink);
+  --sb-rail-text-dim: var(--vwsq-warm-ink-dim);
+  --sb-rail-border: var(--vwsq-warm-border);
+}
+
+:root[data-surface="warm"] {
+  --sb-bg: var(--vwsq-warm-bg);
+  --sb-surface: var(--vwsq-warm-raised);
+  --sb-sunken: var(--vwsq-warm-sunken);
+  --sb-raised: var(--vwsq-warm-raised);
+  --sb-elevated: #FFFFFF;
+  --sb-hover: var(--vwsq-warm-sunken);
+  --sb-active: var(--vwsq-warm-muted);
+  --sb-text: var(--vwsq-warm-ink);
+  --sb-text-secondary: var(--vwsq-warm-ink-secondary);
+  --sb-text-dim: var(--vwsq-warm-ink-dim);
+  --sb-text-bright: var(--vwsq-warm-ink);
+  --sb-border: var(--vwsq-warm-border);
+  --sb-border-strong: var(--vwsq-warm-border-strong);
+
+  --sb-rail-bg: var(--vwsq-console-bg);
+  --sb-rail-raised: var(--vwsq-console-raised);
+  --sb-rail-sunken: var(--vwsq-console-sunken);
+  --sb-rail-text: var(--vwsq-console-text-bright);
+  --sb-rail-text-dim: var(--vwsq-console-text-dim);
+  --sb-rail-border: var(--vwsq-console-border);
+}
+
+/* Iris at 500 is tuned for the console ground. On bone it needs to go darker
+   to hold contrast against warm surfaces — the system's own 700 step. */
+:root[data-surface="warm"] {
+  --sb-accent: var(--vwsq-iris-700);
+  --sb-accent-soft: var(--vwsq-iris-soft);
+}
+
+:root,
+:root[data-surface="console"] {
+  --sb-accent: var(--vwsq-iris-500);
+  --sb-accent-soft: var(--vwsq-iris-soft);
+}

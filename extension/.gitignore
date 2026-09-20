@@ -2,3 +2,7 @@ node_modules/
 dist/
 dist-xpi/
 web-ext-artifacts/
+
+# runtime log accidentally shipped inside the extension package
+public/native_host.log
+native-host/__pycache__/

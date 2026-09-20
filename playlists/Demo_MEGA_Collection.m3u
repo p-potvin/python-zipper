@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:-1 tvg-name="sample_video_01.mp4" group-title="MEGA Demo Streams",sample_video_01.mp4 (100.0 MB)
+https://debrid.stream.local/dl/sample01/sample_video_01.mp4
+#EXTINF:-1 tvg-name="sample_video_02.mkv" group-title="MEGA Demo Streams",sample_video_02.mkv (300.0 MB)
+https://debrid.stream.local/dl/sample02/sample_video_02.mkv

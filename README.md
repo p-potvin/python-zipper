@@ -42,7 +42,7 @@ The server exposes several HTTP endpoints. Scraping and downloading run in backg
 | `POST /logs` | POST | Receives log entries from remote nodes. Body: `{node, message, timestamp, ...}` | `central-logs/{node}.log` |
 | `GET /qa-logs` | GET | Returns last 200 log entries as JSON | None (read-only) |
 | `GET /api/upscaler/status` | GET | Checks local upscaler availability (spandrel + model files + CUDA) | None (read-only) |
-| `POST /api/open-downloaded` | POST | Opens a downloaded file or the `.downloaded/` folder in Windows Explorer | None (side-effect only) |
+| `POST /api/open-downloaded` | POST | Deprecated v1.32 compatibility resolver; returns an existing absolute path but never launches Explorer | None (read-only) |
 | `GET /api/huggingface/*` | GET | Proxies requests to `https://huggingface.co/api/*` | None (proxy) |
 | `GET /api/civitai/*` | GET | Proxies requests to `https://civitai.red/api/*` | None (proxy) |
 | `GET /api/comfyui/*` | GET | Proxies requests to `http://127.0.0.1:8188` | None (proxy) |

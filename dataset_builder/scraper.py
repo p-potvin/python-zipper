@@ -8,7 +8,7 @@ import subprocess
 from urllib.parse import urlparse, urljoin
 
 def install_dependencies():
-    dependencies = ["beautifulsoup4", "requests", "pillow"]
+    dependencies = ["beautifulsoup4", "requests", "pillow", "pysocks", "win11toast"]
     missing = []
     for dep in dependencies:
         try:
@@ -16,6 +16,10 @@ def install_dependencies():
                 __import__("bs4")
             elif dep == "pillow":
                 __import__("PIL")
+            elif dep == "pysocks":
+                __import__("socks")
+            elif dep == "win11toast":
+                __import__("win11toast")
             else:
                 __import__(dep)
         except ImportError:
@@ -28,7 +32,6 @@ def install_dependencies():
             print("Dependencies installed successfully.")
         except Exception as e:
             print(f"Failed to install dependencies: {e}")
-            sys.exit(1)
 
 # Ensure packages are installed
 install_dependencies()
@@ -67,11 +70,23 @@ def get_url_slug(url):
 
 def download_image(url, headers):
     try:
-        r = requests.get(url, headers=headers, timeout=10)
+        r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             return r.content
+        else:
+            print(f"[Server] Image HTTP {r.status_code} for {url}")
+    except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError) as pe:
+        # Fallback without proxy if SOCKS/HTTP proxy is unreachable
+        try:
+            r = requests.get(url, headers=headers, timeout=15, proxies={"http": None, "https": None})
+            if r.status_code == 200:
+                return r.content
+            else:
+                print(f"[Server] Direct fallback HTTP {r.status_code} for {url}")
+        except Exception as fe:
+            print(f"[Server] Direct fallback failed for {url}: {fe}")
     except Exception as e:
-        print(f"Failed to download image from {url}: {e}")
+        print(f"[Server] Failed to download image from {url}: {e}")
     return None
 
 def scrape_with_requests(url, selector_str):

@@ -2,10 +2,38 @@ import os
 import sys
 import json
 import threading
+import datetime
+import builtins
 import requests
+import re
 from urllib.parse import urljoin
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
+
+# Force unbuffered / line-buffered stdout and stderr for service logs
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+# Universal timestamped logging wrapper
+_orig_print = builtins.print
+def timestamped_print(*args, **kwargs):
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args:
+        first = f"[{now}] {args[0]}"
+        _orig_print(first, *args[1:], **kwargs)
+    else:
+        _orig_print(f"[{now}]", **kwargs)
+    if "flush" not in kwargs:
+        kwargs["flush"] = True
+builtins.print = timestamped_print
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import scraper
@@ -14,21 +42,61 @@ from ds_jobs import (
     get_jobs_snapshot, JOBS, JOBS_LOCK,
 )
 from ds_helpers import (
-    get_available_upscale_models, handoff_to_rclone, upscale_image_content,
+    get_available_upscale_models, check_upscaler_capabilities, handoff_to_rclone, upscale_image_content,
     get_rd_token, unrestrict_link_rd, bypass_linkvertise,
     download_via_ytdlp, download_direct_file, download_and_zip_images,
     NOMOS_MODEL_NAME, IMAGE_EXTENSIONS,
 )
 from ds_streams import probe_stream, download_stream, stop_stream, STREAMS_DIR
 
+
+def build_jobs_payload():
+    return {
+        "jobs": get_jobs_snapshot(),
+        "source": "local-python-zipper",
+        "download_dir": os.path.abspath(DEST_DIR),
+        "streams_dir": os.path.abspath(STREAMS_DIR),
+    }
+
+
+def resolve_archive_paths(archives):
+    return [os.path.abspath(os.path.join(DEST_DIR, name)) for name in archives]
+
+
+def resolve_legacy_reveal_path(data):
+    """Resolve v1.32 reveal input without performing a desktop side effect."""
+    if data.get("path"):
+        path = os.path.normpath(os.path.abspath(data["path"]))
+    elif data.get("folder"):
+        path = os.path.abspath(STREAMS_DIR if data.get("which") == "streams" else DEST_DIR)
+    elif data.get("filename"):
+        path = os.path.normpath(os.path.abspath(os.path.join(DEST_DIR, data["filename"])))
+    else:
+        raise ValueError("A path, filename, or folder request is required")
+    if not os.path.exists(path):
+        raise FileNotFoundError("The requested path does not exist")
+    return path
+
+
 PORT = 5171
-DEST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded")
+from ds_config import DEST_DIR
 VAULTWARES_API = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca:9001")
 
 
 class ScraperHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
+        except Exception as e:
+            if "10053" in str(e) or "10054" in str(e) or "Broken pipe" in str(e):
+                self.close_connection = True
+            else:
+                raise
 
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -83,37 +151,8 @@ class ScraperHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle_upscaler_status(self):
-        models = get_available_upscale_models()
-        available_models = [model["name"] for model in models]
-        error = None
-        cuda_available = False
-        try:
-            import importlib.util
-            if importlib.util.find_spec("PIL") is None:
-                error = "Pillow not installed (pip install pillow)"
-            if NOMOS_MODEL_NAME in available_models and importlib.util.find_spec("spandrel") is None:
-                error = "spandrel not installed (pip install spandrel)"
-        except Exception as e:
-            error = str(e)
-        try:
-            import torch
-            cuda_available = torch.cuda.is_available()
-        except Exception:
-            pass
-        available = bool(available_models and not error)
-        result = {
-            "available": available,
-            "models": available_models,
-            "model_details": models,
-            "cuda": cuda_available
-        }
-        if error:
-            result["error"] = error
-        body = json.dumps(result).encode('utf-8')
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body)
+        result = check_upscaler_capabilities()
+        self._send_json(result)
 
     def _read_json(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -125,164 +164,27 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return {}
 
     def _send_json(self, obj, code=200):
-        body = json.dumps(obj).encode('utf-8')
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _reveal_in_explorer(self, path, select=False):
-        import subprocess
-        p = os.path.normpath(os.path.abspath(path))
-        target_dir = p if os.path.isdir(p) else os.path.dirname(p)
-        if not os.path.exists(target_dir):
-            target_dir = os.path.abspath(DEST_DIR)
-
-        # 1. Check if running in Session 0 (e.g. Windows Service) and bridge to interactive desktop
-        if os.name == 'nt':
-            try:
-                import ctypes
-                from ctypes import wintypes
-                kernel32 = ctypes.windll.kernel32
-                process_session_id = wintypes.DWORD()
-                if kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(process_session_id)):
-                    if process_session_id.value == 0:
-                        wtsapi32 = ctypes.windll.wtsapi32
-                        advapi32 = ctypes.windll.advapi32
-                        active_session_id = kernel32.WTSGetActiveConsoleSessionId()
-                        if active_session_id == 0xFFFFFFFF:
-                            active_session_id = 1
-
-                        user_token = wintypes.HANDLE()
-                        if wtsapi32.WTSQueryUserToken(active_session_id, ctypes.byref(user_token)):
-                            dup_token = wintypes.HANDLE()
-                            advapi32.DuplicateTokenEx(
-                                user_token,
-                                0x02000000 | 0x000F0000 | 0x003F,
-                                None,
-                                2,
-                                1,
-                                ctypes.byref(dup_token)
-                            )
-
-                            class STARTUPINFO(ctypes.Structure):
-                                _fields_ = [
-                                    ('cb', wintypes.DWORD),
-                                    ('lpReserved', wintypes.LPWSTR),
-                                    ('lpDesktop', wintypes.LPWSTR),
-                                    ('lpTitle', wintypes.LPWSTR),
-                                    ('dwX', wintypes.DWORD),
-                                    ('dwY', wintypes.DWORD),
-                                    ('dwXSize', wintypes.DWORD),
-                                    ('dwYSize', wintypes.DWORD),
-                                    ('dwXCountChars', wintypes.DWORD),
-                                    ('dwYCountChars', wintypes.DWORD),
-                                    ('dwFillAttribute', wintypes.DWORD),
-                                    ('dwFlags', wintypes.DWORD),
-                                    ('wShowWindow', wintypes.WORD),
-                                    ('cbReserved2', wintypes.WORD),
-                                    ('lpReserved2', ctypes.c_char_p),
-                                    ('hStdInput', wintypes.HANDLE),
-                                    ('hStdOutput', wintypes.HANDLE),
-                                    ('hStdError', wintypes.HANDLE)
-                                ]
-
-                            class PROCESS_INFORMATION(ctypes.Structure):
-                                _fields_ = [
-                                    ('hProcess', wintypes.HANDLE),
-                                    ('hThread', wintypes.HANDLE),
-                                    ('dwProcessId', wintypes.DWORD),
-                                    ('dwThreadId', wintypes.DWORD)
-                                ]
-
-                            si = STARTUPINFO()
-                            si.cb = ctypes.sizeof(STARTUPINFO)
-                            si.lpDesktop = "winsta0\\default"
-                            pi = PROCESS_INFORMATION()
-
-                            cmd = f'explorer.exe /select,"{p}"' if (select and os.path.isfile(p)) else f'explorer.exe "{target_dir}"'
-                            success = advapi32.CreateProcessAsUserW(
-                                dup_token.value or user_token.value,
-                                None,
-                                cmd,
-                                None,
-                                None,
-                                False,
-                                0x00000020,
-                                None,
-                                None,
-                                ctypes.byref(si),
-                                ctypes.byref(pi)
-                            )
-                            if success:
-                                kernel32.CloseHandle(pi.hProcess)
-                                kernel32.CloseHandle(pi.hThread)
-                                kernel32.CloseHandle(dup_token)
-                                kernel32.CloseHandle(user_token)
-                                print(f"[Server] launched explorer via CreateProcessAsUserW into session {active_session_id}")
-                                return p
-                            kernel32.CloseHandle(dup_token)
-                            kernel32.CloseHandle(user_token)
-            except Exception as e:
-                print(f"[Server] Session bridge failed ({e}); trying direct launch")
-
-        # 2. Standard interactive launch
         try:
-            if select and os.path.isfile(p):
-                subprocess.Popen(['explorer.exe', f'/select,{p}'])
-            else:
-                try:
-                    os.startfile(target_dir)
-                except Exception:
-                    subprocess.Popen(['explorer.exe', target_dir])
+            body = json.dumps(obj).encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
         except Exception as e:
-            print(f"[Server] reveal explorer failed: {e}")
-        return p
-
-    def _handle_open_downloaded(self, data):
-        try:
-            dest = os.path.abspath(DEST_DIR)
-            os.makedirs(dest, exist_ok=True)
-            os.makedirs(STREAMS_DIR, exist_ok=True)
-
-            abs_path = data.get('path')
-            if abs_path:
-                p = os.path.normpath(os.path.abspath(abs_path))
-                if os.path.exists(p):
-                    self._reveal_in_explorer(p, select=os.path.isfile(p))
-                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(p) else "opened folder", "path": p})
-                else:
-                    curr = p
-                    while curr and not os.path.exists(curr):
-                        parent = os.path.dirname(curr)
-                        if parent == curr:
-                            break
-                        curr = parent
-                    if not curr or not os.path.exists(curr):
-                        curr = STREAMS_DIR if 'streams' in p.lower() else dest
-                    self._reveal_in_explorer(curr, select=False)
-                    self._send_json({"ok": True, "status": "opened folder", "path": curr})
-                return
-
-            if data.get('folder'):
-                target = STREAMS_DIR if data.get('which') == 'streams' else dest
-                self._reveal_in_explorer(target, select=False)
-                self._send_json({"ok": True, "status": "opened folder", "path": target})
+            if "10053" in str(e) or "10054" in str(e) or "Broken pipe" in str(e):
+                self.close_connection = True
             else:
-                filename = data.get('filename', '')
-                filepath = os.path.normpath(os.path.join(dest, filename)) if filename else dest
-                if os.path.exists(filepath):
-                    self._reveal_in_explorer(filepath, select=os.path.isfile(filepath))
-                    self._send_json({"ok": True, "status": "opened file" if os.path.isfile(filepath) else "opened folder", "path": filepath})
-                else:
-                    self._reveal_in_explorer(dest, select=False)
-                    self._send_json({"ok": True, "status": "opened folder", "path": dest})
-        except Exception as e:
-            self._send_json({"ok": False, "error": str(e)}, 500)
+                print(f"[Server] Error sending JSON: {e}")
+
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
+        try:
+            self.send_response(200)
+            self.end_headers()
+        except Exception:
+            self.close_connection = True
 
     def do_GET(self):
         if self._handle_proxy():
@@ -295,34 +197,61 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 if not os.path.isabs(filepath):
                     filepath = os.path.normpath(os.path.join(DEST_DIR, filepath))
                 if os.path.exists(filepath):
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/octet-stream')
-                    self.send_header('Content-Length', str(os.path.getsize(filepath)))
-                    self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
-                    self.end_headers()
-                    with open(filepath, 'rb') as f:
-                        while True:
-                            chunk = f.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            self.wfile.write(chunk)
-                    return
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"File not found")
+                    try:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/octet-stream')
+                        self.send_header('Content-Length', str(os.path.getsize(filepath)))
+                        self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filepath)}"')
+                        self.end_headers()
+                        with open(filepath, 'rb') as f:
+                            while True:
+                                chunk = f.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                        return
+                    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+                        self.close_connection = True
+                        return
+                    except Exception as e:
+                        if "10053" in str(e) or "10054" in str(e):
+                            self.close_connection = True
+                            return
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"File not found")
+            except Exception:
+                self.close_connection = True
             return
+        elif self.path == '/api/storage':
+            # Disk headroom on the landing volume, what is still staged there,
+            # and what each configured remote reports about itself. Answers the
+            # three questions a finished download actually raises: where did it
+            # go, did rclone take it, and will the next one fit.
+            try:
+                from ds_storage import storage_report
+                self._send_json(storage_report())
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        elif self.path == '/api/rclone/config':
+            try:
+                from ds_storage import load_config, known_remotes, rclone_available
+                cfg = load_config()
+                self._send_json({
+                    "remotes": cfg["remotes"],
+                    "enabled": cfg["enabled"],
+                    "available": rclone_available(),
+                    "known": known_remotes(),
+                })
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
         elif self.path == '/api/upscaler/status':
             self._handle_upscaler_status()
         elif self.path == '/api/jobs':
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"jobs": get_jobs_snapshot(), "source": "local-python-zipper"}).encode('utf-8'))
+            self._send_json(build_jobs_payload())
         elif self.path in ['/', '/health', '/api']:
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "online"}).encode('utf-8'))
+            self._send_json({"status": "online"})
         elif self.path == '/qa-logs':
             try:
                 log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
@@ -341,26 +270,23 @@ class ScraperHandler(BaseHTTPRequestHandler):
                                             pass
                 logs.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 logs = logs[:200]
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "ok", "logs": logs}).encode('utf-8'))
+                self._send_json({"status": "ok", "logs": logs})
             except Exception as e:
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                self._send_json({"error": str(e)}, 500)
         else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not Found")
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not Found")
+            except Exception:
+                self.close_connection = True
 
     def do_POST(self):
         if self._handle_proxy():
             return
         if self.path == '/scrape':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b""
             try:
                 data = json.loads(post_data.decode('utf-8'))
                 url = data.get('url')
@@ -368,22 +294,15 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 patchright = data.get('patchright', False)
                 batch_size = data.get('batch_size', 100)
                 if not url:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Missing url parameter")
+                    self._send_json({"error": "Missing url parameter"}, 400)
                     return
                 threading.Thread(target=self._run_scraper, args=(url, selector, patchright, batch_size)).start()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Scraping task started"}).encode('utf-8'))
+                self._send_json({"status": "Scraping task started"})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
         elif self.path == '/download':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length) if content_length > 0 else b""
             try:
                 data = json.loads(post_data.decode('utf-8'))
                 url = data.get('url')
@@ -392,22 +311,16 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 upscale_enabled = bool(data.get('upscale_enabled', False))
                 upscale_model = data.get('upscale_model', NOMOS_MODEL_NAME)
                 stream_headers = data.get('stream_headers', {}) or {}
+                link_kinds = data.get('link_kinds', {}) or {}
                 if not url or not links:
-                    self.send_response(400)
-                    self.end_headers()
-                    self.wfile.write(b"Missing url or links parameters")
+                    self._send_json({"error": "Missing url or links parameters"}, 400)
                     return
                 job_id = create_job(url, links, batch_size, upscale_enabled, upscale_model)
                 rclone_enabled = bool(data.get('rclone_enabled', False))
-                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled)).start()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Download task started", "count": len(links), "correlationId": job_id}).encode('utf-8'))
+                threading.Thread(target=self._run_downloader, args=(job_id, url, links, batch_size, upscale_enabled, upscale_model, stream_headers, rclone_enabled, link_kinds)).start()
+                self._send_json({"status": "Download task started", "count": len(links), "correlationId": job_id})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
         elif self.path == '/api/stream/probe':
             data = self._read_json()
             url = data.get('url')
@@ -449,30 +362,50 @@ class ScraperHandler(BaseHTTPRequestHandler):
                 data = json.loads(post_data.decode('utf-8'))
                 log_dir = os.path.join(DEST_DIR, '..', 'central-logs')
                 os.makedirs(log_dir, exist_ok=True)
-                node = data.get('node', 'unknown_node')
-                log_file_path = os.path.join(log_dir, f"{node}.log")
+                node = str(data.get('node', 'unknown_node'))
+                safe_node = os.path.basename(node)
+                safe_node = re.sub(r'[^A-Za-z0-9._-]', '_', safe_node).strip('._-')
+                if not safe_node:
+                    safe_node = 'unknown_node'
+                log_dir_real = os.path.realpath(log_dir)
+                log_file_path = os.path.realpath(os.path.join(log_dir_real, f"{safe_node}.log"))
+                if os.path.commonpath([log_dir_real, log_file_path]) != log_dir_real:
+                    raise ValueError("Invalid node name")
                 with open(log_file_path, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(data) + "\n")
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "Log received"}).encode('utf-8'))
+                self._send_json({"status": "Log received"})
             except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Invalid JSON payload: {e}".encode('utf-8'))
-        elif self.path == '/api/open-downloaded':
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
+                self._send_json({"error": f"Invalid JSON payload: {e}"}, 400)
+        elif self.path == '/api/rclone/config':
+            # Reordering remotes is the whole point: the first one that accepts
+            # a file wins, so priority is the only knob that decides whether a
+            # gallery lands on Drive or on Proton.
+            data = self._read_json() or {}
             try:
-                data = json.loads(post_data.decode('utf-8')) if content_length > 0 else {}
-            except Exception:
-                data = {}
-            self._handle_open_downloaded(data)
+                from ds_storage import save_config
+                cfg = save_config(
+                    remotes=data.get("remotes"),
+                    enabled=data.get("enabled"),
+                )
+                self._send_json({"ok": True, **cfg})
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
+        elif self.path == '/api/open-downloaded':
+            # Compatibility bridge for signed extension v1.32. This resolves
+            # paths only; Firefox native messaging performs the desktop action.
+            data = self._read_json()
+            try:
+                path = resolve_legacy_reveal_path(data)
+                self._send_json({"ok": True, "status": "resolved", "path": path})
+            except (ValueError, FileNotFoundError) as exc:
+                self._send_json({"ok": False, "error": str(exc)}, 404)
         else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Endpoint not found")
+            try:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Endpoint not found")
+            except Exception:
+                self.close_connection = True
 
     def _run_scraper(self, url, selector, patchright, batch_size):
         print(f"\n[Server] Background scraper task started for URL: {url}")
@@ -486,94 +419,41 @@ class ScraperHandler(BaseHTTPRequestHandler):
             return
         self._download_and_process(url, urls, batch_size)
 
-    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None, rclone_enabled=False):
+    def _run_downloader(self, job_id, url, links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, stream_headers=None, rclone_enabled=False, link_kinds=None):
         print(f"\n[Server] Background downloader task started for URL: {url} ({len(links)} links)")
         os.makedirs(DEST_DIR, exist_ok=True)
         update_job(job_id, status="running")
         try:
-            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled)
+            result = self._download_and_process(url, links, batch_size, upscale_enabled, upscale_model, job_id, stream_headers, rclone_enabled, link_kinds)
+            archives = result.get("archives", [])
+            update_job(job_id, save_dir=os.path.abspath(DEST_DIR), archive_paths=resolve_archive_paths(archives))
             complete_job(
                 job_id,
-                archives=result.get("archives", []),
+                archives=archives,
                 rclone_complete=result.get("rclone_complete", False),
+                # Which remote actually has the files, so the panel can say
+                # "on Google Drive" rather than a bare tick that means nothing
+                # once you go looking for them.
+                rclone_remotes=result.get("rclone_remotes", []),
+                local_dir=result.get("local_dir") or os.path.abspath(DEST_DIR),
             )
         except Exception as e:
             fail_job(job_id, e)
             raise
 
-    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None, rclone_enabled=False):
-        from urllib.parse import urlparse
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        # Merge browser-captured headers (Referer/Cookie/User-Agent/Origin) from the
-        # extension so authenticated streams resolve instead of 403'ing. These apply
-        # to every link in the batch — the extension sends one stream per request.
-        if stream_headers:
-            for k, v in stream_headers.items():
-                if v:
-                    headers[k] = v
-        url_slug = scraper.get_url_slug(page_url)
-        rd_token = get_rd_token()
-        unique_urls = []
-        seen = set()
-        for u in raw_links:
-            full_url = urljoin(page_url, u)
-            if (full_url.startswith("http://") or full_url.startswith("https://")) and full_url not in seen:
-                seen.add(full_url)
-                unique_urls.append(full_url)
-        print(f"[Server] Processing {len(unique_urls)} link(s)...")
-        update_job(job_id, total_links=len(unique_urls), status="running")
-        image_urls = []
-        archives = []
-        rclone_results = []
-        for index, url in enumerate(unique_urls, start=1):
-            resolved_url = url
-            if any(domain in url.lower() for domain in ["linkvertise.com", "direct-link.net", "link-center.net", "link-hub.net", "link-target.net"]):
-                resolved_url = bypass_linkvertise(url)
-                print(f"[Server] Bypassed {url} -> {resolved_url}")
-            final_url = resolved_url
-            is_premium = any(domain in resolved_url.lower() for domain in [
-                "mega.nz", "keep2share.cc", "k2s.cc", "fileboom.me", "fboom.me",
-                "rapidgator.net", "rg.to", "katfile.com", "tezfiles.com", "pixeldrain.com"
-            ])
-            if is_premium:
-                final_url = unrestrict_link_rd(resolved_url, rd_token)
-                print(f"[Server] Unrestricted {resolved_url} -> {final_url}")
-            parsed = urlparse(final_url)
-            ext = os.path.splitext(parsed.path)[1].lower().strip(".")
-            is_image = ext in IMAGE_EXTENSIONS
-            if is_image:
-                image_urls.append(final_url)
-            else:
-                direct_result = download_direct_file(final_url, headers, DEST_DIR, rclone_enabled)
-                if direct_result.get("filename"):
-                    archives.append(direct_result["filename"])
-                    rclone_results.append(direct_result.get("rclone_complete", False))
-            update_job(job_id, processed_links=index, images_count=len(image_urls))
-        if image_urls:
-            if len(image_urls) == 1 and not upscale_enabled:
-                direct_result = download_direct_file(image_urls[0], headers, DEST_DIR, rclone_enabled)
-                if direct_result.get("filename"):
-                    archives.append(direct_result["filename"])
-                    rclone_results.append(direct_result.get("rclone_complete", False))
-            else:
-                zip_result = download_and_zip_images(
-                    url_slug, page_url, image_urls, batch_size, headers,
-                    upscale_enabled, upscale_model, DEST_DIR, scraper.download_image,
-                    rclone_enabled
-                )
-                archives.extend(zip_result.get("archives", []))
-                rclone_results.extend(zip_result.get("rclone_results", []))
-                update_job(job_id, images_count=zip_result.get("images_count", len(image_urls)))
-        return {
-            "archives": archives,
-            "rclone_complete": bool(rclone_results) and all(rclone_results),
-        }
+    def _download_and_process(self, page_url, raw_links, batch_size, upscale_enabled=False, upscale_model=NOMOS_MODEL_NAME, job_id=None, stream_headers=None, rclone_enabled=False, link_kinds=None):
+        # Kept so the legacy /download route keeps working while the extension
+        # migrates to the API. Both paths run the one pipeline.
+        from ds_pipeline import download_and_process
+        return download_and_process(
+            page_url, raw_links, batch_size, upscale_enabled, upscale_model,
+            job_id, stream_headers, rclone_enabled, link_kinds,
+        )
 
 
 class ThreadedHTTPServer(ThreadingTCPServer):
     allow_reuse_address = True
+
 
 def run_server():
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")

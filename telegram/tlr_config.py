@@ -9,14 +9,18 @@ import uploaders
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
+except ImportError:
+    pass
 
 API_ID = int(os.environ.get("TELEGRAM_API_ID", 0))
 API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 
-CHANNEL_NAME = ('SPRO')
-MESSAGE_LIMIT = 5
-MESSAGE_SKIP = 15
+CHANNEL_NAME = (-1001822378085, -1001164086858, -1003825953196)
+MESSAGE_LIMIT = 1
+MESSAGE_SKIP = 0
 
 OUTPUT_DIR = os.path.join(SCRIPT_DIR, "logs")
 ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "artifacts")
@@ -44,6 +48,20 @@ CHROME_AVAILABLE = os.path.exists(STANDARD_CHROME)
 
 REALDEBRID_API_TOKEN = os.environ.get("REALDEBRID_API_KEY", "")
 REALDEBRID_API_BASE = "https://api.real-debrid.com/rest/1.0"
+
+ALLDEBRID_TOKEN_PATH = os.path.join(os.path.dirname(os.path.dirname(SCRIPT_DIR)), ".access", "alldebrid.token.txt")
+ALLDEBRID_API_KEY = os.environ.get("ALLDEBRID_API_KEY", "")
+if not ALLDEBRID_API_KEY and os.path.exists(ALLDEBRID_TOKEN_PATH):
+    try:
+        with open(ALLDEBRID_TOKEN_PATH, "r", encoding="utf-8") as _af:
+            ALLDEBRID_API_KEY = _af.read().strip()
+    except Exception as _e:
+        print(f"[Config] Error reading AllDebrid token: {_e}")
+ALLDEBRID_API_BASE = "https://api.alldebrid.com/v4"
+
+PLAYLISTS_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "playlists")
+if not os.path.exists(PLAYLISTS_DIR):
+    os.makedirs(PLAYLISTS_DIR, exist_ok=True)
 
 KATFILE_API_KEY = os.environ.get("KATFILE_API_KEY", "")
 KATFILE_API_BASE = "https://katfile.space/api"

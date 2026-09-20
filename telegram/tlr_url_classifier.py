@@ -59,8 +59,11 @@ def classify_and_filter_url(url):
     if any(keyword in url_lower for keyword in skip_keywords):
         return 'skip', None
 
+    if 'mega.nz' in url_lower or 'mega.co.nz' in url_lower:
+        return 'mega', url
+
     parsed = urlparse(url)
-    if not parsed.path or parsed.path == '/':
+    if (not parsed.path or parsed.path == '/') and not parsed.fragment:
         return 'skip', None
 
     if 'bunkr.' in url_lower:
@@ -74,9 +77,6 @@ def classify_and_filter_url(url):
 
     if 'streamergirls.' in url_lower:
         return 'direct', url
-
-    if 'mega.nz' in url_lower or 'mega.co.nz' in url_lower:
-        return 'rd', url
 
     file_indicators = ['/download/', '/d/', '/file/', '/f/', '/get/', '/dl/',
                        '.mp4', '.zip', '.rar', '.7z', '.mkv', '.avi', '.wmv',

@@ -43,7 +43,7 @@ def guess_file_extension_from_url(url):
         'audio': ['.mp3', '.aac', '.flac', '.wav', '.m4a', '.ogg'],
         'archive': ['.zip', '.rar', '.7z', '.tar', '.gz', '.iso'],
         'document': ['.pdf', '.docx', '.xlsx', '.txt', '.doc', '.ppt'],
-        'image': ['.jpg', '.png', '.gif', '.bmp', '.webp', '.svg'],
+        'image': ['.jpg', '.png', '.gif', '.bmp', '.webp'],
     }
 
     try:
