@@ -1,5 +1,6 @@
 import { ext, IS_FIREFOX } from '../common/api';
 import type { DetectedStream, StreamType, TitleSource } from '../common/types';
+import { stripDeliveryDirectives } from '../common/streams';
 
 // ---- Detection tables -------------------------------------------------------
 
@@ -267,6 +268,12 @@ async function register(
 ): Promise<void> {
   if (isSnifferIdle()) return;
   if (tabId < 0) return;
+  // A low-latency player's request carries "give me part N" in the query. That
+  // is the request we see, but it is not the stream — recording it later asks
+  // the edge for a part long gone and is answered 403. Cleaned here, at the one
+  // place a URL enters the store, so the probe, the preview and the recorder
+  // all work from the same URL.
+  url = stripDeliveryDirectives(url);
   const key = streamKey(url);
   if (childKeys.get(tabId)?.has(key)) return; // folded under a master
 
@@ -278,7 +285,7 @@ async function register(
     // Keep a keyed URL; only replace when the new one is no worse. Upgrading
     // from a bad (key=null) URL to a good one re-arms the probe.
     if (!newBad || oldBad) {
-      existing.url = url;
+      existing.url = url;   // already cleaned above
       if (Object.keys(headers).length) existing.headers = headers;
       if (oldBad && !newBad) { existing.probed = false; existing.meta = undefined; }
     }

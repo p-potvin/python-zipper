@@ -26,7 +26,7 @@ import json
 import signal
 import subprocess
 import threading
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
 from ds_jobs import update_job, complete_job, fail_job
@@ -213,6 +213,52 @@ def _num(value):
         return None
 
 
+# Query parameters a *client* adds to one request for a playlist, rather than
+# parameters that identify the playlist. RFC 8216bis calls these Delivery
+# Directives: `_HLS_msn` and `_HLS_part` ask the server to block until a
+# specific media sequence and part exist, and `_HLS_skip` asks for a delta
+# update. Hosts add their own — chaturbate sends `sn`, its own sequence number,
+# alongside `_HLS_part`.
+_HLS_DIRECTIVES = {"_hls_msn", "_hls_part", "_hls_skip", "_hls_report"}
+# Only stripped in the company of a real directive, because a bare `sn` on some
+# other host may well be part of the identity.
+_HLS_COMPANIONS = {"sn"}
+
+
+def strip_delivery_directives(url):
+    """Drop per-request LL-HLS parameters from a captured playlist URL.
+
+    A low-latency player asks for *the next part* — `?sn=10176&_HLS_part=0` —
+    and that is the URL we capture, because it is the request that went past
+    the sniffer. Handing it to yt-dlp minutes later asks the edge for a part
+    that left the live window long ago, and the answer is 403. That is the
+    chaturbate failure: fifteen retries against a sequence number frozen at
+    capture time, about five minutes of backoff, then the same 403 from the
+    ffmpeg fallback because it was given the same URL.
+
+    Without the directives the same URL means "the playlist as it is now",
+    which is what a recording wants. Everything else in the query — tokens,
+    signatures, expiries — is left exactly as captured.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return url
+    try:
+        parsed = urlparse(url)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if not pairs:
+            return url
+        has_directive = any(k.lower() in _HLS_DIRECTIVES for k, _ in pairs)
+        if not has_directive:
+            return url
+        kept = [
+            (k, v) for k, v in pairs
+            if k.lower() not in _HLS_DIRECTIVES and k.lower() not in _HLS_COMPANIONS
+        ]
+        return urlunparse(parsed._replace(query=urlencode(kept)))
+    except Exception:
+        return url
+
+
 def _sanitize_stream_url(url):
     if not isinstance(url, str):
         return None
@@ -237,7 +283,7 @@ def _sanitize_stream_url(url):
         return None
     if not parsed.hostname:
         return None
-    return candidate
+    return strip_delivery_directives(candidate)
 
 
 def probe_stream(url, headers=None, proxy=None):
@@ -672,6 +718,16 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
                     report=None, sink="local", rcat_remote=None, title=None):
     """Run yt-dlp with progress tracking; manages the job status end to end."""
     report = report or _Reporter()
+    # The captured URL is whatever request the player happened to make, which
+    # for a low-latency stream is a request for one specific part. Cleaned once
+    # here so both clients get the same URL — the ffmpeg fallback used to be
+    # handed the raw one and fail identically, which made a URL problem look
+    # like two independent client problems.
+    safe = _sanitize_stream_url(url)
+    if not safe:
+        report.fail(job_id, "invalid stream url")
+        return
+    url = safe
     to_remote = sink == "rcat" and bool(rcat_remote)
     if not to_remote:
         os.makedirs(STREAMS_DIR, exist_ok=True)

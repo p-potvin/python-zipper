@@ -11,6 +11,7 @@
  */
 
 import { kindFromMime, kindFromUrl, isRejectedExtension } from '../src/common/harvest';
+import { stripDeliveryDirectives } from '../src/common/streams';
 
 let failures = 0;
 let checks = 0;
@@ -126,6 +127,35 @@ console.log('\na name is not evidence when the server has spoken');
   ok('...and on its manifest directory when the MIME is unhelpful',
     !admitted('https://cdn.example.com/hls/xyz/00042.css', 'video/mp4',
       ['https://cdn.example.com/hls/xyz/master.m3u8']));
+}
+
+console.log('\na request for "part 0 of sequence 10176" is not the stream');
+{
+  // The chaturbate failure, exactly as reported: a recording that ran, retried
+  // fifteen times against a sequence number frozen at capture time, and was
+  // answered 403 about five minutes later — then the ffmpeg fallback got the
+  // same URL and failed the same way.
+  const ct = 'https://edge26-ash.live.mmcdn.com/v1/edge/streams/origin.x.01M2/chunklist_3_video_827_llhls.m3u8?sn=10176&_HLS_part=0';
+  ok('the directives are gone',
+    !stripDeliveryDirectives(ct).includes('_HLS_part'), stripDeliveryDirectives(ct));
+  ok('...and the host companion with them',
+    !stripDeliveryDirectives(ct).includes('sn='), stripDeliveryDirectives(ct));
+  ok('the playlist itself is untouched',
+    stripDeliveryDirectives(ct).startsWith(
+      'https://edge26-ash.live.mmcdn.com/v1/edge/streams/origin.x.01M2/chunklist_3_video_827_llhls.m3u8'));
+
+  const signed = 'https://cdn.example.com/live/chunklist.m3u8?token=abc123&expires=999&_HLS_msn=44&_HLS_part=1';
+  const cleaned = stripDeliveryDirectives(signed);
+  ok('a signature survives', cleaned.includes('token=abc123'), cleaned);
+  ok('an expiry survives', cleaned.includes('expires=999'), cleaned);
+  ok('the blocking hints do not', !/_HLS_/i.test(cleaned), cleaned);
+
+  // Nothing is stripped without a directive present to justify it.
+  const bare = 'https://cdn.example.com/live/master.m3u8?sn=5&token=z';
+  ok('a bare sn is left alone', stripDeliveryDirectives(bare) === bare, stripDeliveryDirectives(bare));
+  const plain = 'https://cdn.example.com/live/master.m3u8';
+  ok('a URL with no query is returned as-is', stripDeliveryDirectives(plain) === plain);
+  ok('rubbish does not throw', stripDeliveryDirectives('not a url?_HLS_part=0').length > 0);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

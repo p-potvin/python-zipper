@@ -10,6 +10,51 @@
 import type { DetectedStream, StreamJob } from './types';
 
 /**
+ * Parameters a client adds to one *request* for a playlist, rather than ones
+ * that identify the playlist.
+ *
+ * RFC 8216bis calls these Delivery Directives. `_HLS_msn` and `_HLS_part` ask
+ * the server to block until a given media sequence and part exist; `_HLS_skip`
+ * asks for a delta update. Hosts add their own alongside — chaturbate sends
+ * `sn`, its own sequence number.
+ */
+const HLS_DIRECTIVES = new Set(['_hls_msn', '_hls_part', '_hls_skip', '_hls_report']);
+/** Only dropped in the company of a real directive; a bare `sn` elsewhere may
+ *  well be part of the identity. */
+const HLS_COMPANIONS = new Set(['sn']);
+
+/**
+ * The playlist URL, without the part of it that means "right now".
+ *
+ * A low-latency player asks for the next part — `?sn=10176&_HLS_part=0` — and
+ * that is the request the sniffer sees, so that is the URL we store. Handing
+ * it to a recorder minutes later asks the edge for a part that left the live
+ * window long ago, and the answer is 403. Stripped, the same URL means "the
+ * playlist as it stands", which is what both a probe and a recording want.
+ *
+ * Tokens, signatures and expiries are left exactly as captured — this removes
+ * only what the client itself added.
+ */
+export function stripDeliveryDirectives(url: string): string {
+  if (!url || !url.includes('?')) return url;
+  try {
+    const u = new URL(url);
+    let sawDirective = false;
+    for (const k of u.searchParams.keys()) {
+      if (HLS_DIRECTIVES.has(k.toLowerCase())) { sawDirective = true; break; }
+    }
+    if (!sawDirective) return url;
+    for (const k of [...u.searchParams.keys()]) {
+      const lower = k.toLowerCase();
+      if (HLS_DIRECTIVES.has(lower) || HLS_COMPANIONS.has(lower)) u.searchParams.delete(k);
+    }
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
  * How long a stream goes unrequested before it counts as idle.
  *
  * A live player re-requests its media playlist every few seconds, so a stream

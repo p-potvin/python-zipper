@@ -17,7 +17,10 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from ds_streams import _finalize_stream_name, _format_selector
+from ds_streams import (
+    _finalize_stream_name, _format_selector, _sanitize_stream_url,
+    strip_delivery_directives,
+)
 
 
 class FinalizeStreamNameTests(unittest.TestCase):
@@ -74,6 +77,54 @@ class FormatSelectorTests(unittest.TestCase):
     def test_an_expression_the_caller_built_is_left_alone(self):
         for expr in ("bv*+ba/b", "best[height<=720]", "137+140"):
             self.assertEqual(_format_selector(expr), expr)
+
+
+class DeliveryDirectiveTests(unittest.TestCase):
+    """A request for one part of a live playlist is not the playlist.
+
+    Reported from chaturbate: the capture ran, retried fifteen times against a
+    sequence number frozen at capture time, and was answered 403 about five
+    minutes later — then the ffmpeg fallback was handed the same URL and failed
+    identically, which made one URL problem look like two client problems.
+    """
+
+    CHATURBATE = (
+        "https://edge26-ash.live.mmcdn.com/v1/edge/streams/origin.x.01M2/"
+        "chunklist_3_video_827_llhls.m3u8?sn=10176&_HLS_part=0"
+    )
+
+    def test_the_blocking_hints_are_dropped(self):
+        out = strip_delivery_directives(self.CHATURBATE)
+        self.assertNotIn("_HLS_part", out)
+        self.assertNotIn("sn=", out)
+        self.assertTrue(out.endswith("chunklist_3_video_827_llhls.m3u8"), out)
+
+    def test_auth_survives(self):
+        url = "https://cdn.example.com/live/c.m3u8?token=abc&expires=9&_HLS_msn=44"
+        out = strip_delivery_directives(url)
+        self.assertIn("token=abc", out)
+        self.assertIn("expires=9", out)
+        self.assertNotIn("_HLS_msn", out)
+
+    def test_nothing_is_stripped_without_a_directive(self):
+        # A bare `sn` elsewhere may well be part of the identity.
+        url = "https://cdn.example.com/live/master.m3u8?sn=5&token=z"
+        self.assertEqual(strip_delivery_directives(url), url)
+
+    def test_urls_without_a_query_are_untouched(self):
+        url = "https://cdn.example.com/live/master.m3u8"
+        self.assertEqual(strip_delivery_directives(url), url)
+
+    def test_the_sanitiser_applies_it(self):
+        # download_stream and probe_stream both go through this, so the ffmpeg
+        # fallback cannot be handed a different URL than yt-dlp got.
+        self.assertNotIn("_HLS_part", _sanitize_stream_url(self.CHATURBATE))
+
+    def test_the_sanitiser_still_refuses_what_it_refused(self):
+        self.assertIsNone(_sanitize_stream_url("-oh no"))
+        self.assertIsNone(_sanitize_stream_url("ftp://cdn.example.com/x.m3u8"))
+        self.assertIsNone(_sanitize_stream_url("https://user:pw@cdn.example.com/x.m3u8"))
+        self.assertIsNone(_sanitize_stream_url(""))
 
 
 if __name__ == "__main__":
