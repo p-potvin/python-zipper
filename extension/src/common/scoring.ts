@@ -136,6 +136,21 @@ export function explainCandidate(c: MediaCandidate, hints: ElementHints = {}): S
     else if (c.bytes < 50_000) add('bytes.small', -120);
   }
 
+  // Nothing measurable about it at all. This is not a small penalty for a
+  // small file — it is the absence of evidence, and it used to be rewarded:
+  // with no width and no bytes, none of the rules above can fire, so an
+  // unmeasured thumbnail scored a clean `kind.image` 240 and cleared
+  // INTERESTING on the strength of being unknowable. That is how a page of
+  // 343 images pre-selected 199 of them, none above 640px or 40KB.
+  //
+  // Sized to land such a candidate just below INTERESTING: still well clear of
+  // the floor, still listed, still selectable by hand — just no longer
+  // something the extension ticks on your behalf. Streams are exempt; a
+  // manifest has no size by nature and is judged by the recorder instead.
+  if (c.kind !== 'stream' && area === 0 && c.bytes === undefined) {
+    add('facts.unknown', -60);
+  }
+
   // --- URL-shape signals ---------------------------------------------------
   if (QUALITY_RE.test(url)) add('url.quality', 120);
   if (DERIVATIVE_RE.test(url)) add('url.derivative', -260);

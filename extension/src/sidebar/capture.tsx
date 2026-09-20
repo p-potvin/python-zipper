@@ -269,13 +269,34 @@ const filtered = computed(() => {
 
   const by = sortKey.value;
   const dir = sortDesc.value ? 1 : -1;
+
+  // Sorting by a fact only half the list has was the real complaint about
+  // these two orders. Reversing the direction used to bring every *unknown*
+  // to the top — an ascending size sort led with the rows that have no size,
+  // so "smallest first" showed nothing useful. Unknowns now sink to the
+  // bottom whichever way the arrow points, and the rows that can be compared
+  // are compared. Score is the tiebreak, so a block of equally-unknown rows
+  // still arrives in a sensible order rather than an arbitrary one.
+  const rank = (c: MediaCandidate): number | undefined => {
+    if (by === 'size') return c.bytes && c.bytes > 0 ? c.bytes : undefined;
+    if (by === 'resolution') {
+      const area = (c.width ?? 0) * (c.height ?? 0);
+      return area > 0 ? area : undefined;
+    }
+    return undefined;
+  };
+
   return out.sort((a, b) => {
-    let d: number;
-    if (by === 'size') d = (b.bytes ?? -1) - (a.bytes ?? -1);
-    else if (by === 'resolution') d = ((b.width ?? 0) * (b.height ?? 0)) - ((a.width ?? 0) * (a.height ?? 0));
-    else if (by === 'name') d = fileName(b.url).localeCompare(fileName(a.url));
-    else d = b.score - a.score;
-    return d * dir;
+    if (by === 'name') return fileName(b.url).localeCompare(fileName(a.url)) * dir;
+    if (by === 'score') return (b.score - a.score) * dir;
+
+    const va = rank(a);
+    const vb = rank(b);
+    if (va === undefined && vb === undefined) return b.score - a.score;
+    if (va === undefined) return 1;   // unknown sinks, regardless of `dir`
+    if (vb === undefined) return -1;
+    const d = vb - va;
+    return d ? d * dir : b.score - a.score;
   });
 });
 

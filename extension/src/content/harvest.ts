@@ -413,9 +413,14 @@ export async function harvestDom(
   // size for, and every grid member the page-relative pass would have rescued,
   // was being thrown away right here. The floor is applied once, after the
   // merge, in harvest_store.
+  const sizes = resourceSizes();
   const finished: MediaCandidate[] = [];
   for (const c of found.values()) {
     c.domHits = hits.get(c.url) ?? 1;
+    if (c.bytes === undefined) {
+      const seen = sizes.get(dedupKey(c.url));
+      if (seen) c.bytes = seen;
+    }
     const s = explainCandidate(c, hintsFor.get(c.url) ?? {});
     c.score = s.score;
     c.reasons = s.rules;
@@ -430,6 +435,37 @@ export async function harvestDom(
     truncated,
     photoSwipe,
   };
+}
+
+/**
+ * Byte sizes the page already knows, from the Resource Timing API.
+ *
+ * Sizes used to come only from the background's network log, which sees a
+ * Content-Length on responses it happens to observe — so two images from the
+ * same directory would show one size and one blank, for no reason visible to
+ * anyone looking at the page. The browser has already recorded the transfer
+ * for everything this document loaded, including from cache, so asking it
+ * costs nothing and no extra request.
+ *
+ * `encodedBodySize` is the wire size and the one to compare against a
+ * Content-Length. It reads 0 for a cross-origin response without
+ * `Timing-Allow-Origin`, which is why only non-zero values are taken: a zero
+ * here means "not allowed to tell you", not "empty file".
+ */
+function resourceSizes(): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    for (const e of entries) {
+      const bytes = e.encodedBodySize || e.transferSize || 0;
+      if (!bytes) continue;
+      const k = dedupKey(e.name);
+      // Keep the largest sighting: a re-request that hit cache can report a
+      // smaller transfer than the original download.
+      if ((out.get(k) ?? 0) < bytes) out.set(k, bytes);
+    }
+  } catch { /* no Resource Timing in this context */ }
+  return out;
 }
 
 /** Our own injected UI must never harvest itself. */
