@@ -632,6 +632,9 @@ async function downloadSelected(): Promise<void> {
         url: c.url,
         filename: suggestedName(c),
         referer,
+        // The zip route has always sent these; the one-at-a-time route never
+        // did, so a single download recorded a file with no kind and no size.
+        facts: factsFor([c])[c.url],
       });
       if (res?.ok) ok++;
     } catch { /* counted as failed below */ }

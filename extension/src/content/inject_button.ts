@@ -150,6 +150,25 @@ function place(el: Element): void {
   b.style.display = 'flex';
 }
 
+/**
+ * The asset's real dimensions, not the box it is displayed in.
+ *
+ * `naturalWidth`/`videoWidth` are the decoded size; the bounding rect is
+ * whatever CSS scaled it to, which says nothing about the file. The rect is
+ * only the fallback for a background-image, where the element genuinely is the
+ * only measurement available.
+ */
+function mediaDimensions(el: Element | null): { width?: number; height?: number } {
+  if (!el) return {};
+  const img = el as HTMLImageElement;
+  if (img.naturalWidth) return { width: img.naturalWidth, height: img.naturalHeight };
+  const vid = el as HTMLVideoElement;
+  if (vid.videoWidth) return { width: vid.videoWidth, height: vid.videoHeight };
+  const r = el.getBoundingClientRect?.();
+  if (r && r.width && r.height) return { width: Math.round(r.width), height: Math.round(r.height) };
+  return {};
+}
+
 function flash(state: 'ok' | 'err'): void {
   const b = ensureButton();
   b.setAttribute('data-state', state);
@@ -172,6 +191,18 @@ async function onClick(e: Event): Promise<void> {
       url: targetUrl,
       filename: suggestedName(c),
       referer: location.href,
+      // This button is the busiest download path in the extension and it used
+      // to say nothing about what it was taking, so every one of its grabs
+      // landed in the history as an unknown kind with no size. The kind and
+      // the dimensions are already in hand here; the background fills in the
+      // transfer size from the media log.
+      facts: {
+        kind: c.kind,
+        origin: 'dom',
+        assetHost: c.assetHost,
+        pageTitle: document.title || undefined,
+        ...mediaDimensions(target),
+      },
     });
     flash(res?.ok ? 'ok' : 'err');
   } catch {

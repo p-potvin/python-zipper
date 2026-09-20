@@ -302,6 +302,20 @@ async function record(d: any): Promise<void> {
  * those, because a candidate the DOM also saw gains dimensions and a repeat
  * count and may well clear the floor once merged.
  */
+/**
+ * What the network already knows about one URL.
+ *
+ * The response that carried this asset went past here with a Content-Length
+ * and a Content-Type on it, so the bytes and the mime are already banked —
+ * keyed by `dedupKey`, which means a cache-busted re-request still finds them.
+ * Download paths use this to record a grab with real facts instead of a bare
+ * file count, which is why Insights had byte totals of zero for three of its
+ * four domains.
+ */
+export function lookupLogged(tabId: number, url: string): MediaCandidate | undefined {
+  return log.get(tabId)?.get(dedupKey(url));
+}
+
 export function getMediaLog(tabId: number, includeWeak = false): MediaCandidate[] {
   const all = Array.from(log.get(tabId)?.values() ?? []);
   const kept = includeWeak ? all : all.filter((c) => c.score >= SCORE.FLOOR);

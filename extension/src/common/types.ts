@@ -44,6 +44,19 @@ export interface StreamVariant {
   label: string;
 }
 
+/** The facts a download path can record about an asset (see grab_facts.ts). */
+export interface GrabFactsLike {
+  kind?: string | null;
+  mime?: string | null;
+  bytes?: number | null;
+  width?: number | null;
+  height?: number | null;
+  origin?: string | null;
+  score?: number | null;
+  assetHost?: string | null;
+  pageTitle?: string | null;
+}
+
 export interface DetectedStream {
   /** Stable identity — origin + pathname, so token-rotated re-requests collapse. */
   key: string;
@@ -85,7 +98,11 @@ export type BgMessage =
   | { kind: 'open:path'; path: string }
   | { kind: 'config:get' }
   | { kind: 'config:set'; proxy: string }
-  | { kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean }
+  | {
+      kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean;
+      /** What the sender knows about the asset, for the grab history. */
+      facts?: Record<string, unknown>;
+    }
   | { kind: 'downloads:list' }
   | { kind: 'downloads:reveal'; downloadId?: number; path?: string }
   | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } }

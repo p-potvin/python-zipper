@@ -9,10 +9,11 @@
     "build:verify": "node build.mjs --no-version-bump",
     "dev": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:ranking && npm run check:zip && npm run check:segments",
+    "check": "npm run check:ranking && npm run check:zip && npm run check:segments && npm run check:grabfacts",
     "check:ranking": "esbuild checks/ranking.check.ts --bundle --platform=node --format=esm --outfile=dist/ranking.check.mjs --log-level=warning && node dist/ranking.check.mjs",
     "check:zip": "esbuild checks/zip.check.ts --bundle --platform=node --format=esm --outfile=dist/zip.check.mjs --log-level=warning && node dist/zip.check.mjs",
     "check:segments": "esbuild checks/segments.check.ts --bundle --platform=node --format=esm --outfile=dist/segments.check.mjs --log-level=warning && node dist/segments.check.mjs",
+    "check:grabfacts": "esbuild checks/grabfacts.check.ts --bundle --platform=node --format=esm --outfile=dist/grabfacts.check.mjs --log-level=warning && node dist/grabfacts.check.mjs",
     "start:firefox": "web-ext run --source-dir dist --browser-console",
     "lint": "web-ext lint --source-dir dist",
     "xpi": "web-ext build --source-dir dist --artifacts-dir dist-xpi --overwrite-dest"

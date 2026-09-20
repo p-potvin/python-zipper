@@ -4,11 +4,16 @@ import {
   updatePanelOpenTime, setHasActiveDownloads,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
-import { installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged } from './media_log';
+import {
+  installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged, lookupLogged,
+} from './media_log';
 import {
   installHarvestStore, runHarvest, getSnapshot, acceptFrameResult, addLiveCandidates,
 } from './harvest_store';
-import { loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed } from './grabbed';
+import {
+  loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed,
+  type GrabFacts,
+} from './grabbed';
 
 import { zipAndDownload } from './zip_download';
 import {
@@ -16,6 +21,7 @@ import {
 } from '../common/vwapi';
 import { getProxy, setProxy, loadConfig } from './config';
 import { registrableDomain, hostOf } from '../common/domain';
+import { mergeGrabFacts } from '../common/grab_facts';
 import type { BgMessage } from '../common/types';
 
 installSniffer();
@@ -107,6 +113,29 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     return { ok: true, jobId: res.data.job_id };
   }
   return { ok: false, error: res.error || 'could not queue the recording' };
+}
+
+/**
+ * The facts to file a grab under, from whoever knows them.
+ *
+ * Two sources, and neither is sufficient alone. The sender knows what it is
+ * looking at — the in-page button has a kind and the element's rendered size,
+ * the sidebar has a full candidate — but neither knows the transfer size. The
+ * background does: the response went through the media log with a
+ * Content-Length and a Content-Type on it.
+ *
+ * The sender wins where it spoke, because a DOM sighting is a deliberate
+ * statement about the asset; the log only fills the gaps. Without this the
+ * in-page button wrote a null kind and null bytes on every click, which is the
+ * whole of Insights' "18 unknown" and three domains reading zero bytes.
+ */
+function grabFacts(
+  tabId: number | undefined,
+  url: string,
+  sent?: GrabFacts,
+): GrabFacts {
+  const logged = tabId === undefined ? undefined : lookupLogged(tabId, url);
+  return mergeGrabFacts(sent, logged) as GrabFacts;
 }
 
 /** Best guess at the filename the server will write, for the already-got mark. */
@@ -303,7 +332,10 @@ async function handle(msg: BgMessage, sender: any) {
       if (started?.ok) {
         // Record the name it was actually saved under, not the URL basename —
         // the grid shows this so it matches what's on disk.
-        markGrabbed(dUrl, dFilename, dReferer || '', 'browser');
+        markGrabbed(
+          dUrl, dFilename, dReferer || '', 'browser',
+          grabFacts(tabId, dUrl, (msg as any).facts),
+        );
       }
       return started;
     }
@@ -330,7 +362,9 @@ async function handle(msg: BgMessage, sender: any) {
           zItems.map((i: any) => ({
             url: i.url,
             savedAs: res.filename || 'archive.zip',
-            facts: zFacts[i.url],
+            // Same fill as the single download: a candidate the DOM found but
+            // the sidebar never sized still has a Content-Length banked here.
+            facts: grabFacts(tabId, i.url, zFacts[i.url]),
           })),
           zPage,
           'browser',
