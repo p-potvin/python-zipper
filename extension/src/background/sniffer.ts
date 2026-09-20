@@ -330,6 +330,25 @@ export function clearTab(tabId: number): void {
   notify(tabId);
 }
 
+/** Clear a tab's streams because it navigated, keeping anything recording.
+ *
+ * A capture outlives the page it was found on: it runs server-side, and
+ * dropping its row here would orphan the Stop button while the recording kept
+ * going. Everything else is stale the moment the page changes — that is the
+ * whole point of clearing.
+ */
+export function clearTabOnNavigate(tabId: number): void {
+  childKeys.delete(tabId);
+  const m = store.get(tabId);
+  if (!m) { notify(tabId); return; }
+  for (const [key, s] of Array.from(m)) {
+    if (s.jobId) continue;
+    m.delete(key);
+  }
+  if (!m.size) store.delete(tabId);
+  notify(tabId);
+}
+
 // Fold a master's variant playlists: hide any already-listed and block future ones.
 export function foldVariants(tabId: number, variantUrls: string[]): void {
   let set = childKeys.get(tabId);
@@ -385,9 +404,22 @@ export function installSniffer(): void {
   ext.webRequest.onCompleted.addListener(cleanup, filter);
   ext.webRequest.onErrorOccurred.addListener(cleanup, filter);
 
+  // Navigation clear. `tabs.onUpdated` with `info.url` below never fires on a
+  // reload, because the URL does not change — which is exactly how streams
+  // from a previous page survived in the list. The main_frame request fires on
+  // reloads, back/forward and ordinary navigation alike, so it catches all of
+  // them; `media_log.ts` and `harvest_store.ts` already clear this way.
+  ext.webRequest.onBeforeRequest.addListener(
+    (d: any) => {
+      if (d.tabId < 0 || d.type !== 'main_frame' || d.frameId !== 0) return;
+      clearTabOnNavigate(d.tabId);
+    },
+    { urls: ['<all_urls>'], types: ['main_frame'] },
+  );
+
   ext.tabs.onRemoved.addListener((tabId: number) => clearTab(tabId));
   ext.tabs.onUpdated.addListener((tabId: number, info: any) => {
-    if (info.status === 'loading' && info.url) clearTab(tabId);
+    if (info.status === 'loading' && info.url) clearTabOnNavigate(tabId);
   });
   ext.tabs.onActivated.addListener((activeInfo: any) => {
     if (activeInfo?.tabId) updateBadge(activeInfo.tabId);

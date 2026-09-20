@@ -29,7 +29,7 @@ import threading
 from urllib.parse import urlparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
-from ds_jobs import update_job, complete_job, fail_job, get_job
+from ds_jobs import update_job, complete_job, fail_job
 
 STREAMS_DIR = os.environ.get("PYTHON_ZIPPER_STREAMS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded", "streams"
@@ -69,6 +69,18 @@ _TITLE_TRIM = " \t-–—|·:,~«»\"'"
 
 _TRAILING_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.I)
 
+# The extension prefixes every title it sends with the page's hostname \u2014
+# "[chaturbate.com] Ada's room" \u2014 so the subject is never the first token.
+# Left in, it becomes the *whole* basename: "[" survives sanitising and the cut
+# at "room" lands before the name has even started.
+_HOST_PREFIX_RE = re.compile(r"^\s*\[[^\]]*\]\s*")
+
+# Filler stranded at the end once the tail is cut: "Ada is live now" cuts at
+# "live" and leaves "Ada is". None of these ever identify anyone.
+_TRAILING_FILLER_RE = re.compile(
+    r"\b(?:is|was|are|were|the|a|an|and|now|on|in|at|going|goes|est|en)$", re.I,
+)
+
 
 def stream_basename(title):
     """The person or channel a stream belongs to, from the tab title.
@@ -84,12 +96,19 @@ def stream_basename(title):
     """
     if not title:
         return ""
+    title = _HOST_PREFIX_RE.sub("", title)
     m = _TITLE_CUT_RE.search(title)
     base = title[:m.start()] if m else title
     base = base.strip(_TITLE_TRIM)
     # The room word is usually possessive — "Ada Luna's Room" — and the
     # apostrophe-s is left behind once the word after it goes.
     base = _TRAILING_POSSESSIVE_RE.sub("", base).strip(_TITLE_TRIM)
+    # Trimmed in a loop: "Ada is going live" strands two filler words, not one.
+    for _ in range(3):
+        trimmed = _TRAILING_FILLER_RE.sub("", base).strip(_TITLE_TRIM)
+        if trimmed == base:
+            break
+        base = trimmed
     return _sanitize_title(base)
 
 
@@ -120,11 +139,18 @@ def stream_filename(title, directory):
     return f"{base} Stream #{next_stream_index(directory, base):02d}"
 
 
-def _finalize_stream_name(path, job_id):
+def _finalize_stream_name(path, job_id, title=""):
+    """Rename a finished recording to `<subject> Stream #dd`.
+
+    `title` is passed in rather than looked up. It used to come from
+    `get_job(job_id)`, which reads the *in-process* store belonging to the
+    retired local server; worker jobs live in the API's Postgres, so that
+    lookup returned None every time, the title was always empty, and naming
+    silently fell through to the URL-derived path on every single recording.
+    """
     if not path or not os.path.exists(path):
         return path
-    job = get_job(job_id) or {}
-    title = job.get('title') or ''
+    title = title or ""
 
     # Preferred: the subject out of the tab title, numbered. Falls through to
     # the old behaviour when the title has nothing in it worth keeping.
@@ -613,6 +639,35 @@ def _run_rcat(cmd, remote_path, report, job_id, proxy_note=""):
     report.fail(job_id, err[:500])
 
 
+def _format_selector(format_id):
+    """A yt-dlp `-f` expression that keeps the audio attached.
+
+    HLS masters on these sites publish their video variants as *video only* —
+    the audio is a separate `#EXT-X-MEDIA` rendition — so `-f 4670`, which is
+    exactly what the quality dropdown sends, records a silent file. Verified
+    against Apple's reference master: every one of its 21 video formats is
+    `video only`, and `-f 530` alone produces a stream with no audio track.
+
+    `<fid>+ba/<fid>` merges the best audio rendition onto the chosen video and
+    falls back to the bare format for streams that are already muxed (a chunk
+    list with no rendition to merge), where the `+` side cannot be satisfied
+    and yt-dlp would otherwise error out rather than degrade.
+
+    This holds on the pipe-to-remote path too: `--hls-use-mpegts` puts yt-dlp
+    on the ffmpeg downloader, which takes both inputs and writes the merged
+    MPEG-TS to stdout, so `sink="rcat"` recordings gain audio as well.
+    """
+    fid = str(format_id or "").strip()
+    if not fid:
+        # yt-dlp's own default, spelled out: the `/b` tail is what catches a
+        # muxed-only live stream, which has no separate video stream to pick.
+        return "bv*+ba/b"
+    # An expression the caller built themselves is left exactly as given.
+    if any(c in fid for c in "+/[]"):
+        return fid
+    return f"{fid}+ba/{fid}"
+
+
 def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
                     report=None, sink="local", rcat_remote=None, title=None):
     """Run yt-dlp with progress tracking; manages the job status end to end."""
@@ -646,8 +701,7 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         cmd += ["--ffmpeg-location", ff]
     cmd += _proxy_args(proxy)
     cmd += build_ytdlp_header_args(headers)
-    if format_id:
-        cmd += ["-f", format_id]
+    cmd += ["-f", _format_selector(format_id)]
     cmd.append(url)
 
     if to_remote:
@@ -731,7 +785,7 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     # A produced file is a success even on non-zero exit — that's the normal
     # outcome of stopping/losing a live recording.
     if path:
-        path = _finalize_stream_name(path, job_id)
+        path = _finalize_stream_name(path, job_id, title)
         if os.environ.get("PYTHON_ZIPPER_STREAM_RCLONE") == "1":
             handoff_to_rclone(path)
             path = _find_output(prefix) or path  # may have moved
