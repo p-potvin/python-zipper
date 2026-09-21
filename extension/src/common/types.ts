@@ -73,6 +73,14 @@ export interface DetectedStream {
   lastSeen: number;
   hits: number;
   isMaster?: boolean;
+  /**
+   * The stream's audio, when it is published as its own playlist.
+   *
+   * Set only for hosts that serve audio and video as two media playlists with
+   * no master joining them. Nothing can infer it later: by the time a recorder
+   * has the video URL, the audio one is simply not reachable from it.
+   */
+  audioUrl?: string;
   variants?: StreamVariant[];
   meta?: StreamMeta;
   probed?: boolean;

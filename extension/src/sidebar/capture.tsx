@@ -18,7 +18,7 @@ import { serverOnline, jobs } from './downloads';
 import type { DetectedStream } from '../common/types';
 import {
   qualities, hasSelectableQuality, activeJobFor, progressLabel, isIndeterminate,
-  isIdleStream,
+  isIdleStream, describeStream,
 } from '../common/streams';
 
 interface Snapshot {
@@ -847,6 +847,7 @@ function StreamRow({ c }: { c: MediaCandidate }) {
   const job = s ? activeJobFor(s, jobs.value) : undefined;
   const pick = c.streamKey ? pickedQuality.value[c.streamKey] : '';
   const prev = c.streamKey ? previews.value[c.streamKey] : undefined;
+  const d = s ? describeStream(s) : undefined;
 
   // Kicked off after this render, never during it: loadPreview writes the
   // 'loading' state synchronously, and setting a signal mid-render re-enters
@@ -877,8 +878,16 @@ function StreamRow({ c }: { c: MediaCandidate }) {
       ) : null}
 
       <div class="cand-top">
-        <span class={`kind kind-stream`}>{c.streamType || 'stream'}</span>
-        <span class="cand-name" title={c.url}>{c.label || fileName(c.url)}</span>
+        {/* What kind of playlist, who it belongs to, and which edge is serving
+            it. Every one of those was previously only discoverable by hovering
+            the row and reading the URL, which made choosing between four
+            identically-titled streams a guess. */}
+        <span class={`kind kind-stream`}>{d?.role || c.streamType || 'stream'}</span>
+        <span class="cand-name" title={c.url}>{d?.name || c.label || fileName(c.url)}</span>
+        {s?.audioUrl
+          ? <span class="kind" title="audio is a separate playlist; both are recorded">+audio</span>
+          : null}
+        {d?.host ? <span class="cand-dim" title={c.url}>{d.host}</span> : null}
         {s?.meta?.is_live ? <span class="led led-alert">live</span> : null}
       </div>
 

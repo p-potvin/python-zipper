@@ -384,7 +384,7 @@ def run_stream(job: dict) -> None:
                 ds_streams.stop_stream(job_id)
                 return
 
-    def fresh_stream_url() -> str:
+    def fresh_stream_url() -> dict:
         """The newest URL the browser has published for this stream.
 
         The extension cannot reach this machine, and the API's progress
@@ -397,8 +397,14 @@ def run_stream(job: dict) -> None:
         row = get_job(job_id) or {}
         result = row.get("result")
         if not isinstance(result, dict):
-            return ""
-        return str(result.get("stream_url") or "").strip()
+            return {}
+        # Both halves: a host that publishes audio separately rotates that
+        # playlist's token on its own, and a fresh video muxed against a stale
+        # audio records silence just as surely as no audio at all.
+        return {
+            "stream_url": str(result.get("stream_url") or "").strip(),
+            "audio_url": str(result.get("audio_url") or "").strip(),
+        }
 
     threading.Thread(target=watch_for_abort, daemon=True).start()
     try:
@@ -414,6 +420,9 @@ def run_stream(job: dict) -> None:
             title=job.get("title") or "",
             refresh_url=fresh_stream_url,
             page_url=job.get("page_url") or "",
+            # Set when the extension saw this stream's audio published as its
+            # own playlist with no master joining them.
+            audio_url=options.get("audio_url") or "",
         )
     finally:
         watcher_stop.set()

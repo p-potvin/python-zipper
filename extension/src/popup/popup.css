@@ -99,7 +99,7 @@ body {
 .stream-foot { display: flex; align-items: center; gap: var(--vwsq-space-2); }
 .stream-note {
   font-family: var(--vwsq-font-mono); font-size: .58rem;
-  color: var(--vwsq-console-text-dim);
+  color: var(--vwsq-console-text-secondary);
 }
 
 .stream-q { display: flex; flex-wrap: wrap; gap: 3px; }
@@ -137,6 +137,15 @@ body {
   letter-spacing: .08em; text-transform: uppercase;
   padding: .15em .4em; border-radius: var(--vwsq-radius-control);
   background: var(--vwsq-coral-soft); color: var(--vwsq-coral-500);
+}
+
+/* The edge host, which is how two sessions of the same stream are told apart.
+   Dimmed: it matters when two rows look identical and not before. */
+.stream-host {
+  font-family: var(--vwsq-font-mono);
+  font-size: .58rem;
+  color: var(--vwsq-console-text-secondary);
+  flex: 0 0 auto;
 }
 
 /* ---- progress ----------------------------------------------------------- */
@@ -191,7 +200,7 @@ body {
 
 .muted {
   padding: var(--vwsq-space-3);
-  color: var(--vwsq-console-text-dim); font-size: .74rem; text-align: center;
+  color: var(--vwsq-console-text-secondary); font-size: .74rem; text-align: center;
 }
 
 :focus-visible { outline: 2px solid var(--vwsq-coral-500); outline-offset: 2px; }

@@ -17,6 +17,7 @@ import { ext } from '../common/api';
 import type { DetectedStream, StreamJob } from '../common/types';
 import {
   qualities, activeJobFor, progressLabel, isIndeterminate, isIdleStream,
+  describeStream,
 } from '../common/streams';
 import './popup.css';
 
@@ -120,6 +121,7 @@ function fmtPct(j: StreamJob): string {
  * `isStreamSegment` in the media log.
  */
 function Stream({ s }: { s: DetectedStream }) {
+  const d = describeStream(s);
   const qs = qualities(s);
   const job = activeJobFor(s, jobs.value);
   const running = !!job;
@@ -127,8 +129,12 @@ function Stream({ s }: { s: DetectedStream }) {
   return (
     <div class="stream">
       <div class="stream-top">
-        <span class="stream-tag">{s.type}</span>
-        <span class="stream-title" title={s.url}>{s.title || s.url}</span>
+        <span class="stream-tag">{d.role || s.type}</span>
+        {/* Who, what and which edge — the three things that used to require
+            hovering the row and reading the URL out of the status bar. */}
+        <span class="stream-title" title={s.url}>{d.name}</span>
+        {s.audioUrl ? <span class="stream-tag" title="audio is a separate playlist; both are recorded">+audio</span> : null}
+        {d.host ? <span class="stream-host" title={s.url}>{d.host}</span> : null}
         {s.meta?.is_live ? <span class="led led-alert">live</span> : null}
       </div>
 

@@ -1,6 +1,9 @@
 import { ext, IS_FIREFOX } from '../common/api';
 import type { DetectedStream, StreamType, TitleSource } from '../common/types';
-import { stripDeliveryDirectives } from '../common/streams';
+import {
+  stripDeliveryDirectives, playlistRole, arePaired, type PlaylistRole,
+  isGenericTitle,
+} from '../common/streams';
 
 // ---- Detection tables -------------------------------------------------------
 
@@ -259,6 +262,39 @@ function notify(tabId: number): void {
   updateBadge(tabId);
 }
 
+/**
+ * Audio playlists waiting for the video half they belong to.
+ *
+ * Some hosts publish a stream as two media playlists with no master joining
+ * them, so the audio arrives looking exactly like a stream of its own. Listing
+ * it is noise — you cannot usefully record half a broadcast — and worse, the
+ * video half has no way to know the audio exists, which is why those
+ * recordings came out silent.
+ *
+ * Held per tab and kept fresh, because the session token in the audio URL
+ * rotates just like the video one and a stale one would mux in silence.
+ */
+const pendingAudio = new Map<number, Map<string, string>>();
+
+function groupKey(r: PlaylistRole): string {
+  return r.dir + '#' + r.group;
+}
+
+function audioBank(tabId: number): Map<string, string> {
+  let m = pendingAudio.get(tabId);
+  if (!m) { m = new Map(); pendingAudio.set(tabId, m); }
+  return m;
+}
+
+/** The listed stream, if any, that this playlist is the other half of. */
+function pairedEntry(tabId: number, mine: PlaylistRole): DetectedStream | undefined {
+  for (const other of store.get(tabId)?.values() ?? []) {
+    const theirs = playlistRole(other.url);
+    if (theirs && arePaired(mine, theirs)) return other;
+  }
+  return undefined;
+}
+
 async function register(
   tabId: number,
   url: string,
@@ -275,6 +311,35 @@ async function register(
   // all work from the same URL.
   url = stripDeliveryDirectives(url);
   const key = streamKey(url);
+
+  // Two playlists, one stream. Resolved before anything is stored, in whichever
+  // order the halves arrive.
+  const role = playlistRole(url);
+  if (role) {
+    const bank = audioBank(tabId);
+    const partner = pairedEntry(tabId, role);
+    if (role.role === 'audio') {
+      bank.set(groupKey(role), url);          // always the freshest token
+      if (partner) {
+        partner.audioUrl = url;
+        // It was listed before its video half turned up; it is not a stream.
+        store.get(tabId)?.delete(key);
+        notify(tabId);
+        return;
+      }
+      // No video half yet. Fall through and list it — a genuinely audio-only
+      // stream must still be offered, and if the video arrives it absorbs this.
+    } else {
+      const known = bank.get(groupKey(role));
+      const existingVideo = store.get(tabId)?.get(key);
+      if (known) {
+        if (existingVideo) existingVideo.audioUrl = known;
+        if (partner && partner.key !== key) {
+          store.get(tabId)?.delete(partner.key);   // the audio half, listed early
+        }
+      }
+    }
+  }
   if (childKeys.get(tabId)?.has(key)) return; // folded under a master
 
   const m = tabMap(tabId);
@@ -313,6 +378,10 @@ async function register(
     firstSeen: Date.now(), lastSeen: Date.now(), hits: 1,
     titleSource: 'tab-title',
   };
+  if (role && role.role === 'video') {
+    const known = audioBank(tabId).get(groupKey(role));
+    if (known) s.audioUrl = known;
+  }
   m.set(key, s);
   notify(tabId);
   onNewStream?.(s);
@@ -344,6 +413,11 @@ async function enrichTitleFromDOM(
 
     const cleaned = cleanStreamTitle(response.title);
     if (!cleaned || cleaned === 'stream') return;
+    // The DOM extractor reads the label nearest the media element, and on a
+    // lot of players that label is the word "player". It outranks every other
+    // source, so letting it through renamed the stream — and the recording —
+    // after the widget instead of the broadcast.
+    if (isGenericTitle(cleaned)) return;
 
     let hostname = '';
     try { hostname = new URL(pageUrl).hostname; } catch { /* bad url */ }
@@ -394,6 +468,7 @@ export function removeStream(tabId: number, key: string): void {
 export function clearTab(tabId: number): void {
   store.delete(tabId);
   childKeys.delete(tabId);
+  pendingAudio.delete(tabId);
   notify(tabId);
 }
 
@@ -406,6 +481,7 @@ export function clearTab(tabId: number): void {
  */
 export function clearTabOnNavigate(tabId: number, toUrl = ''): void {
   childKeys.delete(tabId);
+  pendingAudio.delete(tabId);
   const m = store.get(tabId);
   if (m) {
     const leaving: DetectedStream[] = [];

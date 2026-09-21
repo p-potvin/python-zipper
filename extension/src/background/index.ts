@@ -76,12 +76,17 @@ async function publishFreshStreamUrls(): Promise<void> {
   for (const s of recording) {
     const jobId = s.jobId!;
     live.add(jobId);
-    if (publishedUrls.get(jobId) === s.url) continue;
+    // The audio half's token rotates on its own, so it is part of what is
+    // published — a fresh video URL muxed against a stale audio one records
+    // silence just as surely as no audio URL at all.
+    const signature = `${s.url}
+${s.audioUrl || ''}`;
+    if (publishedUrls.get(jobId) === signature) continue;
     try {
       const res = await VwApi.updateJob(jobId, {
-        result: { stream_url: s.url, at: Date.now() },
+        result: { stream_url: s.url, audio_url: s.audioUrl || undefined, at: Date.now() },
       });
-      if (res.ok) publishedUrls.set(jobId, s.url);
+      if (res.ok) publishedUrls.set(jobId, signature);
     } catch { /* the worker still has the URL it started with */ }
   }
   for (const jobId of [...publishedUrls.keys()]) {
@@ -172,6 +177,10 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
       format_id: formatId || s.selectedFormat || null,
       quality: newQualityStr,
       stream_url: s.url,
+      // Present only when this host publishes audio as its own playlist. The
+      // worker records both inputs with ffmpeg in that case, because there is
+      // no master for yt-dlp to merge from and the result is otherwise silent.
+      audio_url: s.audioUrl || undefined,
       thumbnail: s.meta?.thumbnail || null,
       duration: s.meta?.duration ?? null,
       is_live: s.meta?.is_live ?? false,

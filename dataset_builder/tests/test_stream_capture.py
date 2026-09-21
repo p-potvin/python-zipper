@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from ds_streams import (
     _finalize_stream_name, _format_selector, _sanitize_stream_url,
-    strip_delivery_directives, stream_label, site_label,
+    strip_delivery_directives, stream_label, site_label, url_label,
 )
 
 
@@ -202,6 +202,43 @@ class SiteNamedRecordingTests(unittest.TestCase):
             "[chaturbate.com] blissdilley", "https://chaturbate.com/blissdilley/",
         )
         self.assertEqual(os.path.basename(out), "blissdilley Stream #01.ts")
+
+
+class PlayerLabelTests(unittest.TestCase):
+    """The DOM title extractor reads the label nearest the media element, and
+    on many players that label is the word "player". It outranks every other
+    source, which is how a recording was named "Video Player Stream #04" on a
+    page whose tab title, hostname and stream URL all named the broadcaster."""
+
+    URL = ("https://edge9-ash.live.mmcdn.com/v1/edge/streams/"
+           "origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_3_video_169.m3u8?session=x")
+
+    def test_the_broadcaster_is_read_out_of_the_stream_path(self):
+        self.assertEqual(url_label(self.URL), "pinkadele")
+
+    def test_a_player_label_loses_to_the_url(self):
+        self.assertEqual(
+            stream_label("[chaturbate.com] Video Player",
+                         "https://chaturbate.com/pinkadele/", "chunklist", self.URL),
+            "pinkadele",
+        )
+
+    def test_a_real_title_still_wins(self):
+        self.assertEqual(
+            stream_label("[chaturbate.com] someone else",
+                         "https://chaturbate.com/x/", "chunklist", self.URL),
+            "someone else",
+        )
+
+    def test_without_a_url_a_player_label_falls_through_to_the_site(self):
+        self.assertEqual(
+            stream_label("[chaturbate.com] Video Player", "https://chaturbate.com/x/", "master"),
+            "chaturbate.com",
+        )
+
+    def test_hosts_that_write_no_name_yield_nothing(self):
+        self.assertEqual(url_label("https://cdn.example.com/live/master.m3u8"), "")
+        self.assertEqual(url_label(""), "")
 
 
 if __name__ == "__main__":

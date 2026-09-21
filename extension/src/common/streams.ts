@@ -9,6 +9,133 @@
 
 import type { DetectedStream, StreamJob } from './types';
 
+// ---- telling one stream from another ----------------------------------------
+
+/**
+ * Titles that describe the player rather than what is playing.
+ *
+ * The DOM title extractor reads the label nearest the media element and
+ * outranks every other source, so on a page whose tab title, hostname and
+ * stream URL all name the broadcaster, the stream was still called "Video
+ * Player" — and so was the file it recorded.
+ */
+const GENERIC_TITLES = new Set([
+  'video player', 'media player', 'player', 'html5 video player', 'jwplayer',
+  'videojs', 'video js', 'video', 'live', 'livestream', 'live stream',
+  'stream', 'watch', 'untitled', 'loading',
+]);
+
+export function isGenericTitle(title: string): boolean {
+  return GENERIC_TITLES.has((title || '').trim().toLowerCase());
+}
+
+/**
+ * The broadcaster's name where the host writes it into the stream path.
+ *
+ * Chaturbate publishes under `/v1/edge/streams/origin.<username>.<id>/`, which
+ * makes the URL the most reliable source on that host: it is the performer's
+ * own name, it cannot be a player's label, and it is there before any title
+ * has been extracted.
+ */
+export function nameFromStreamUrl(url: string): string {
+  try {
+    for (const seg of new URL(url).pathname.split('/')) {
+      const m = /^origin\.([A-Za-z0-9][A-Za-z0-9_-]{1,39})\.[A-Za-z0-9]{8,}$/.exec(seg);
+      if (m) return m[1];
+    }
+  } catch { /* not a URL we can read */ }
+  return '';
+}
+
+export interface StreamDescription {
+  /** Who or what this is: a username from the URL, or the cleaned title. */
+  name: string;
+  /** master | video | audio | chunklist — what kind of playlist it is. */
+  role: string;
+  /** The edge host serving it, which is how you tell two sessions apart. */
+  host: string;
+}
+
+/**
+ * What to show for a stream, when the title tells you nothing.
+ *
+ * The complaint this answers: every row on a live site had the same generic
+ * title, so choosing between them meant hovering each one and reading the URL
+ * in the status bar — master or chunk, audio or video, which edge, whose
+ * stream. All of that is in the URL; none of it was on screen.
+ */
+export function describeStream(s: DetectedStream): StreamDescription {
+  let host = '';
+  let file = '';
+  try {
+    const u = new URL(s.url);
+    host = u.hostname.split('.')[0];
+    const path = u.pathname;
+    file = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
+  } catch { /* leave blank */ }
+
+  const role = s.isMaster ? 'master'
+    : /(^|[_.-])audio([_.-]|$)/.test(file) ? 'audio'
+      : /(^|[_.-])video([_.-]|$)/.test(file) ? 'video'
+        : /chunklist|llhls/.test(file) ? 'chunklist'
+          : /master|playlist|index/.test(file) ? 'master'
+            : '';
+
+  const titled = (s.title || '').replace(/^\[[^\]]*\]\s*/, '').trim();
+  const name = nameFromStreamUrl(s.url)
+    || (titled && !isGenericTitle(titled) ? titled : '')
+    || host
+    || 'stream';
+
+  return { name, role, host };
+}
+
+// ---- streams published as two playlists -------------------------------------
+
+/**
+ * The role and group of a media playlist, from its filename.
+ *
+ * Some hosts publish a stream as two unrelated media playlists and no master:
+ * chaturbate serves `chunklist_3_video_<id>_llhls.m3u8` and
+ * `chunklist_5_audio_<id>_llhls.m3u8`, where `<id>` is the only thing tying
+ * them together — the leading index differs, and they may even arrive from
+ * different edge hosts. With no master, nothing downstream can know the audio
+ * exists, so a recording of the video playlist is silent and the audio one
+ * shows up in the list as a second, pointless "stream".
+ */
+export interface PlaylistRole {
+  role: 'video' | 'audio';
+  /** The long id shared by both halves. */
+  group: string;
+  /** Path directory, host excluded — the two halves can be on different edges. */
+  dir: string;
+}
+
+export function playlistRole(url: string): PlaylistRole | null {
+  try {
+    const u = new URL(url);
+    const path = u.pathname;
+    const file = path.slice(path.lastIndexOf('/') + 1).toLowerCase();
+    const role = /(^|[_.-])video([_.-]|$)/.test(file) ? 'video'
+      : /(^|[_.-])audio([_.-]|$)/.test(file) ? 'audio'
+        : null;
+    if (!role) return null;
+    // The longest digit run in the name. Short numbers are the rendition index
+    // and the track number, which differ between the two halves.
+    const runs = file.match(/\d{8,}/g);
+    if (!runs || !runs.length) return null;
+    const group = runs.reduce((a, b) => (b.length >= a.length ? b : a));
+    return { role, group, dir: path.slice(0, path.lastIndexOf('/') + 1) };
+  } catch {
+    return null;
+  }
+}
+
+/** Do these two playlists describe one stream? */
+export function arePaired(a: PlaylistRole, b: PlaylistRole): boolean {
+  return a.group === b.group && a.dir === b.dir && a.role !== b.role;
+}
+
 /**
  * Parameters a client adds to one *request* for a playlist, rather than ones
  * that identify the playlist.

@@ -11,7 +11,9 @@
  */
 
 import { kindFromMime, kindFromUrl, isRejectedExtension } from '../src/common/harvest';
-import { stripDeliveryDirectives } from '../src/common/streams';
+import {
+  stripDeliveryDirectives, playlistRole, arePaired, isGenericTitle, nameFromStreamUrl,
+} from '../src/common/streams';
 
 let failures = 0;
 let checks = 0;
@@ -156,6 +158,51 @@ console.log('\na request for "part 0 of sequence 10176" is not the stream');
   const plain = 'https://cdn.example.com/live/master.m3u8';
   ok('a URL with no query is returned as-is', stripDeliveryDirectives(plain) === plain);
   ok('rubbish does not throw', stripDeliveryDirectives('not a url?_HLS_part=0').length > 0);
+}
+
+console.log('\ntwo playlists, one stream');
+{
+  // Chaturbate publishes audio and video as separate media playlists with no
+  // master joining them, sometimes from different edges. Nothing downstream
+  // can infer the audio exists, which is why those recordings were silent.
+  const V = 'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_3_video_16936184535539198438_llhls.m3u8?session=a';
+  const A = 'https://edge20-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_5_audio_16936184535539198438_llhls.m3u8?session=b';
+
+  const v = playlistRole(V)!;
+  const a = playlistRole(A)!;
+  ok('the video half is recognised', v?.role === 'video');
+  ok('the audio half is recognised', a?.role === 'audio');
+  ok('they share a group id', v.group === a.group, `${v.group} vs ${a.group}`);
+  ok('they pair across different edge hosts', arePaired(v, a));
+
+  // The leading index differs between the halves (3 vs 5) and must not be
+  // mistaken for the group.
+  ok('the group is the long id, not the rendition index',
+    v.group === '16936184535539198438', v.group);
+
+  const other = playlistRole(
+    'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.someoneelse.01ABC/chunklist_5_audio_99999999999999999.m3u8')!;
+  ok('a different broadcast does not pair', !arePaired(v, other));
+
+  ok('a plain master has no role at all',
+    playlistRole('https://cdn.example.com/live/master.m3u8') === null);
+  ok('a video playlist with no group id is left alone',
+    playlistRole('https://cdn.example.com/live/video.m3u8') === null);
+}
+
+console.log('\na player is not a title');
+{
+  ok('"Video Player" is refused', isGenericTitle('Video Player'));
+  ok('...whatever its case', isGenericTitle('  video player '));
+  ok('so is a bare "player"', isGenericTitle('player'));
+  ok('a real name is kept', !isGenericTitle('pinkadele'));
+  ok('so is a title that merely contains one', !isGenericTitle('Ada the video player fan'));
+
+  const url = 'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_3_video_169.m3u8';
+  ok('the broadcaster is read out of the stream path',
+    nameFromStreamUrl(url) === 'pinkadele', nameFromStreamUrl(url));
+  ok('a URL with no such segment yields nothing',
+    nameFromStreamUrl('https://cdn.example.com/live/master.m3u8') === '');
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

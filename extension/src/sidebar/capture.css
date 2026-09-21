@@ -689,3 +689,12 @@
   color: var(--sb-text-dim);
 }
 .actions span { display: block; }
+
+/* The edge host on a stream row. Dimmed on purpose: it matters only when two
+   rows are otherwise identical, which on a live site is often. */
+.cand-dim {
+  font-family: var(--vwsq-font-mono);
+  font-size: .58rem;
+  color: var(--sb-text-dim);
+  flex: 0 0 auto;
+}
