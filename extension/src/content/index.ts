@@ -194,6 +194,35 @@ if (IS_TOP_FRAME) ext.runtime.onMessage.addListener(
   },
 );
 
+// A recording ended and wants a name. Announced on the page itself as well as
+// by notification, because a Windows toast can be swallowed by focus assist or
+// a full-screen player, and this is the tab actually on screen.
+if (IS_TOP_FRAME) ext.runtime.onMessage.addListener((msg: any) => {
+  if (msg?.kind !== 'zipper:toast' || !msg.text) return undefined;
+  showPageToast(String(msg.text));
+  return undefined;
+});
+
+function showPageToast(text: string): void {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.setAttribute('role', 'status');
+  // Inline styles and a closed shadow root would both work; inline keeps it
+  // to one element that the page's own CSS cannot reach far enough to break.
+  Object.assign(el.style, {
+    position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647',
+    maxWidth: 'min(420px, calc(100vw - 32px))', padding: '10px 14px',
+    borderRadius: '8px', background: '#111827', color: '#f9fafb',
+    font: '13px/1.4 system-ui, sans-serif', boxShadow: '0 6px 24px rgba(0,0,0,.35)',
+    cursor: 'pointer', opacity: '0', transition: 'opacity .2s',
+  } as Partial<CSSStyleDeclaration>);
+  const remove = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); };
+  el.addEventListener('click', remove);
+  (document.body || document.documentElement).appendChild(el);
+  requestAnimationFrame(() => { el.style.opacity = '1'; });
+  setTimeout(remove, 12_000);
+}
+
 // ---- global options ---------------------------------------------------------
 //
 // Highlighting, the download button and live scanning are browsing-session

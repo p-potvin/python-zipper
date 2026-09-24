@@ -22,6 +22,8 @@ import {
 import { getProxy, setProxy, loadConfig } from './config';
 import { registrableDomain, hostOf } from '../common/domain';
 import { mergeGrabFacts } from '../common/grab_facts';
+import { loadSettings } from '../common/settings';
+import { watchNaming, stopWanting, pendingNames, chooseName, jobStatus } from './naming';
 import type { BgMessage } from '../common/types';
 
 installSniffer();
@@ -75,6 +77,11 @@ async function publishFreshStreamUrls(): Promise<void> {
   const live = new Set<string>();
   for (const s of recording) {
     const jobId = s.jobId!;
+    // A recording that has ended keeps its jobId on the stream row, and the
+    // tab may still be rotating URLs. Publishing then would overwrite
+    // `result` — which by now holds the naming handshake, not a URL.
+    const status = jobStatus(jobId);
+    if (status && status !== 'running' && status !== 'claimed' && status !== 'queued') continue;
     live.add(jobId);
     // The audio half's token rotates on its own, so it is part of what is
     // published — a fresh video URL muxed against a stale audio one records
@@ -107,7 +114,11 @@ const REFRESH_ALARM = 'zipper-refresh-stream-urls';
 try {
   ext.alarms?.create(REFRESH_ALARM, { periodInMinutes: REFRESH_EVERY_MS / 60_000 });
   ext.alarms?.onAlarm.addListener((a: any) => {
-    if (a?.name === REFRESH_ALARM) void publishFreshStreamUrls();
+    if (a?.name !== REFRESH_ALARM) return;
+    void publishFreshStreamUrls();
+    // The alarm is also what wakes a suspended background, whose naming
+    // poll timer went with it.
+    if (getRecordingStreams().length) watchNaming();
   });
 } catch {
   // No alarms permission (an older install): the timer still covers the common
@@ -166,6 +177,13 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     }
   }
 
+  const settings = await loadSettings();
+  let tabTitle = '';
+  try { tabTitle = (await ext.tabs.get(tabId))?.title || ''; } catch { /* tab gone */ }
+  // yt-dlp's uploader is the only performer field anything fills today, and
+  // it is empty on most live hosts; the worker falls back to the naming chain.
+  const performer = s.meta?.uploader || '';
+
   const res = await VwApi.submitJob({
     kind: 'stream',
     links: [s.url],
@@ -190,6 +208,15 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
       // worker. Piping gives up salvage, so it is not the choice to make while
       // the disk is comfortable.
       sink: 'auto',
+      // Everything below is for the name and the sidecar, not the recorder.
+      tab_title: tabTitle || undefined,
+      performer: performer || undefined,
+      stream_title: s.title || undefined,
+      title_source: s.titleSource || undefined,
+      extension_version: ext.runtime.getManifest?.()?.version,
+      // Offer a rename when the recording ends; see background/naming.ts.
+      ask_name: settings.askNameOnFinish,
+      name_timeout: settings.askNameOnFinish ? settings.autoSaveAfterSec : 0,
     },
   });
   if (res.ok && res.data?.job_id) {
@@ -199,6 +226,7 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     if (!set) { set = new Set(); tabJobMap.set(tabId, set); }
     set.add(res.data.job_id);
     touch(tabId);
+    watchNaming();
     return { ok: true, jobId: res.data.job_id };
   }
   return { ok: false, error: res.error || 'could not queue the recording' };
@@ -330,6 +358,15 @@ async function handle(msg: BgMessage, sender: any) {
       return { ok: true };
     }
     case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
+
+    // Naming a finished recording — see background/naming.ts.
+    case 'naming:list': {
+      watchNaming(true);
+      return { ok: true, pending: pendingNames() };
+    }
+    case 'naming:unwatch': stopWanting(); return { ok: true };
+    case 'naming:choose':
+      return await chooseName((msg as any).jobId, (msg as any).name || '');
 
     // Jobs remain server-backed; File Explorer actions use Firefox native messaging only.
     case 'jobs:get': {

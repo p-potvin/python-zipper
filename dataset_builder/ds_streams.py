@@ -31,6 +31,7 @@ from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
 from ds_jobs import update_job, complete_job, fail_job
+import ds_records
 
 STREAMS_DIR = os.environ.get("PYTHON_ZIPPER_STREAMS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded", "streams"
@@ -159,6 +160,11 @@ _GENERIC_LABELS = {
 # be a player's label, and it is there before any title has been extracted.
 _ORIGIN_SEG_RE = re.compile(r"^origin\.([A-Za-z0-9][A-Za-z0-9_-]{1,39})\.[A-Za-z0-9]{8,}$")
 
+# Camsoda's live edge is Flussonic, and it names the stream after the model:
+# `/edge8-ild/cam_obs/madelinefox-flu_v1/index.ll.m3u8`. The `-flu_v<n>` tail
+# is the transcoder profile, not part of the name.
+_FLUSSONIC_SEG_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]{1,39}?)-flu(?:_v\d+)?$", re.I)
+
 
 def url_label(stream_url=""):
     """The broadcaster's name, when the host writes it into the path."""
@@ -169,7 +175,7 @@ def url_label(stream_url=""):
     except Exception:
         return ""
     for seg in path.split("/"):
-        m = _ORIGIN_SEG_RE.match(seg)
+        m = _ORIGIN_SEG_RE.match(seg) or _FLUSSONIC_SEG_RE.match(seg)
         if m:
             return _sanitize_title(m.group(1))
     return ""
@@ -240,7 +246,40 @@ def stream_label(title="", page_url="", fallback_name="", stream_url=""):
     return site_label(page_url, title)
 
 
-def _finalize_stream_name(path, job_id, title="", page_url="", stream_url=""):
+def rich_suffix(label, info, page_url="", title="", stream_url=""):
+    """What goes after `<label> Stream #dd`: everything else worth knowing.
+
+    Site, the username when the label is a display name, when it started, the
+    resolution and how long it runs. More in the name is the right trade:
+    trimming a long name is a second of work, recovering a lost one is
+    impossible. Each part is only added when it says something the label
+    does not already say.
+    """
+    if not info:
+        return ""
+    parts = []
+    low = (label or "").lower()
+    username = info.get("username") or url_label(stream_url)
+    if username and username.lower() != low and username.lower() not in low:
+        parts.append(username)
+    site = info.get("site") or site_label(page_url, title)
+    if site and site.lower() != low:
+        parts.append(site)
+    started = info.get("started_local")
+    if started:
+        parts.append(started)
+    height = info.get("height")
+    if height:
+        parts.append(f"{int(height)}p")
+    elif info.get("quality") and info["quality"] not in ("best", "auto"):
+        parts.append(_sanitize_title(str(info["quality"])))
+    dur = ds_records.fmt_duration(info.get("duration"))
+    if dur:
+        parts.append(dur)
+    return " - ".join(_sanitize_title(p) for p in parts if p)
+
+
+def _finalize_stream_name(path, job_id, title="", page_url="", stream_url="", info=None):
     """Rename a finished recording to `<label> Stream #dd`.
 
     `title` is passed in rather than looked up. It used to come from
@@ -269,14 +308,24 @@ def _finalize_stream_name(path, job_id, title="", page_url="", stream_url=""):
     if re.fullmatch(r'(resume\d+|capture|joined|concat)', from_file, re.I):
         from_file = ""
 
-    label = stream_label(title, page_url, from_file, stream_url)
+    # The performer, when the page told us one, outranks everything the title
+    # chain can dig up: it came from the page's own markup, not a guess.
+    performer = _sanitize_title((info or {}).get("performer") or "")
+    if performer and performer.lower() in _GENERIC_LABELS:
+        performer = ""
+    label = performer or stream_label(title, page_url, from_file, stream_url)
     parent_dir = os.path.dirname(path)
     if label:
         index = next_stream_index(parent_dir or STREAMS_DIR, label)
         clean_title = f"{label} Stream #{index:02d}"
+        suffix = rich_suffix(label, info, page_url, title, stream_url)
+        if suffix:
+            clean_title = f"{clean_title} - {suffix}"[:200].rstrip(" -")
     else:
         # Nothing to go on anywhere: no title, no page, no usable filename.
         clean_title = f"stream_{job_id[:12]}"
+    if info is not None:
+        info["label"] = label
 
     ext = os.path.splitext(path)[1] or '.mp4'
     target_path = os.path.join(parent_dir, f"{clean_title}{ext}")
@@ -391,6 +440,29 @@ def _sanitize_stream_url(url):
     if not parsed.hostname:
         return None
     return strip_delivery_directives(candidate)
+
+
+def classic_hls(url):
+    """The ordinary-HLS twin of a Flussonic low-latency playlist.
+
+    Camsoda publishes `.../<model>-flu_v1/index.ll.m3u8`. Neither recorder
+    follows that one properly: yt-dlp produces nothing and ffmpeg records one
+    6-second segment and stops, which is where all the ~600KB "Camsoda
+    Stream" files came from. Flussonic serves every stream as classic HLS as
+    well, at the same path without `.ll`, with the same token — and that one
+    both clients follow like any live playlist.
+
+    Returns the URL unchanged for anything that is not an `.ll.m3u8`.
+    """
+    if not isinstance(url, str):
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not parsed.path.lower().endswith(".ll.m3u8"):
+        return url
+    return urlunparse(parsed._replace(path=parsed.path[:-len(".ll.m3u8")] + ".m3u8"))
 
 
 def probe_stream(url, headers=None, proxy=None):
@@ -920,7 +992,8 @@ MIN_ATTEMPT_SECONDS = 20
 
 def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
                     report=None, sink="local", rcat_remote=None, title=None,
-                    refresh_url=None, page_url="", audio_url=""):
+                    refresh_url=None, page_url="", audio_url="", meta=None,
+                    on_saved=None):
     """Run yt-dlp with progress tracking; manages the job status end to end.
 
     `refresh_url` is a callable returning the freshest URL the browser has seen
@@ -930,8 +1003,16 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     still holds a working URL is the tab, which keeps requesting one every few
     seconds. Without it, leaving the page ended the recording a few minutes
     later and there was nothing on this side that could have known better.
+
+    `meta` is what the extension knew about the stream — performer, tab title,
+    quality, thumbnail — and goes into the name and the sidecar. `on_saved`
+    is called with the finished path and its record before the job is marked
+    complete, and may return a different path: it is how the worker offers
+    the user a chance to rename the recording.
     """
     report = report or _Reporter()
+    meta = dict(meta or {})
+    started_at = time.time()
     # The captured URL is whatever request the player happened to make, which
     # for a low-latency stream is a request for one specific part. Cleaned once
     # here so both clients get the same URL — the ffmpeg fallback used to be
@@ -941,7 +1022,11 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     if not safe:
         report.fail(job_id, "invalid stream url")
         return
-    url = safe
+    # Kept for the sidecar and as a last resort: see classic_hls.
+    original_url = safe
+    url = safe if audio_url else classic_hls(safe)
+    if url != safe:
+        print(f"[Stream] {job_id} low-latency Flussonic playlist; recording its classic HLS twin")
     to_remote = sink == "rcat" and bool(rcat_remote)
     if not to_remote:
         os.makedirs(STREAMS_DIR, exist_ok=True)
@@ -1072,6 +1157,7 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         )
         return ([] if okay else [f"ffmpeg: {err}"]), "ran"
 
+    recorder = "ffmpeg-paired" if audio_url else "yt-dlp"
     tail = []
     resumes = 0
     while True:
@@ -1103,6 +1189,8 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
                 fresh_audio = (got.get("audio_url") or "").strip()
             else:
                 fresh = _sanitize_stream_url(str(got).strip())
+            if fresh and not fresh_audio:
+                fresh = classic_hls(fresh)
         except Exception as e:
             print(f"[Stream] {job_id} could not read a fresh URL ({e})")
             fresh = None
@@ -1137,10 +1225,19 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         print(f"[Stream] {job_id} yt-dlp produced nothing; retrying with ffmpeg")
         report.update(job_id, status="running", progress=0)
         fallback = os.path.join(STREAMS_DIR, prefix + "capture.ts")
+        recorder = "ffmpeg"
         okay, ff_err = record_with_ffmpeg(
             job_id, url, headers, proxy, report=report, out_path=fallback,
         )
         was_stopped = job_id in STOPPED
+        # The classic twin was a guess about the host; the URL the page
+        # actually used is still worth one try before giving up.
+        if not okay and not was_stopped and url != original_url:
+            print(f"[Stream] {job_id} classic HLS failed ({ff_err}); trying the low-latency URL")
+            okay, ff_err = record_with_ffmpeg(
+                job_id, original_url, headers, proxy, report=report, out_path=fallback,
+            )
+            was_stopped = job_id in STOPPED
         if okay:
             path = fallback
         else:
@@ -1151,7 +1248,46 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     # A produced file is a success even on non-zero exit — that's the normal
     # outcome of stopping/losing a live recording.
     if path:
-        path = _finalize_stream_name(path, job_id, title, page_url, url)
+        ended_at = time.time()
+        media = ds_records.probe_media(path)
+        info = dict(meta)
+        info.update({
+            # Local time, because that is the clock the user remembers the
+            # show by. No colons: Windows refuses them in a filename.
+            "started_local": time.strftime("%Y-%m-%d %Hh%M", time.localtime(started_at)),
+            "height": media.get("height"),
+            "duration": media.get("duration"),
+            "username": url_label(url) or url_label(original_url),
+            "site": site_label(page_url, title),
+        })
+        path = _finalize_stream_name(path, job_id, title, page_url, url, info)
+        capture = dict(meta)
+        capture.update({
+            "stream_url": url,
+            "original_stream_url": original_url if original_url != url else "",
+            "audio_url": audio_url,
+            "page_url": page_url,
+            "site": info.get("site"),
+            "username": info.get("username"),
+            "tab_title": meta.get("tab_title") or title or "",
+            "label": info.get("label"),
+            "recorder": recorder,
+            "resumes": resumes,
+            "sink": "local",
+            "proxied": bool(proxy or PROXY),
+            "headers_used": list((headers or {}).keys()),
+            "started_at": ds_records._iso(started_at),
+            "ended_at": ds_records._iso(ended_at),
+            "wall_seconds": round(ended_at - started_at, 1),
+            "end_reason": "stopped" if was_stopped else "ended",
+        })
+        record = ds_records.build_record(path, job_id, capture, media)
+        ds_records.write_sidecar(path, record)
+        if on_saved:
+            try:
+                path = on_saved(path, record) or path
+            except Exception as e:
+                print(f"[Stream] {job_id} naming step failed ({e}); keeping {os.path.basename(path)}")
         if os.environ.get("PYTHON_ZIPPER_STREAM_RCLONE") == "1":
             handoff_to_rclone(path)
             path = _find_output(prefix) or path  # may have moved

@@ -26,8 +26,8 @@ body {
 .shell {
   height: 100%;
   display: grid;
-  /* header · context strip · scrolling body · rail */
-  grid-template-rows: auto auto 1fr auto;
+  /* header · context strip · naming cards · scrolling body · rail */
+  grid-template-rows: auto auto auto 1fr auto;
   min-height: 0;
 }
 
@@ -271,3 +271,47 @@ body {
   }
 }
 
+
+/* ---- naming cards — a finished recording asking for a name --------------- */
+
+.nm {
+  display: grid;
+  gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-sunken);
+  border-bottom: 1px solid var(--sb-border);
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.nm-card {
+  display: grid;
+  gap: var(--vwsq-space-2);
+  padding: var(--vwsq-space-2) var(--vwsq-space-3);
+  background: var(--sb-raised);
+  border: 1px solid var(--sb-accent);
+  border-radius: var(--vwsq-radius-control);
+}
+.nm-head { display: flex; gap: var(--vwsq-space-2); align-items: baseline; min-width: 0; }
+.nm-who {
+  color: var(--sb-text);
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+}
+.nm-facts {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono);
+  font-size: .68rem;
+}
+.nm-row { display: flex; align-items: center; gap: var(--vwsq-space-1); }
+.nm-inp { flex: 1 1 auto; min-width: 0; font-family: var(--vwsq-font-mono); font-size: .72rem; }
+.nm-ext { color: var(--sb-text-dim); font-family: var(--vwsq-font-mono); font-size: .72rem; }
+.nm-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vwsq-space-2); }
+.nm-left {
+  margin-left: auto;
+  color: var(--sb-text-dim);
+  font-family: var(--vwsq-font-mono);
+  font-size: .68rem;
+}

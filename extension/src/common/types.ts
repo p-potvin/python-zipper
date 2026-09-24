@@ -99,6 +99,9 @@ export type BgMessage =
   | { kind: 'streams:remove'; key: string; tabId?: number }
   | { kind: 'streams:recapture'; tabId?: number }
   | { kind: 'streams:start'; key: string; formatId?: string; title?: string; tabId?: number }
+  | { kind: 'naming:list'; tabId?: number }
+  | { kind: 'naming:unwatch'; tabId?: number }
+  | { kind: 'naming:choose'; jobId: string; name?: string; tabId?: number }
   | { kind: 'jobs:get' }
   | { kind: 'jobs:stop'; jobId: string }
   | { kind: 'jobs:delete'; jobId: string }

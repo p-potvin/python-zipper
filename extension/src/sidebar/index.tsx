@@ -19,6 +19,7 @@ import {
 import { DownloadsTab, startJobPolling, setDownloadsVisible, serverOnline, jobs } from './downloads';
 import { SettingsTab, loadApiConfig, loadOptions } from './settings';
 import { InsightsTab, refreshInsights } from './insights';
+import { NamingCards, loadNaming } from './naming';
 import './sidebar.css';
 
 // ---- state ------------------------------------------------------------------
@@ -266,6 +267,8 @@ function App() {
 
       <ContextStrip />
 
+      <NamingCards />
+
       <main class="body" id="sb-panel" role="tabpanel">
         <Body />
       </main>
@@ -286,6 +289,7 @@ void loadViewPrefs();
 // misleading option, and saying so up front is the point of the banner.
 void detectPswp();
 startJobPolling();
+void loadNaming();
 watchActiveTab();
 
 const root = document.getElementById('root');

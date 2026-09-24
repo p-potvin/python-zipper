@@ -147,6 +147,26 @@ export function SettingsTab() {
         on={o.zipMultiple}
         onChange={(v) => void setOpt('zipMultiple', v)} />
 
+      <div class="sect">Recordings</div>
+
+      <Toggle
+        label="Ask me to name a recording when it ends"
+        hint="When a stream finishes or is stopped, a notification and a card at the top of this sidebar let you rename the file. It is saved under the automatic name first, so nothing waits on you."
+        on={o.askNameOnFinish}
+        onChange={(v) => void setOpt('askNameOnFinish', v)} />
+
+      {o.askNameOnFinish ? (
+        <label class="field">
+          <span>Keep the automatic name after (seconds)</span>
+          <input class="inp inp-sm" type="number" min="0" max="86400" step="10"
+                 value={String(o.autoSaveAfterSec)}
+                 onChange={(e) => void setOpt('autoSaveAfterSec', Number((e.currentTarget as HTMLInputElement).value))} />
+          <span class="opt-hint">
+            0 waits until you choose. Applies to recordings started after the change.
+          </span>
+        </label>
+      ) : null}
+
       <div class="sect">VaultWares API</div>
 
       <label class="field">
