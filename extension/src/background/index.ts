@@ -16,6 +16,7 @@ import {
 } from './grabbed';
 
 import { zipAndDownload } from './zip_download';
+import { grabOnlyFans } from './of_grab';
 import {
   Api as VwApi, awaitJobResult, getConfig as getApiConfig, setConfig as setApiConfig,
 } from '../common/vwapi';
@@ -359,6 +360,10 @@ async function handle(msg: BgMessage, sender: any) {
     }
     case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
 
+    // OnlyFans Alt+Q: the content script has the URLs, this fetches and zips.
+    case 'of:grab':
+      return await grabOnlyFans((msg as any).urls || [], (msg as any).model || '', sender?.tab?.id);
+
     // Naming a finished recording — see background/naming.ts.
     case 'naming:list': {
       watchNaming(true);
@@ -537,8 +542,6 @@ async function handle(msg: BgMessage, sender: any) {
       acceptFrameResult(
         (msg as any).runId,
         (msg as any).candidates || [],
-        (msg as any).isTop !== false,
-        (msg as any).photoSwipe,
       );
       return { ok: true };
     }
@@ -549,25 +552,7 @@ async function handle(msg: BgMessage, sender: any) {
       if (!/^https?:/i.test(pageUrl)) {
         return { ok: false, error: 'not a web page' };
       }
-      const mode = (msg as any).mode === 'deep' ? 'deep' : 'quick';
-      return { ok: true, snapshot: await runHarvest(tabId, pageUrl, mode, (msg as any).scope || '') };
-    }
-    // Asked before any scan, so the banner can offer the deep run up front —
-    // the whole point being that on a PhotoSwipe page a quick scan sees
-    // thumbnails and the gallery is only reachable by opening the viewer.
-    case 'pswp:detect': {
-      if (tabId === undefined) return { ok: false };
-      try {
-        const r = await ext.tabs.sendMessage(tabId, { kind: 'pswp:detect' });
-        return { ok: true, status: r?.status ?? null };
-      } catch {
-        return { ok: false };
-      }
-    }
-    case 'harvest:deep-abort': {
-      if (tabId === undefined) return { ok: false };
-      try { await ext.tabs.sendMessage(tabId, { kind: 'harvest:deep-abort' }); } catch { /* ignore */ }
-      return { ok: true };
+      return { ok: true, snapshot: await runHarvest(tabId, pageUrl, (msg as any).scope || '') };
     }
     case 'harvest:get': {
       return { ok: true, snapshot: getSnapshot(tabId) ?? null, logged: mediaLogSize(tabId) };

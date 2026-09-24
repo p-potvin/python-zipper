@@ -20,9 +20,6 @@ import {
 import { explainCandidate, type ElementHints } from '../common/scoring';
 import { upgradeUrl } from '../common/upgrade_rules';
 import { extractCarouselMediaUrls } from './carousel';
-import {
-  detectPhotoSwipe, readPhotoSwipeGallery, slidesToCandidates, type PswpStatus,
-} from './pswp';
 
 /** Attributes lazy-loaders stash real URLs in before swapping them into src. */
 const LAZY_ATTRS = [
@@ -171,17 +168,9 @@ export interface HarvestResult {
   pageUrl: string;
   scanned: number;
   truncated: boolean;
-  /** Surfaced so the sidebar can tell the user a deep run is worth it here. */
-  photoSwipe?: PswpStatus;
 }
 
 export interface HarvestOptions {
-  /**
-   * 'read'  — take the gallery if a viewer is already open (no side effects).
-   * 'open'  — click an item to construct the viewer, then read and close it.
-   * 'off'   — skip PhotoSwipe entirely.
-   */
-  photoSwipe?: 'read' | 'open' | 'off';
   /**
    * Scan only these subtrees instead of the whole document.
    *
@@ -362,47 +351,6 @@ export async function harvestDom(
     if (!prev || c.score > prev.score) found.set(c.url, c);
   }
 
-  // --- pass 5: PhotoSwipe -------------------------------------------------
-  //
-  // Last, and treated as authoritative where it speaks. The viewer's own
-  // dataSource carries the full-size URL *and* its real intrinsic dimensions,
-  // which nothing else on the page does — the markup holds thumbnails. Where it
-  // names a thumbnail, that thumbnail is dropped outright rather than scored
-  // down: the gallery has told us it is a derivative of a URL we now hold, and
-  // that is a stronger statement than any heuristic could make.
-  const mode = opts.photoSwipe ?? 'read';
-  let photoSwipe: PswpStatus | undefined;
-  if (mode !== 'off') {
-    try {
-      photoSwipe = await detectPhotoSwipe();
-      if (photoSwipe.present) {
-        const slides = await readPhotoSwipeGallery(mode === 'open');
-        if (slides.length) {
-          const { candidates, thumbnails } = slidesToCandidates(slides, pageUrl, frameId);
-
-          const byKey = new Map<string, string>();
-          for (const url of found.keys()) byKey.set(dedupKey(url), url);
-          for (const t of thumbnails) {
-            const hit = byKey.get(dedupKey(t));
-            if (hit) { found.delete(hit); hits.delete(hit); }
-          }
-
-          for (const c of candidates) {
-            hits.set(c.url, hits.get(c.url) ?? 1);
-            c.domHits = hits.get(c.url);
-            const prev = found.get(c.url);
-            // A slide outranks anything the DOM walk produced for the same URL:
-            // it came from the viewer's own list, with measured dimensions.
-            if (!prev || prev.origin !== 'carousel') found.set(c.url, c);
-          }
-          photoSwipe = { ...photoSwipe, slides: slides.length, open: true };
-        }
-      }
-    } catch (e) {
-      console.warn('[Zipper] photoswipe read failed', e);
-    }
-  }
-
   // Rescore with the final repeat counts — an element seen early had a hit
   // count of 1 at the time, which understates a URL that turned up 30 times.
   //
@@ -433,7 +381,6 @@ export async function harvestDom(
     pageUrl,
     scanned,
     truncated,
-    photoSwipe,
   };
 }
 

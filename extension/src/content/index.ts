@@ -7,9 +7,8 @@ import {
 } from './highlight';
 import { setInjectButton } from './inject_button';
 import { setLiveScan } from './live_scan';
-import { deepScan, abortDeepScan, closeViewer } from './deep_scan';
 import { startPicker, stopPicker, selectorMatchCount } from './picker';
-import { detectPhotoSwipe } from './pswp';
+import { installOnlyFansGrabber } from './onlyfans';
 
 // The manifest now injects into every frame, so the harvest can see embedded
 // players and gallery iframes. Everything UI-shaped below must therefore be
@@ -22,67 +21,6 @@ const IS_TOP_FRAME = (() => {
 // Harvest runs in EVERY frame — that's the point of all_frames. The background
 // broadcasts `harvest:run`; each frame scans and pushes its own result back,
 // because tabs.sendMessage only returns the first frame's response.
-// Deep scan: scroll the feed out, open the viewer, then harvest with it open.
-// Top frame only — scrolling a sub-frame is meaningless and would fight the
-// parent for the viewport.
-ext.runtime.onMessage.addListener((msg: any) => {
-  if (msg?.kind === 'harvest:deep-abort') { abortDeepScan(); return; }
-  if (msg?.kind !== 'harvest:deep') return;
-
-  // Sub-frames can't scroll the top document, but they still hold media — an
-  // embedded gallery is exactly where the good stuff hides. They skip the
-  // scroll and just scan, so a deep run is never *narrower* than a quick one.
-  if (!IS_TOP_FRAME) {
-    void (async () => {
-      try {
-        const r = await harvestDom(msg.pageUrl || location.href);
-        await ext.runtime.sendMessage({
-          kind: 'harvest:frame-result', runId: msg.runId, isTop: false,
-          candidates: r.candidates, scanned: r.scanned,
-        });
-      } catch { /* frame torn down mid-scan */ }
-    })();
-    return;
-  }
-
-  void (async () => {
-    let opened = false;
-    try {
-      const result = await deepScan(
-        (p) => {
-          // Fire-and-forget progress; the sidebar renders it live.
-          try { void ext.runtime.sendMessage({ kind: 'harvest:deep-progress', runId: msg.runId, ...p }); }
-          catch { /* sidebar closed */ }
-        },
-        { maxMs: msg.maxMs || 90_000, openViewer: msg.openViewer !== false },
-      );
-      opened = result.phase === 'done';
-      // The one path allowed to click: the user asked for a deep run, which is
-      // exactly the consent needed to open the site's viewer and read its
-      // gallery. Everything else reads PhotoSwipe only if it is already open.
-      const harvested = await harvestDom(
-        msg.pageUrl || location.href, 0, msg.scope || '', { photoSwipe: 'open' });
-      await ext.runtime.sendMessage({
-        kind: 'harvest:frame-result',
-        runId: msg.runId,
-        isTop: true,
-        candidates: harvested.candidates,
-        scanned: harvested.scanned,
-        photoSwipe: harvested.photoSwipe,
-      });
-    } catch (e) {
-      try {
-        await ext.runtime.sendMessage({
-          kind: 'harvest:frame-result', runId: msg.runId, isTop: true, candidates: [], scanned: 0,
-        });
-      } catch { /* background gone */ }
-    } finally {
-      // Always put the page back the way we found it, even on failure.
-      if (opened) { try { closeViewer(); } catch { /* ignore */ } }
-    }
-  })();
-});
-
 ext.runtime.onMessage.addListener((msg: any) => {
   if (msg?.kind !== 'harvest:run') return;
   void (async () => {
@@ -93,7 +31,6 @@ ext.runtime.onMessage.addListener((msg: any) => {
         runId: msg.runId,
         candidates: result.candidates,
         scanned: result.scanned,
-        photoSwipe: result.photoSwipe,
       });
     } catch (e) {
       // A frame that can't scan (cross-origin quirk, torn down mid-scan) must
@@ -180,48 +117,8 @@ if (IS_TOP_FRAME) ext.runtime.onMessage.addListener(
   },
 );
 
-// A standalone PhotoSwipe check, so the sidebar can offer the deep run before
-// any scan has happened. Top frame only — the banner is a single statement
-// about the page, and ten iframes answering would produce ten of them.
-if (IS_TOP_FRAME) ext.runtime.onMessage.addListener(
-  (msg: any, _sender: any, sendResponse: (r: any) => void) => {
-    if (msg?.kind !== 'pswp:detect') return undefined;
-    void detectPhotoSwipe().then(
-      (status) => sendResponse({ ok: true, status }),
-      () => sendResponse({ ok: false }),
-    );
-    return true;
-  },
-);
-
-// A recording ended and wants a name. Announced on the page itself as well as
-// by notification, because a Windows toast can be swallowed by focus assist or
-// a full-screen player, and this is the tab actually on screen.
-if (IS_TOP_FRAME) ext.runtime.onMessage.addListener((msg: any) => {
-  if (msg?.kind !== 'zipper:toast' || !msg.text) return undefined;
-  showPageToast(String(msg.text));
-  return undefined;
-});
-
-function showPageToast(text: string): void {
-  const el = document.createElement('div');
-  el.textContent = text;
-  el.setAttribute('role', 'status');
-  // Inline styles and a closed shadow root would both work; inline keeps it
-  // to one element that the page's own CSS cannot reach far enough to break.
-  Object.assign(el.style, {
-    position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647',
-    maxWidth: 'min(420px, calc(100vw - 32px))', padding: '10px 14px',
-    borderRadius: '8px', background: '#111827', color: '#f9fafb',
-    font: '13px/1.4 system-ui, sans-serif', boxShadow: '0 6px 24px rgba(0,0,0,.35)',
-    cursor: 'pointer', opacity: '0', transition: 'opacity .2s',
-  } as Partial<CSSStyleDeclaration>);
-  const remove = () => { el.style.opacity = '0'; setTimeout(() => el.remove(), 250); };
-  el.addEventListener('click', remove);
-  (document.body || document.documentElement).appendChild(el);
-  requestAnimationFrame(() => { el.style.opacity = '1'; });
-  setTimeout(remove, 12_000);
-}
+// OnlyFans: Alt+Q grabs the whole media grid, exactly as the userscript did.
+if (IS_TOP_FRAME && /(^|\.)onlyfans\.com$/i.test(location.hostname)) installOnlyFansGrabber();
 
 // ---- global options ---------------------------------------------------------
 //

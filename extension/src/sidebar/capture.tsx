@@ -25,18 +25,10 @@ interface Snapshot {
   candidates: MediaCandidate[];
   pageUrl: string;
   pageDomain: string;
-  path: 'full' | 'network-only' | 'deep';
+  path: 'full' | 'network-only';
   frames: number;
   fromNetwork: number;
   fromDom: number;
-  photoSwipe?: PswpStatus;
-}
-
-interface PswpStatus {
-  present: boolean;
-  open: boolean;
-  slides: number;
-  via: string;
 }
 
 type SortKey = 'score' | 'size' | 'resolution' | 'name';
@@ -47,8 +39,6 @@ export const scanning = signal(false);
 export const scanError = signal('');
 export const loggedCount = signal(0);
 export const toast = signal('');
-/** Live phase readout while a deep scan is scrolling the page. */
-export const deepStatus = signal<{ phase: string; passes: number; elapsedMs: number } | null>(null);
 
 const query = signal('');
 const kindFilter = signal<MediaKind | 'all'>('all');
@@ -70,23 +60,6 @@ const explaining = signal('');
 export const scope = signal('');
 export const scopeMatches = signal<number | null>(null);
 export const picking = signal(false);
-/**
- * What the page said about PhotoSwipe, whether or not a scan has run.
- *
- * Surfaced before scanning on purpose: on a PhotoSwipe page a quick scan sees
- * the thumbnails in the markup and nothing else, because the full-size URLs
- * live in the viewer's own state and it has to be opened once before they
- * exist. Knowing that up front is the difference between one deep run and a
- * confusing quick one followed by wondering where the originals went.
- */
-export const pswp = signal<PswpStatus | null>(null);
-
-export async function detectPswp(): Promise<void> {
-  try {
-    const res = await ext.runtime.sendMessage({ kind: 'pswp:detect' });
-    pswp.value = res?.ok ? res.status : null;
-  } catch { pswp.value = null; }
-}
 
 // ---- livestreams --------------------------------------------------------------
 
@@ -394,13 +367,12 @@ export async function refreshPeek(): Promise<void> {
   } catch { loggedCount.value = 0; }
 }
 
-export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
+export async function runScan(): Promise<void> {
   if (scanning.value) return;
   scanning.value = true;
   scanError.value = '';
-  if (mode === 'deep') deepStatus.value = { phase: 'starting', passes: 0, elapsedMs: 0 };
   try {
-    const res = await ext.runtime.sendMessage({ kind: 'harvest:run', mode, scope: scope.value });
+    const res = await ext.runtime.sendMessage({ kind: 'harvest:run', scope: scope.value });
     if (!res?.ok) {
       scanError.value = res?.error || 'scan failed';
       snapshot.value = null;
@@ -432,7 +404,6 @@ export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
         for (const url of Object.keys(grabbed.value)) pick.delete(url);
         selected.value = pick;
       }
-      if (res.snapshot.photoSwipe) pswp.value = res.snapshot.photoSwipe;
       // The candidates carry stream *handles*; this fetches what those handles
       // point at, so a stream row can offer qualities straight after a scan.
       void refreshStreams();
@@ -443,21 +414,11 @@ export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
     scanError.value = String(e?.message || e);
   } finally {
     scanning.value = false;
-    deepStatus.value = null;
     void refreshPeek();
   }
 }
 
-export async function abortDeep(): Promise<void> {
-  try { await ext.runtime.sendMessage({ kind: 'harvest:deep-abort' }); } catch { /* ignore */ }
-}
-
-// Progress arrives as its own message while the content script scrolls.
 ext.runtime.onMessage.addListener((msg: any) => {
-  if (msg?.kind === 'harvest:deep-progress') {
-    deepStatus.value = { phase: msg.phase, passes: msg.passes, elapsedMs: msg.elapsedMs };
-    return;
-  }
 
   // The passive log grew — a feed is still loading. Update the "seen" counter
   // always, and fold the new items into an existing snapshot so the list fills
@@ -470,7 +431,6 @@ ext.runtime.onMessage.addListener((msg: any) => {
   if (msg?.kind === 'harvest:updated') {
     if (snapshot.value && !scanning.value && msg.snapshot) {
       snapshot.value = msg.snapshot;
-      if (msg.snapshot.photoSwipe) pswp.value = msg.snapshot.photoSwipe;
     }
     return;
   }
@@ -1011,38 +971,6 @@ function Why({ rules }: { rules: ScoreRule[] }) {
   );
 }
 
-/**
- * Tell the user the gallery is reachable, and that it takes a deep run.
- *
- * This is the one case where a quick scan is actively misleading rather than
- * merely incomplete: the page's markup holds thumbnails, and the full-size URLs
- * exist only inside the viewer's own state, which is constructed the first time
- * something is clicked. So the honest thing is to say so before the scan rather
- * than after, and point at the button that actually works.
- */
-function PswpBanner({ s }: { s: PswpStatus }) {
-  const got = s.slides > 0;
-  return (
-    <div class="pswp-note">
-      <span class={`led led-${got ? 'online' : 'sync'}`}>photoswipe</span>
-      <div class="pswp-note-body">
-        {got ? (
-          <p>
-            Read {s.slides} slide{s.slides === 1 ? '' : 's'} straight from the
-            gallery — full-size URLs with their real dimensions.
-          </p>
-        ) : (
-          <p>
-            This page uses a PhotoSwipe gallery. A quick scan only sees the
-            thumbnails in the markup; <strong>Scroll</strong> loads the whole
-            feed, opens the viewer once, and takes every full-size URL from it.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ---- view -------------------------------------------------------------------
 
 export function CaptureTab() {
@@ -1080,26 +1008,11 @@ export function CaptureTab() {
       </div>
 
       <div class="cap-bar">
-        <button class="btn" onClick={() => void runScan('quick')} disabled={scanning.value}>
+        <button class="btn" onClick={() => void runScan()} disabled={scanning.value}>
           {scanning.value ? 'Scanning…' : s ? 'Re-scan' : 'Scan page'}
-        </button>
-        <button class="btn-quiet" disabled={scanning.value}
-                title="Scroll the whole feed and open the gallery viewer before scanning. Slower, but reaches lazy-loaded media."
-                onClick={() => void runScan('deep')}>
-          Scroll
         </button>
         <span class="cap-count">{s ? `${s.candidates.length} found` : `${loggedCount.value} seen`}</span>
       </div>
-
-      {deepStatus.value ? (
-        <div class="deep">
-          <span class="led led-relay">{deepStatus.value.phase}</span>
-          <span>{deepStatus.value.passes} scrolls</span>
-          <span>{Math.round(deepStatus.value.elapsedMs / 1000)}s</span>
-          <span class="cell-spring" />
-          <button class="lnk" onClick={() => void abortDeep()}>Stop</button>
-        </div>
-      ) : null}
 
       {s ? (
         <div class="cap-prov">
@@ -1239,7 +1152,6 @@ export function CaptureTab() {
         </>
       ) : null}
 
-      {pswp.value?.present ? <PswpBanner s={pswp.value} /> : null}
 
       {s && s.candidates.length === 0 ? (
         <div class="empty">

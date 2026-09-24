@@ -100,6 +100,7 @@ export type BgMessage =
   | { kind: 'streams:recapture'; tabId?: number }
   | { kind: 'streams:start'; key: string; formatId?: string; title?: string; tabId?: number }
   | { kind: 'naming:list'; tabId?: number }
+  | { kind: 'of:grab'; urls: string[]; model: string; tabId?: number }
   | { kind: 'naming:unwatch'; tabId?: number }
   | { kind: 'naming:choose'; jobId: string; name?: string; tabId?: number }
   | { kind: 'jobs:get' }
@@ -118,9 +119,8 @@ export type BgMessage =
   | { kind: 'downloads:reveal'; downloadId?: number; path?: string }
   | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } }
   // ---- harvest ----------------------------------------------------------
-  | { kind: 'harvest:run'; mode?: 'quick' | 'deep'; scope?: string; tabId?: number }
+  | { kind: 'harvest:run'; scope?: string; tabId?: number }
   /** Scroll the feed out and open the viewer, then harvest. Manual only. */
-  | { kind: 'harvest:deep-abort'; tabId?: number }
   | { kind: 'harvest:get'; tabId?: number }
   /** What the passive network log already holds — no scan, no page contact. */
   | { kind: 'harvest:peek'; tabId?: number }
@@ -133,7 +133,6 @@ export type BgMessage =
   /** One decoded frame of a stream, for the preview thumbnail. */
   | { kind: 'stream:preview'; url: string; headers?: Record<string, string> }
   /** Is this a PhotoSwipe page? Answered by the top frame. */
-  | { kind: 'pswp:detect' }
   /** Disk headroom, what is still staged locally, and each rclone remote. */
   | { kind: 'storage:get' }
   /** Aggregated download history: by day, by domain, by kind. */

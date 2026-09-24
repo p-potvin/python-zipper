@@ -406,20 +406,6 @@
 .stream-go:hover:not(:disabled) { background: var(--sb-accent); }
 .stream-go:disabled { opacity: .5; cursor: not-allowed; }
 
-/* ---- photoswipe notice --------------------------------------------------- */
-
-.pswp-note {
-  display: flex; gap: var(--vwsq-space-2); align-items: flex-start;
-  padding: var(--vwsq-space-2) var(--vwsq-space-3);
-  margin-top: var(--vwsq-space-2);
-  background: var(--sb-sunken);
-  border-left: 2px solid var(--vwsq-signal-sync);
-  border-radius: var(--vwsq-radius-control);
-}
-.pswp-note-body { min-width: 0; }
-.pswp-note p { margin: 0; font-size: .68rem; line-height: 1.45; color: var(--sb-text-secondary); }
-.pswp-note strong { color: var(--sb-text-bright); font-weight: 600; }
-
 /* ---- options ------------------------------------------------------------- */
 
 .opt {
