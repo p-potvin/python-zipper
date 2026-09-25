@@ -16,7 +16,9 @@
  * — but read the breakdown it prints before reaching for one.
  */
 
-import { type MediaCandidate, type MediaKind, makeCandidate } from '../src/common/harvest';
+import {
+  type MediaCandidate, type MediaKind, makeCandidate, dimensionsFromUrl,
+} from '../src/common/harvest';
 import { explainCandidate, SCORE } from '../src/common/scoring';
 import { applyPageContext, findClusters, defaultSelection } from '../src/common/page_rank';
 
@@ -240,6 +242,73 @@ group('the page pass is idempotent', () => {
   ok('re-running does not compound its own bonuses',
     all.every((c, i) => c.score === before[i]),
     all.filter((c, i) => c.score !== before[i]).slice(0, 3).map(why).join('\n        '));
+});
+
+// ---- facts the URL states about itself --------------------------------------
+
+group('a URL that states its size is believed', () => {
+  ok('a sized directory segment is read',
+    dimensionsFromUrl('https://cdn5.example.com/images/models/samples-640x480/4732306.jpg').width === 640);
+  ok('...and its height with it',
+    dimensionsFromUrl('https://cdn5.example.com/images/models/samples-640x480/4732306.jpg').height === 480);
+  ok('a filename suffix is read',
+    dimensionsFromUrl('https://cdn.example.com/p/photo_1920x1080.jpg').height === 1080);
+  ok('the unicode multiplication sign counts too',
+    dimensionsFromUrl('https://cdn.example.com/p/photo_800×600.jpg').width === 800);
+  ok('resize params are read when there is no WxH token',
+    dimensionsFromUrl('https://cdn.example.com/img.jpg?w=1600&h=900').width === 1600);
+
+  ok('an id with an x in it is not a resolution',
+    dimensionsFromUrl('https://cdn.example.com/a1x2/file.jpg').width === undefined);
+  ok('an implausibly large pair is refused',
+    dimensionsFromUrl('https://cdn.example.com/99999x88888/file.jpg').width === undefined);
+
+  const c = makeCandidate(
+    'https://cdn5.example.com/images/models/samples-640x480/4732306.jpg',
+    'image', 'dom', PAGE_URL);
+  ok('a candidate with nothing measured takes the URL at its word', c.width === 640, String(c.width));
+
+  const measured = makeCandidate(
+    'https://cdn5.example.com/images/models/samples-640x480/4732306.jpg',
+    'image', 'dom', PAGE_URL, { width: 1280, height: 960 });
+  ok('a measured element still wins over the path', measured.width === 1280, String(measured.width));
+});
+
+group('the absence of evidence is not evidence', () => {
+  const unknown = makeCandidate('https://cdn.example.com/media/photo.jpg', 'image', 'dom', PAGE_URL);
+  const scored = explainCandidate(unknown);
+  ok('an unmeasurable image does not clear INTERESTING on its own',
+    scored.score < SCORE.INTERESTING, `${scored.score}`);
+  ok('...but stays well above the floor, so it is still listed',
+    scored.score >= SCORE.FLOOR, `${scored.score}`);
+
+  const stream = makeCandidate('https://cdn.example.com/live/master.m3u8', 'stream', 'network', PAGE_URL);
+  ok('a stream is exempt — a manifest has no size by nature',
+    !explainCandidate(stream).rules.some(([r]) => r === 'facts.unknown'));
+});
+
+group('a grid nobody can measure is not pre-selected', () => {
+  // The reported page: 343 images, 199 of them ticked, none above 640px or
+  // 40KB. Every member is a sibling in one container and nothing is known
+  // about any of them.
+  const specs: Spec[] = [];
+  for (let i = 0; i < 40; i++) {
+    specs.push({
+      url: `https://cdn.example.com/images/models/samples/${1000 + i}.jpg`,
+      container: 'a.cell>div.grid>section.list',
+      ancestry: 'list',
+    });
+  }
+  const all = page(specs);
+  const picked = defaultSelection(all);
+  ok('nothing is ticked when nothing can be judged', picked.size === 0, `${picked.size} ticked`);
+  ok('...and they are all still listed', survives(all).length === 40, `${survives(all).length}`);
+});
+
+group('a grid that can be measured still pre-selects', () => {
+  const all = gridPage();
+  const picked = defaultSelection(all);
+  ok('a real gallery is still ticked', picked.size > 10, `${picked.size} ticked`);
 });
 
 // ---- report -----------------------------------------------------------------

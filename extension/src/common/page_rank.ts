@@ -352,6 +352,17 @@ function leader(
  * So this is a *rule*, not a threshold: the biggest thing on the page, and the
  * ensembles — nothing else, however high it ranked.
  */
+/**
+ * Is there anything here to judge at all?
+ *
+ * A width from the URL counts: sites state their sizes honestly — nobody has a
+ * reason to lie about `-640x480` in a path — and on the CDN this was traced
+ * through, the size-suffixed variant is the *larger* file, not the thumbnail.
+ */
+function hasMeasurableFacts(c: MediaCandidate): boolean {
+  return (c.width ?? 0) > 0 || (c.height ?? 0) > 0 || (c.bytes ?? 0) > 0;
+}
+
 export function defaultSelection(all: MediaCandidate[]): Set<string> {
   const pick = new Set<string>();
   // Streams are excluded outright. A manifest is not a file to bundle — it is
@@ -362,16 +373,36 @@ export function defaultSelection(all: MediaCandidate[]): Set<string> {
   if (!eligible.length) return pick;
 
   // The biggest thing on the page, and the biggest video if that isn't it.
+  //
+  // "Biggest" has to mean measured. `leader` falls back to the highest score
+  // when nothing carries an area or a byte count, which on a page where
+  // nothing is measurable is not the biggest item — it is the one that
+  // happened to score best with no evidence behind it.
   const biggest = leader(eligible, () => true);
-  if (biggest) pick.add(biggest.url);
+  if (biggest && hasMeasurableFacts(biggest)) pick.add(biggest.url);
+
+  // The video is exempt from that, deliberately. A page carries one or two
+  // videos and dozens of images, so an unmeasurable video is still almost
+  // certainly the thing you came for, while an unmeasurable image is one of a
+  // hundred — and a video exposes neither dimensions nor a Content-Length far
+  // more often than an image does.
   const biggestVideo = leader(eligible, (c) => c.kind === 'video' || c.kind === 'stream');
   if (biggestVideo) pick.add(biggestVideo.url);
 
   // Every ensemble that looks like content. The median gate is what keeps a
   // grid of interface furniture out: a real gallery's members clear
   // INTERESTING on their own merits, an icon set's members never do.
+  //
+  // The gate is only meaningful when the members can actually be judged. A
+  // cluster nobody has a width or a byte count for is not a cluster that
+  // passed — it is one that could not be assessed, and ticking it is how 199
+  // thumbnails ended up selected on a page with nothing worth taking. When in
+  // doubt this now selects nothing: an empty selection is a moment's work to
+  // fix, a wrong one is a download and a scroll through it.
   for (const cl of findClusters(eligible)) {
-    const scores = cl.members.map((c) => c.score).sort((a, b) => a - b);
+    const measured = cl.members.filter(hasMeasurableFacts);
+    if (measured.length * 2 < cl.members.length) continue;
+    const scores = measured.map((c) => c.score).sort((a, b) => a - b);
     const median = scores[Math.floor(scores.length / 2)];
     if (median < SCORE.INTERESTING) continue;
     for (const c of cl.members) {

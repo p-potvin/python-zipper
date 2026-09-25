@@ -14,11 +14,12 @@ import { signal, computed } from '@preact/signals';
 import { ext } from '../common/api';
 import { displayDomain, profileKey } from '../common/domain';
 import {
-  CaptureTab, resetCapture, refreshPeek, loggedCount, detectPswp, loadViewPrefs,
+  CaptureTab, resetCapture, refreshPeek, loggedCount, loadViewPrefs,
 } from './capture';
 import { DownloadsTab, startJobPolling, setDownloadsVisible, serverOnline, jobs } from './downloads';
 import { SettingsTab, loadApiConfig, loadOptions } from './settings';
 import { InsightsTab, refreshInsights } from './insights';
+import { NamingCards, loadNaming } from './naming';
 import './sidebar.css';
 
 // ---- state ------------------------------------------------------------------
@@ -266,6 +267,8 @@ function App() {
 
       <ContextStrip />
 
+      <NamingCards />
+
       <main class="body" id="sb-panel" role="tabpanel">
         <Body />
       </main>
@@ -282,10 +285,8 @@ void refreshPeek();
 void loadApiConfig();
 void loadOptions();
 void loadViewPrefs();
-// Asked before anything is scanned: on a PhotoSwipe page the quick scan is the
-// misleading option, and saying so up front is the point of the banner.
-void detectPswp();
 startJobPolling();
+void loadNaming();
 watchActiveTab();
 
 const root = document.getElementById('root');

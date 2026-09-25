@@ -1,26 +1,131 @@
 import { ext } from '../common/api';
 import {
   installSniffer, getStreams, getStream, removeStream, clearTab, touch,
-  updatePanelOpenTime, setHasActiveDownloads,
+  updatePanelOpenTime, setHasActiveDownloads, setOnNewStream, getRecordingStreams,
 } from './sniffer';
 import { enrichIfNeeded } from './enrich';
-import { installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged } from './media_log';
+import {
+  installMediaLog, getMediaLog, mediaLogSize, headersFor, onMediaLogged, lookupLogged,
+} from './media_log';
 import {
   installHarvestStore, runHarvest, getSnapshot, acceptFrameResult, addLiveCandidates,
 } from './harvest_store';
-import { loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed } from './grabbed';
+import {
+  loadGrabbed, markGrabbed, markManyGrabbed, lookupGrabbed, clearGrabbed,
+  type GrabFacts,
+} from './grabbed';
 
 import { zipAndDownload } from './zip_download';
+import { grabOnlyFans } from './of_grab';
 import {
   Api as VwApi, awaitJobResult, getConfig as getApiConfig, setConfig as setApiConfig,
 } from '../common/vwapi';
 import { getProxy, setProxy, loadConfig } from './config';
 import { registrableDomain, hostOf } from '../common/domain';
+import { mergeGrabFacts } from '../common/grab_facts';
+import { loadSettings } from '../common/settings';
+import { watchNaming, stopWanting, pendingNames, chooseName, jobStatus } from './naming';
 import type { BgMessage } from '../common/types';
 
 installSniffer();
 installMediaLog();
 installHarvestStore();
+
+/**
+ * Probe a stream the moment it is detected, not when the popup is opened.
+ *
+ * This is the difference in feel between this and a helper that always knows:
+ * enrichment used to be triggered only by `streams:get`, so the first thing
+ * opening the popup did was start a probe and show "reading qualities…" for as
+ * long as the worker's poll interval. The detection was already there — only
+ * the asking waited for an audience.
+ *
+ * Safe to do eagerly because the cost was already bounded for the popup's
+ * sake: `enrichIfNeeded` refuses a repeat within 15s, skips anything already
+ * in flight, and does nothing at all for a stream that has been probed. The
+ * popup's own call stays, since a stream detected while the extension was
+ * reloading has nobody to tell.
+ */
+setOnNewStream((s) => enrichIfNeeded(s));
+
+/**
+ * Keep a running recording supplied with a URL that still works.
+ *
+ * A live edge stops serving a given URL long before the broadcast ends — the
+ * signature expires, or the CDN drops a viewer it can no longer see — and the
+ * worker cannot tell that from the broadcast having finished. The tab can: it
+ * is still being served, and the sniffer already overwrites a stream's URL
+ * every time a newer request for it goes past. All that was missing was
+ * telling the worker.
+ *
+ * The channel is the job's `result` field, which is the only free-form one the
+ * API's progress endpoint accepts and which a stream job does not otherwise
+ * use. The worker reads it when — and only when — the URL it has stops
+ * working, so this is a publication, not a command.
+ *
+ * Published only when the URL has actually changed. A stream whose URL is
+ * stable costs one comparison a minute and no requests at all.
+ */
+const REFRESH_EVERY_MS = 60_000;
+const publishedUrls = new Map<string, string>();
+
+async function publishFreshStreamUrls(): Promise<void> {
+  const recording = getRecordingStreams();
+  if (!recording.length) {
+    publishedUrls.clear();
+    return;
+  }
+  const live = new Set<string>();
+  for (const s of recording) {
+    const jobId = s.jobId!;
+    // A recording that has ended keeps its jobId on the stream row, and the
+    // tab may still be rotating URLs. Publishing then would overwrite
+    // `result` — which by now holds the naming handshake, not a URL.
+    const status = jobStatus(jobId);
+    if (status && status !== 'running' && status !== 'claimed' && status !== 'queued') continue;
+    live.add(jobId);
+    // The audio half's token rotates on its own, so it is part of what is
+    // published — a fresh video URL muxed against a stale audio one records
+    // silence just as surely as no audio URL at all.
+    const signature = `${s.url}
+${s.audioUrl || ''}`;
+    if (publishedUrls.get(jobId) === signature) continue;
+    try {
+      const res = await VwApi.updateJob(jobId, {
+        result: { stream_url: s.url, audio_url: s.audioUrl || undefined, at: Date.now() },
+      });
+      if (res.ok) publishedUrls.set(jobId, signature);
+    } catch { /* the worker still has the URL it started with */ }
+  }
+  for (const jobId of [...publishedUrls.keys()]) {
+    if (!live.has(jobId)) publishedUrls.delete(jobId);
+  }
+}
+
+/**
+ * Driven by an alarm rather than a timer.
+ *
+ * The background is an event page: it is suspended when nothing is happening,
+ * and a `setInterval` goes with it. That matters precisely here, because the
+ * case this exists for — a long recording of a page nobody is touching — is
+ * the case where the background is most likely to have been put to sleep.
+ * An alarm wakes it; a timer would simply have stopped.
+ */
+const REFRESH_ALARM = 'zipper-refresh-stream-urls';
+try {
+  ext.alarms?.create(REFRESH_ALARM, { periodInMinutes: REFRESH_EVERY_MS / 60_000 });
+  ext.alarms?.onAlarm.addListener((a: any) => {
+    if (a?.name !== REFRESH_ALARM) return;
+    void publishFreshStreamUrls();
+    // The alarm is also what wakes a suspended background, whose naming
+    // poll timer went with it.
+    if (getRecordingStreams().length) watchNaming();
+  });
+} catch {
+  // No alarms permission (an older install): the timer still covers the common
+  // case, where stream traffic keeps the background awake anyway.
+  setInterval(() => { void publishFreshStreamUrls(); }, REFRESH_EVERY_MS);
+}
 
 // Tell any open sidebar that the passive log grew, so a page still loading
 // fills the list in place instead of needing a manual re-scan. Fire-and-forget:
@@ -34,8 +139,6 @@ onMediaLogged((tabId: number) => {
 });
 void loadGrabbed();
 void loadConfig();
-// Note: enrichment (yt-dlp probe) is triggered lazily from streams:get — i.e.
-// only while the popup is open — not on every detected request.
 
 function parseQualityHeight(q: string | null | undefined): number {
   if (!q) return 0;
@@ -75,6 +178,13 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     }
   }
 
+  const settings = await loadSettings();
+  let tabTitle = '';
+  try { tabTitle = (await ext.tabs.get(tabId))?.title || ''; } catch { /* tab gone */ }
+  // yt-dlp's uploader is the only performer field anything fills today, and
+  // it is empty on most live hosts; the worker falls back to the naming chain.
+  const performer = s.meta?.uploader || '';
+
   const res = await VwApi.submitJob({
     kind: 'stream',
     links: [s.url],
@@ -86,6 +196,10 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
       format_id: formatId || s.selectedFormat || null,
       quality: newQualityStr,
       stream_url: s.url,
+      // Present only when this host publishes audio as its own playlist. The
+      // worker records both inputs with ffmpeg in that case, because there is
+      // no master for yt-dlp to merge from and the result is otherwise silent.
+      audio_url: s.audioUrl || undefined,
       thumbnail: s.meta?.thumbnail || null,
       duration: s.meta?.duration ?? null,
       is_live: s.meta?.is_live ?? false,
@@ -95,6 +209,15 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
       // worker. Piping gives up salvage, so it is not the choice to make while
       // the disk is comfortable.
       sink: 'auto',
+      // Everything below is for the name and the sidecar, not the recorder.
+      tab_title: tabTitle || undefined,
+      performer: performer || undefined,
+      stream_title: s.title || undefined,
+      title_source: s.titleSource || undefined,
+      extension_version: ext.runtime.getManifest?.()?.version,
+      // Offer a rename when the recording ends; see background/naming.ts.
+      ask_name: settings.askNameOnFinish,
+      name_timeout: settings.askNameOnFinish ? settings.autoSaveAfterSec : 0,
     },
   });
   if (res.ok && res.data?.job_id) {
@@ -104,9 +227,33 @@ async function startStream(tabId: number, key: string, formatId?: string, title?
     if (!set) { set = new Set(); tabJobMap.set(tabId, set); }
     set.add(res.data.job_id);
     touch(tabId);
+    watchNaming();
     return { ok: true, jobId: res.data.job_id };
   }
   return { ok: false, error: res.error || 'could not queue the recording' };
+}
+
+/**
+ * The facts to file a grab under, from whoever knows them.
+ *
+ * Two sources, and neither is sufficient alone. The sender knows what it is
+ * looking at — the in-page button has a kind and the element's rendered size,
+ * the sidebar has a full candidate — but neither knows the transfer size. The
+ * background does: the response went through the media log with a
+ * Content-Length and a Content-Type on it.
+ *
+ * The sender wins where it spoke, because a DOM sighting is a deliberate
+ * statement about the asset; the log only fills the gaps. Without this the
+ * in-page button wrote a null kind and null bytes on every click, which is the
+ * whole of Insights' "18 unknown" and three domains reading zero bytes.
+ */
+function grabFacts(
+  tabId: number | undefined,
+  url: string,
+  sent?: GrabFacts,
+): GrabFacts {
+  const logged = tabId === undefined ? undefined : lookupLogged(tabId, url);
+  return mergeGrabFacts(sent, logged) as GrabFacts;
 }
 
 /** Best guess at the filename the server will write, for the already-got mark. */
@@ -199,7 +346,9 @@ async function handle(msg: BgMessage, sender: any) {
     case 'streams:get': {
       updatePanelOpenTime();
       const streams = getStreams(tabId);
-      for (const s of streams) enrichIfNeeded(s); // lazy probe while popup is open
+      // Belt and braces: detection already probes eagerly (see setOnNewStream),
+      // but a stream found while the background was restarting had no listener.
+      for (const s of streams) enrichIfNeeded(s);
       return { streams };
     }
     case 'streams:clear': clearTab(tabId); return { ok: true };
@@ -210,6 +359,19 @@ async function handle(msg: BgMessage, sender: any) {
       return { ok: true };
     }
     case 'streams:start': return await startStream(tabId, (msg as any).key, (msg as any).formatId, (msg as any).title);
+
+    // OnlyFans Alt+Q: the content script has the URLs, this fetches and zips.
+    case 'of:grab':
+      return await grabOnlyFans((msg as any).urls || [], (msg as any).model || '', sender?.tab?.id);
+
+    // Naming a finished recording — see background/naming.ts.
+    case 'naming:list': {
+      watchNaming(true);
+      return { ok: true, pending: pendingNames() };
+    }
+    case 'naming:unwatch': stopWanting(); return { ok: true };
+    case 'naming:choose':
+      return await chooseName((msg as any).jobId, (msg as any).name || '');
 
     // Jobs remain server-backed; File Explorer actions use Firefox native messaging only.
     case 'jobs:get': {
@@ -303,7 +465,10 @@ async function handle(msg: BgMessage, sender: any) {
       if (started?.ok) {
         // Record the name it was actually saved under, not the URL basename —
         // the grid shows this so it matches what's on disk.
-        markGrabbed(dUrl, dFilename, dReferer || '', 'browser');
+        markGrabbed(
+          dUrl, dFilename, dReferer || '', 'browser',
+          grabFacts(tabId, dUrl, (msg as any).facts),
+        );
       }
       return started;
     }
@@ -330,7 +495,9 @@ async function handle(msg: BgMessage, sender: any) {
           zItems.map((i: any) => ({
             url: i.url,
             savedAs: res.filename || 'archive.zip',
-            facts: zFacts[i.url],
+            // Same fill as the single download: a candidate the DOM found but
+            // the sidebar never sized still has a Content-Length banked here.
+            facts: grabFacts(tabId, i.url, zFacts[i.url]),
           })),
           zPage,
           'browser',
@@ -375,8 +542,6 @@ async function handle(msg: BgMessage, sender: any) {
       acceptFrameResult(
         (msg as any).runId,
         (msg as any).candidates || [],
-        (msg as any).isTop !== false,
-        (msg as any).photoSwipe,
       );
       return { ok: true };
     }
@@ -387,25 +552,7 @@ async function handle(msg: BgMessage, sender: any) {
       if (!/^https?:/i.test(pageUrl)) {
         return { ok: false, error: 'not a web page' };
       }
-      const mode = (msg as any).mode === 'deep' ? 'deep' : 'quick';
-      return { ok: true, snapshot: await runHarvest(tabId, pageUrl, mode, (msg as any).scope || '') };
-    }
-    // Asked before any scan, so the banner can offer the deep run up front —
-    // the whole point being that on a PhotoSwipe page a quick scan sees
-    // thumbnails and the gallery is only reachable by opening the viewer.
-    case 'pswp:detect': {
-      if (tabId === undefined) return { ok: false };
-      try {
-        const r = await ext.tabs.sendMessage(tabId, { kind: 'pswp:detect' });
-        return { ok: true, status: r?.status ?? null };
-      } catch {
-        return { ok: false };
-      }
-    }
-    case 'harvest:deep-abort': {
-      if (tabId === undefined) return { ok: false };
-      try { await ext.tabs.sendMessage(tabId, { kind: 'harvest:deep-abort' }); } catch { /* ignore */ }
-      return { ok: true };
+      return { ok: true, snapshot: await runHarvest(tabId, pageUrl, (msg as any).scope || '') };
     }
     case 'harvest:get': {
       return { ok: true, snapshot: getSnapshot(tabId) ?? null, logged: mediaLogSize(tabId) };

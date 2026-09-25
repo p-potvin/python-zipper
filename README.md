@@ -12,7 +12,7 @@ This project consists of three core automation pipelines:
 
 An automated image pipeline designed to fetch, organize, deduplicate, and filter images:
 
-* **Background API Server**: Integrated into the central **VaultWares API** (`vaultwares-api` on `https://100.67.25.118:9001`) to receive and process scraping/downloading payloads from browser extensions. (Legacy fallback server `server.py` runs on `http://127.0.0.1:5171`).
+* **Background API Server**: Integrated into the central **VaultWares API** (`vaultwares-api` on `https://100.67.25.118:9001`) to receive and process scraping/downloading payloads from browser extensions. The extension talks to that API and nothing else.
 * **Scraper Tool (`scraper.py`)**: Downloads and packages images from any website using standard HTTP requests or browser rendering via Playwright, creating zip archives in batches of 100.
 * **Extraction & Deduplication Pipeline (`unzip_dedupe.ps1`)**: Scans the `.downloaded/` folder, extracts zip files, runs Czkawka CLI to find and isolate duplicate images (keeping the oldest), and moves processed archives to `.downloaded/.completed/`.
 * **AI Person Detection Filter (`face_detector.py`)**: Runs the Hugging Face `facebook/detr-resnet-50` object detection model on extracted images. It automatically keeps only the images containing exactly **one** person, moving all other images to `.downloaded/.completed/`.
@@ -32,6 +32,13 @@ The dataset builder has two entry points: **CLI mode** (`scraper.py` standalone)
 5. **Output**: ZIP archives saved to `--dest` (default: `<project_root>/.downloaded/`).
 
 **Server Mode (`server.py` on port 5171)**
+
+> Retired. `server.py` is no longer run as a service — the `Python Server
+> Zipper` service was removed on Mon, 21 Sep 2026 once nothing referenced it:
+> the extension talks to the VaultWares API, and `Python Zipper Worker`
+> (`worker.py`) does the work. The script still runs by hand for the endpoints
+> below, and the notes are kept because the pipeline they describe is the same
+> one the worker uses.
 
 The server exposes several HTTP endpoints. Scraping and downloading run in background threads.
 

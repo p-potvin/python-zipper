@@ -16,24 +16,19 @@ import { defaultSelection } from '../common/page_rank';
 import { loadSettings, onSettingsChanged } from '../common/settings';
 import { serverOnline, jobs } from './downloads';
 import type { DetectedStream } from '../common/types';
-import { qualities, hasSelectableQuality, activeJobFor, progressLabel } from '../common/streams';
+import {
+  qualities, hasSelectableQuality, activeJobFor, progressLabel, isIndeterminate,
+  isIdleStream, describeStream,
+} from '../common/streams';
 
 interface Snapshot {
   candidates: MediaCandidate[];
   pageUrl: string;
   pageDomain: string;
-  path: 'full' | 'network-only' | 'deep';
+  path: 'full' | 'network-only';
   frames: number;
   fromNetwork: number;
   fromDom: number;
-  photoSwipe?: PswpStatus;
-}
-
-interface PswpStatus {
-  present: boolean;
-  open: boolean;
-  slides: number;
-  via: string;
 }
 
 type SortKey = 'score' | 'size' | 'resolution' | 'name';
@@ -44,8 +39,6 @@ export const scanning = signal(false);
 export const scanError = signal('');
 export const loggedCount = signal(0);
 export const toast = signal('');
-/** Live phase readout while a deep scan is scrolling the page. */
-export const deepStatus = signal<{ phase: string; passes: number; elapsedMs: number } | null>(null);
 
 const query = signal('');
 const kindFilter = signal<MediaKind | 'all'>('all');
@@ -67,23 +60,6 @@ const explaining = signal('');
 export const scope = signal('');
 export const scopeMatches = signal<number | null>(null);
 export const picking = signal(false);
-/**
- * What the page said about PhotoSwipe, whether or not a scan has run.
- *
- * Surfaced before scanning on purpose: on a PhotoSwipe page a quick scan sees
- * the thumbnails in the markup and nothing else, because the full-size URLs
- * live in the viewer's own state and it has to be opened once before they
- * exist. Knowing that up front is the difference between one deep run and a
- * confusing quick one followed by wondering where the originals went.
- */
-export const pswp = signal<PswpStatus | null>(null);
-
-export async function detectPswp(): Promise<void> {
-  try {
-    const res = await ext.runtime.sendMessage({ kind: 'pswp:detect' });
-    pswp.value = res?.ok ? res.status : null;
-  } catch { pswp.value = null; }
-}
 
 // ---- livestreams --------------------------------------------------------------
 
@@ -100,6 +76,26 @@ export const pageStreams = signal<DetectedStream[]>([]);
 
 /** format_id chosen per stream key, before it is started. */
 const pickedQuality = signal<Record<string, string>>({});
+
+/**
+ * Whether streams that have gone quiet are shown.
+ *
+ * A page left open for an hour collects them: an ad break, a quality switch, a
+ * player that reloaded. They are kept rather than dropped — "nothing has
+ * requested it lately" is a heuristic, and a quiet stream is still recordable
+ * while its token holds — but they are folded behind a count so the one that
+ * is playing is not buried under the ones that are not.
+ */
+const showIdleStreams = signal(false);
+
+function isIdleCandidate(c: MediaCandidate): boolean {
+  const s = c.streamKey && pageStreams.value.find((x) => x.key === c.streamKey);
+  return !!s && isIdleStream(s);
+}
+
+/** Stream candidates currently folded away. */
+const idleStreams = computed(() => (snapshot.value?.candidates ?? [])
+  .filter((c) => c.kind === 'stream' && isIdleCandidate(c)).length);
 
 /**
  * One decoded frame per stream, and why there isn't one.
@@ -259,6 +255,9 @@ const filtered = computed(() => {
 
   const out = s.candidates.filter((c) => {
     if (k !== 'all' && c.kind !== k) return false;
+    // A stream nothing has requested in minutes is folded away, not deleted —
+    // see idleStreams below for the count that offers them back.
+    if (c.kind === 'stream' && !showIdleStreams.value && isIdleCandidate(c)) return false;
     // An unknown width/size must not be silently dropped by a filter the user
     // didn't aim at it — only exclude when we actually know it falls short.
     if (mw > 0 && c.width !== undefined && c.width < mw) return false;
@@ -269,13 +268,34 @@ const filtered = computed(() => {
 
   const by = sortKey.value;
   const dir = sortDesc.value ? 1 : -1;
+
+  // Sorting by a fact only half the list has was the real complaint about
+  // these two orders. Reversing the direction used to bring every *unknown*
+  // to the top — an ascending size sort led with the rows that have no size,
+  // so "smallest first" showed nothing useful. Unknowns now sink to the
+  // bottom whichever way the arrow points, and the rows that can be compared
+  // are compared. Score is the tiebreak, so a block of equally-unknown rows
+  // still arrives in a sensible order rather than an arbitrary one.
+  const rank = (c: MediaCandidate): number | undefined => {
+    if (by === 'size') return c.bytes && c.bytes > 0 ? c.bytes : undefined;
+    if (by === 'resolution') {
+      const area = (c.width ?? 0) * (c.height ?? 0);
+      return area > 0 ? area : undefined;
+    }
+    return undefined;
+  };
+
   return out.sort((a, b) => {
-    let d: number;
-    if (by === 'size') d = (b.bytes ?? -1) - (a.bytes ?? -1);
-    else if (by === 'resolution') d = ((b.width ?? 0) * (b.height ?? 0)) - ((a.width ?? 0) * (a.height ?? 0));
-    else if (by === 'name') d = fileName(b.url).localeCompare(fileName(a.url));
-    else d = b.score - a.score;
-    return d * dir;
+    if (by === 'name') return fileName(b.url).localeCompare(fileName(a.url)) * dir;
+    if (by === 'score') return (b.score - a.score) * dir;
+
+    const va = rank(a);
+    const vb = rank(b);
+    if (va === undefined && vb === undefined) return b.score - a.score;
+    if (va === undefined) return 1;   // unknown sinks, regardless of `dir`
+    if (vb === undefined) return -1;
+    const d = vb - va;
+    return d ? d * dir : b.score - a.score;
   });
 });
 
@@ -347,13 +367,12 @@ export async function refreshPeek(): Promise<void> {
   } catch { loggedCount.value = 0; }
 }
 
-export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
+export async function runScan(): Promise<void> {
   if (scanning.value) return;
   scanning.value = true;
   scanError.value = '';
-  if (mode === 'deep') deepStatus.value = { phase: 'starting', passes: 0, elapsedMs: 0 };
   try {
-    const res = await ext.runtime.sendMessage({ kind: 'harvest:run', mode, scope: scope.value });
+    const res = await ext.runtime.sendMessage({ kind: 'harvest:run', scope: scope.value });
     if (!res?.ok) {
       scanError.value = res?.error || 'scan failed';
       snapshot.value = null;
@@ -385,7 +404,6 @@ export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
         for (const url of Object.keys(grabbed.value)) pick.delete(url);
         selected.value = pick;
       }
-      if (res.snapshot.photoSwipe) pswp.value = res.snapshot.photoSwipe;
       // The candidates carry stream *handles*; this fetches what those handles
       // point at, so a stream row can offer qualities straight after a scan.
       void refreshStreams();
@@ -396,21 +414,11 @@ export async function runScan(mode: 'quick' | 'deep' = 'quick'): Promise<void> {
     scanError.value = String(e?.message || e);
   } finally {
     scanning.value = false;
-    deepStatus.value = null;
     void refreshPeek();
   }
 }
 
-export async function abortDeep(): Promise<void> {
-  try { await ext.runtime.sendMessage({ kind: 'harvest:deep-abort' }); } catch { /* ignore */ }
-}
-
-// Progress arrives as its own message while the content script scrolls.
 ext.runtime.onMessage.addListener((msg: any) => {
-  if (msg?.kind === 'harvest:deep-progress') {
-    deepStatus.value = { phase: msg.phase, passes: msg.passes, elapsedMs: msg.elapsedMs };
-    return;
-  }
 
   // The passive log grew — a feed is still loading. Update the "seen" counter
   // always, and fold the new items into an existing snapshot so the list fills
@@ -423,7 +431,6 @@ ext.runtime.onMessage.addListener((msg: any) => {
   if (msg?.kind === 'harvest:updated') {
     if (snapshot.value && !scanning.value && msg.snapshot) {
       snapshot.value = msg.snapshot;
-      if (msg.snapshot.photoSwipe) pswp.value = msg.snapshot.photoSwipe;
     }
     return;
   }
@@ -632,6 +639,9 @@ async function downloadSelected(): Promise<void> {
         url: c.url,
         filename: suggestedName(c),
         referer,
+        // The zip route has always sent these; the one-at-a-time route never
+        // did, so a single download recorded a file with no kind and no size.
+        facts: factsFor([c])[c.url],
       });
       if (res?.ok) ok++;
     } catch { /* counted as failed below */ }
@@ -797,6 +807,7 @@ function StreamRow({ c }: { c: MediaCandidate }) {
   const job = s ? activeJobFor(s, jobs.value) : undefined;
   const pick = c.streamKey ? pickedQuality.value[c.streamKey] : '';
   const prev = c.streamKey ? previews.value[c.streamKey] : undefined;
+  const d = s ? describeStream(s) : undefined;
 
   // Kicked off after this render, never during it: loadPreview writes the
   // 'loading' state synchronously, and setting a signal mid-render re-enters
@@ -827,8 +838,16 @@ function StreamRow({ c }: { c: MediaCandidate }) {
       ) : null}
 
       <div class="cand-top">
-        <span class={`kind kind-stream`}>{c.streamType || 'stream'}</span>
-        <span class="cand-name" title={c.url}>{c.label || fileName(c.url)}</span>
+        {/* What kind of playlist, who it belongs to, and which edge is serving
+            it. Every one of those was previously only discoverable by hovering
+            the row and reading the URL, which made choosing between four
+            identically-titled streams a guess. */}
+        <span class={`kind kind-stream`}>{d?.role || c.streamType || 'stream'}</span>
+        <span class="cand-name" title={c.url}>{d?.name || c.label || fileName(c.url)}</span>
+        {s?.audioUrl
+          ? <span class="kind" title="audio is a separate playlist; both are recorded">+audio</span>
+          : null}
+        {d?.host ? <span class="cand-dim" title={c.url}>{d.host}</span> : null}
         {s?.meta?.is_live ? <span class="led led-alert">live</span> : null}
       </div>
 
@@ -860,13 +879,14 @@ function StreamRow({ c }: { c: MediaCandidate }) {
       {job ? (
         <>
           <div class="job-bar">
-            {/* Indeterminate whenever the job has no total to measure against,
-                which for a live capture is always. A VOD recording does have
-                one and still gets a real percentage. */}
-            {job.bytes_total ? (
-              <div class="job-fill" style={`width:${Math.max(2, Math.round(job.progress || 0))}%`} />
-            ) : (
+            {/* Indeterminate for a live capture, which has no end to measure
+                against. A VOD recording does have one and still gets a real
+                percentage — see isIndeterminate for why a missing total is
+                not enough to tell them apart. */}
+            {isIndeterminate(job) ? (
               <div class="job-fill job-fill-live" />
+            ) : (
+              <div class="job-fill" style={`width:${Math.max(2, Math.round(job.progress || 0))}%`} />
             )}
           </div>
           <div class="cand-meta">
@@ -951,38 +971,6 @@ function Why({ rules }: { rules: ScoreRule[] }) {
   );
 }
 
-/**
- * Tell the user the gallery is reachable, and that it takes a deep run.
- *
- * This is the one case where a quick scan is actively misleading rather than
- * merely incomplete: the page's markup holds thumbnails, and the full-size URLs
- * exist only inside the viewer's own state, which is constructed the first time
- * something is clicked. So the honest thing is to say so before the scan rather
- * than after, and point at the button that actually works.
- */
-function PswpBanner({ s }: { s: PswpStatus }) {
-  const got = s.slides > 0;
-  return (
-    <div class="pswp-note">
-      <span class={`led led-${got ? 'online' : 'sync'}`}>photoswipe</span>
-      <div class="pswp-note-body">
-        {got ? (
-          <p>
-            Read {s.slides} slide{s.slides === 1 ? '' : 's'} straight from the
-            gallery — full-size URLs with their real dimensions.
-          </p>
-        ) : (
-          <p>
-            This page uses a PhotoSwipe gallery. A quick scan only sees the
-            thumbnails in the markup; <strong>Scroll</strong> loads the whole
-            feed, opens the viewer once, and takes every full-size URL from it.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ---- view -------------------------------------------------------------------
 
 export function CaptureTab() {
@@ -1020,26 +1008,11 @@ export function CaptureTab() {
       </div>
 
       <div class="cap-bar">
-        <button class="btn" onClick={() => void runScan('quick')} disabled={scanning.value}>
+        <button class="btn" onClick={() => void runScan()} disabled={scanning.value}>
           {scanning.value ? 'Scanning…' : s ? 'Re-scan' : 'Scan page'}
-        </button>
-        <button class="btn-quiet" disabled={scanning.value}
-                title="Scroll the whole feed and open the gallery viewer before scanning. Slower, but reaches lazy-loaded media."
-                onClick={() => void runScan('deep')}>
-          Scroll
         </button>
         <span class="cap-count">{s ? `${s.candidates.length} found` : `${loggedCount.value} seen`}</span>
       </div>
-
-      {deepStatus.value ? (
-        <div class="deep">
-          <span class="led led-relay">{deepStatus.value.phase}</span>
-          <span>{deepStatus.value.passes} scrolls</span>
-          <span>{Math.round(deepStatus.value.elapsedMs / 1000)}s</span>
-          <span class="cell-spring" />
-          <button class="lnk" onClick={() => void abortDeep()}>Stop</button>
-        </div>
-      ) : null}
 
       {s ? (
         <div class="cap-prov">
@@ -1073,6 +1046,13 @@ export function CaptureTab() {
                 </button>
               );
             })}
+            {idleStreams.value ? (
+              <button class={`chip${showIdleStreams.value ? ' chip-on' : ''}`}
+                      title="Streams nothing has requested for a couple of minutes"
+                      onClick={() => { showIdleStreams.value = !showIdleStreams.value; }}>
+                idle <span class="chip-n">{idleStreams.value}</span>
+              </button>
+            ) : null}
           </div>
 
           <div class="fields">
@@ -1172,7 +1152,6 @@ export function CaptureTab() {
         </>
       ) : null}
 
-      {pswp.value?.present ? <PswpBanner s={pswp.value} /> : null}
 
       {s && s.candidates.length === 0 ? (
         <div class="empty">

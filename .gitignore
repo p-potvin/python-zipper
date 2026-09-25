@@ -30,6 +30,11 @@ linkvertise/.mullvad-profile-state
 linkvertise/.venv/
 linkvertise/.pytest_cache/
 **/tests/**
+# ...except the ones that are the project's own test suite. Without this, a new
+# test file is invisible to `git add` and lives only on the machine that wrote
+# it — which is how the livestream naming tests went two sessions unshared.
+!dataset_builder/tests/
+!dataset_builder/tests/*.py
 **/.extras/**
 telegram/links-for-tests.txt
 

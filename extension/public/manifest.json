@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Zip it — Live Stream Grabber (VaultWares)",
-  "version": "1.60.0",
+  "version": "1.66.0",
   "description": "Media (Videos, Images, HLS/DASH/MSS Streams) downloader used with a local python server.",
   "browser_specific_settings": {
     "gecko": {
@@ -16,6 +16,7 @@
   },
   "permissions": [
     "webRequest",
+    "alarms",
     "storage",
     "notifications",
     "downloads",
@@ -45,14 +46,13 @@
     },
     {
       "matches": [
-        "<all_urls>"
+        "https://onlyfans.com/*"
       ],
       "js": [
         "pagehook.js"
       ],
       "run_at": "document_start",
-      "all_frames": true,
-      "match_about_blank": false,
+      "all_frames": false,
       "world": "MAIN"
     }
   ],

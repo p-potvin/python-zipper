@@ -10,6 +10,11 @@
  *   npm run check
  */
 
+import { kindFromMime, kindFromUrl, isRejectedExtension } from '../src/common/harvest';
+import {
+  stripDeliveryDirectives, playlistRole, arePaired, isGenericTitle, nameFromStreamUrl,
+} from '../src/common/streams';
+
 let failures = 0;
 let checks = 0;
 
@@ -86,6 +91,118 @@ console.log('\nsiblings of a tracked manifest are segments whatever they are cal
   // ...but only its own directory. A photo elsewhere on the same CDN stays.
   ok('an unrelated directory is untouched',
     !segmentTest('https://cdn.example.com/images/pic.jpg', 'image/jpeg', [manifest]));
+}
+
+console.log('\na name is not evidence when the server has spoken');
+{
+  // Some hosts serve their media — and the segments of a stream — as .js, .css
+  // or .woff with nothing else changed. The ingest gate used to reject on the
+  // extension before the Content-Type was consulted, so a `video/mp4` served
+  // as `player.js` was thrown away while the server sat there saying what it
+  // was.
+  //
+  // Mirrors the gate in media_log.record: the blocklist applies only when the
+  // MIME told us nothing.
+  const admitted = (url: string, mime: string, manifests: string[] = []): boolean => {
+    const byMime = kindFromMime(mime);
+    const kind = byMime ?? kindFromUrl(url);
+    if (!kind || kind === 'other') return false;
+    if (!byMime && isRejectedExtension(url)) return false;
+    if (kind === 'stream') return false;
+    return !segmentTest(url, mime, manifests);
+  };
+
+  ok('an mp4 served as .js is admitted',
+    admitted('https://cdn.example.com/assets/clip.js', 'video/mp4'));
+  ok('a jpeg served as .woff2 is admitted',
+    admitted('https://cdn.example.com/assets/photo.woff2', 'image/jpeg'));
+  ok('a real script is still refused',
+    !admitted('https://cdn.example.com/assets/app.js', 'application/javascript'));
+  ok('a stylesheet is still refused',
+    !admitted('https://cdn.example.com/assets/site.css', 'text/css'));
+  ok('a real font is still refused',
+    !admitted('https://cdn.example.com/assets/inter.woff2', 'font/woff2'));
+
+  // The point is not to let disguised *segments* through with them.
+  ok('a disguised segment is still rejected on its MIME',
+    !admitted('https://cdn.example.com/live/abc/00042.js', 'video/mp2t'));
+  ok('...and on its manifest directory when the MIME is unhelpful',
+    !admitted('https://cdn.example.com/hls/xyz/00042.css', 'video/mp4',
+      ['https://cdn.example.com/hls/xyz/master.m3u8']));
+}
+
+console.log('\na request for "part 0 of sequence 10176" is not the stream');
+{
+  // The chaturbate failure, exactly as reported: a recording that ran, retried
+  // fifteen times against a sequence number frozen at capture time, and was
+  // answered 403 about five minutes later — then the ffmpeg fallback got the
+  // same URL and failed the same way.
+  const ct = 'https://edge26-ash.live.mmcdn.com/v1/edge/streams/origin.x.01M2/chunklist_3_video_827_llhls.m3u8?sn=10176&_HLS_part=0';
+  ok('the directives are gone',
+    !stripDeliveryDirectives(ct).includes('_HLS_part'), stripDeliveryDirectives(ct));
+  ok('...and the host companion with them',
+    !stripDeliveryDirectives(ct).includes('sn='), stripDeliveryDirectives(ct));
+  ok('the playlist itself is untouched',
+    stripDeliveryDirectives(ct).startsWith(
+      'https://edge26-ash.live.mmcdn.com/v1/edge/streams/origin.x.01M2/chunklist_3_video_827_llhls.m3u8'));
+
+  const signed = 'https://cdn.example.com/live/chunklist.m3u8?token=abc123&expires=999&_HLS_msn=44&_HLS_part=1';
+  const cleaned = stripDeliveryDirectives(signed);
+  ok('a signature survives', cleaned.includes('token=abc123'), cleaned);
+  ok('an expiry survives', cleaned.includes('expires=999'), cleaned);
+  ok('the blocking hints do not', !/_HLS_/i.test(cleaned), cleaned);
+
+  // Nothing is stripped without a directive present to justify it.
+  const bare = 'https://cdn.example.com/live/master.m3u8?sn=5&token=z';
+  ok('a bare sn is left alone', stripDeliveryDirectives(bare) === bare, stripDeliveryDirectives(bare));
+  const plain = 'https://cdn.example.com/live/master.m3u8';
+  ok('a URL with no query is returned as-is', stripDeliveryDirectives(plain) === plain);
+  ok('rubbish does not throw', stripDeliveryDirectives('not a url?_HLS_part=0').length > 0);
+}
+
+console.log('\ntwo playlists, one stream');
+{
+  // Chaturbate publishes audio and video as separate media playlists with no
+  // master joining them, sometimes from different edges. Nothing downstream
+  // can infer the audio exists, which is why those recordings were silent.
+  const V = 'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_3_video_16936184535539198438_llhls.m3u8?session=a';
+  const A = 'https://edge20-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_5_audio_16936184535539198438_llhls.m3u8?session=b';
+
+  const v = playlistRole(V)!;
+  const a = playlistRole(A)!;
+  ok('the video half is recognised', v?.role === 'video');
+  ok('the audio half is recognised', a?.role === 'audio');
+  ok('they share a group id', v.group === a.group, `${v.group} vs ${a.group}`);
+  ok('they pair across different edge hosts', arePaired(v, a));
+
+  // The leading index differs between the halves (3 vs 5) and must not be
+  // mistaken for the group.
+  ok('the group is the long id, not the rendition index',
+    v.group === '16936184535539198438', v.group);
+
+  const other = playlistRole(
+    'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.someoneelse.01ABC/chunklist_5_audio_99999999999999999.m3u8')!;
+  ok('a different broadcast does not pair', !arePaired(v, other));
+
+  ok('a plain master has no role at all',
+    playlistRole('https://cdn.example.com/live/master.m3u8') === null);
+  ok('a video playlist with no group id is left alone',
+    playlistRole('https://cdn.example.com/live/video.m3u8') === null);
+}
+
+console.log('\na player is not a title');
+{
+  ok('"Video Player" is refused', isGenericTitle('Video Player'));
+  ok('...whatever its case', isGenericTitle('  video player '));
+  ok('so is a bare "player"', isGenericTitle('player'));
+  ok('a real name is kept', !isGenericTitle('pinkadele'));
+  ok('so is a title that merely contains one', !isGenericTitle('Ada the video player fan'));
+
+  const url = 'https://edge9-ash.live.mmcdn.com/v1/edge/streams/origin.pinkadele.01M31QZGYQA95T85Q1H97RSEAX/chunklist_3_video_169.m3u8';
+  ok('the broadcaster is read out of the stream path',
+    nameFromStreamUrl(url) === 'pinkadele', nameFromStreamUrl(url));
+  ok('a URL with no such segment yields nothing',
+    nameFromStreamUrl('https://cdn.example.com/live/master.m3u8') === '');
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

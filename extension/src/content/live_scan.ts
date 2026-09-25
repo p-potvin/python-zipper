@@ -98,10 +98,7 @@ async function run(): Promise<void> {
   scanning = true;
   lastScan = Date.now();
   try {
-    // 'read' rather than 'open': if the user just opened a lightbox we get its
-    // whole gallery for free, but we never click anything ourselves here. A
-    // scan that opens viewers in response to browsing would be unusable.
-    const result = await harvestDom(location.href, 0, '', { photoSwipe: 'read', roots });
+    const result = await harvestDom(location.href, 0, '', { roots });
     if (result.candidates.length) {
       try {
         await ext.runtime.sendMessage({

@@ -47,7 +47,7 @@ export interface ZipResult {
   filename?: string;
 }
 
-async function fetchOne(
+export async function fetchOne(
   url: string,
   headers: Record<string, string>,
 ): Promise<Uint8Array> {
@@ -150,7 +150,7 @@ function defaultArchiveName(): string {
   return `zipper-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.zip`;
 }
 
-function releaseWhenDone(url: string): void {
+export function releaseWhenDone(url: string): void {
   let released = false;
   const release = () => {
     if (released) return;

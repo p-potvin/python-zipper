@@ -27,14 +27,11 @@ export interface HarvestSnapshot {
   pageDomain: string;
   candidates: MediaCandidate[];
   /** How the list was produced — surfaced in the UI so a cheap scan is visible. */
-  path: 'full' | 'network-only' | 'deep';
+  path: 'full' | 'network-only';
   frames: number;
   fromNetwork: number;
   fromDom: number;
   finishedAt: number;
-  /** What the top frame said about PhotoSwipe, so the sidebar can offer the
-   *  deep run that is the only way to reach the gallery. */
-  photoSwipe?: { present: boolean; open: boolean; slides: number; via: string };
 }
 
 const snapshots = new Map<number, HarvestSnapshot>();
@@ -48,10 +45,6 @@ interface Collector {
   frames: number;
   resolve: () => void;
   timer: ReturnType<typeof setTimeout>;
-  mode: 'quick' | 'deep';
-  /** Deep runs only: has the scrolling frame reported yet? */
-  topDone: boolean;
-  photoSwipe?: HarvestSnapshot['photoSwipe'];
 }
 
 const collectors = new Map<string, Collector>();
@@ -59,38 +52,15 @@ const collectors = new Map<string, Collector>();
 /** Frames that answer after this are ignored — they'd land in the next run. */
 const SETTLE_MS = 900;
 const HARD_TIMEOUT_MS = 6000;
-/**
- * A deep run scrolls a whole feed before it reports, so it needs real room —
- * and the scroll now waits ~5s of no growth before calling the bottom the
- * bottom, so the ceiling has to clear that by a wide margin or the timeout
- * becomes the thing that ends the scan.
- */
-const DEEP_TIMEOUT_MS = 240_000;
-
 /** Called from the message router when a frame pushes its scan back. */
 export function acceptFrameResult(
   runId: string,
   candidates: MediaCandidate[],
-  isTop = true,
-  photoSwipe?: HarvestSnapshot['photoSwipe'],
 ): void {
   const c = collectors.get(runId);
   if (!c) return;
   c.results.push(...candidates);
   c.frames += 1;
-  if (isTop) c.topDone = true;
-  // Any frame may hold the gallery — an embedded viewer is a real case — but a
-  // frame that found slides outranks one that merely saw the library.
-  if (photoSwipe?.present && (!c.photoSwipe?.slides || photoSwipe.slides > c.photoSwipe.slides)) {
-    c.photoSwipe = photoSwipe;
-  }
-
-  // On a deep run the top frame is still scrolling — for up to 90s — while
-  // sub-frames answer almost immediately. Collapsing to the short settle window
-  // on those early replies would end the run before the scroll ever finished,
-  // which is the whole point of it. Hold the long timer until the scrolling
-  // frame reports.
-  if (c.mode === 'deep' && !c.topDone) return;
 
   // Each arrival extends the settle window a little — a slow iframe shouldn't
   // be dropped just because the top frame answered instantly.
@@ -111,7 +81,6 @@ function finish(runId: string): void {
 export async function runHarvest(
   tabId: number,
   pageUrl: string,
-  mode: 'quick' | 'deep' = 'quick',
   scope = '',
 ): Promise<HarvestSnapshot> {
   const runId = `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -125,8 +94,8 @@ export async function runHarvest(
 
   await new Promise<void>((resolve) => {
     collector = {
-      runId, tabId, results: domFound, frames: 0, resolve, mode, topDone: false,
-      timer: setTimeout(() => finish(runId), mode === 'deep' ? DEEP_TIMEOUT_MS : HARD_TIMEOUT_MS),
+      runId, tabId, results: domFound, frames: 0, resolve,
+      timer: setTimeout(() => finish(runId), HARD_TIMEOUT_MS),
     };
     collectors.set(runId, collector);
 
@@ -135,22 +104,18 @@ export async function runHarvest(
       // back here, which is why frames push their results separately.
       ext.tabs.sendMessage(
         tabId,
-        mode === 'deep'
-          ? { kind: 'harvest:deep', runId, pageUrl, scope, maxMs: 180_000, openViewer: true }
-          : { kind: 'harvest:run', runId, pageUrl, scope },
+        { kind: 'harvest:run', runId, pageUrl, scope },
       ).catch(() => { /* no content script on this page */ });
     } catch {
       finish(runId);
     }
 
     // Nothing answered at all — settle early rather than burning the hard
-    // timeout. Skipped for deep runs, where silence is expected while scrolling.
-    if (mode !== 'deep') {
-      setTimeout(() => {
-        const c = collectors.get(runId);
-        if (c && c.frames === 0) finish(runId);
-      }, 1200);
-    }
+    // timeout.
+    setTimeout(() => {
+      const c = collectors.get(runId);
+      if (c && c.frames === 0) finish(runId);
+    }, 1200);
   });
 
   const c: Collector | null = collector;
@@ -165,12 +130,11 @@ export async function runHarvest(
     pageUrl,
     pageDomain: registrableDomain(hostOf(pageUrl)),
     candidates: merged,
-    path: mode === 'deep' ? 'deep' : domFound.length ? 'full' : 'network-only',
+    path: domFound.length ? 'full' : 'network-only',
     frames,
     fromNetwork: network.length,
     fromDom: domFound.length,
     finishedAt: Date.now(),
-    photoSwipe: c?.photoSwipe,
   };
   snapshots.set(tabId, snapshot);
   return snapshot;

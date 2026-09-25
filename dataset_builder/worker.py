@@ -32,10 +32,15 @@ import requests
 # Line-buffer the streams, as server.py does. Under NSSM stdout is a file, so
 # Python block-buffers it and the log stays empty for ages — which reads as "the
 # service is doing nothing" when it is actually working fine.
+#
+# UTF-8 with replacement for the same reason: under NSSM the console encoding
+# is cp1252, and printing a filename with a character it lacks ("？", an
+# emoji in a tab title) raised *after* the recording was saved but *before*
+# the job was reported complete — so a good file showed as a hung job.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
-            _stream.reconfigure(line_buffering=True)
+            _stream.reconfigure(line_buffering=True, encoding="utf-8", errors="replace")
         except Exception:
             pass
 
@@ -43,6 +48,7 @@ from ds_config import DEST_DIR, free_bytes
 from ds_pipeline import download_and_process
 from ds_storage import storage_report, save_config, load_config, configured_remotes
 import ds_streams
+import ds_records
 
 API_BASE = os.environ.get("VAULTWARES_API_URL", "https://api.vaultwares.ca").rstrip("/")
 
@@ -107,6 +113,14 @@ RCAT_FREE_FLOOR = int(os.environ.get("PYTHON_ZIPPER_RCAT_FREE_GB", "40")) * 1024
 
 _streams: Dict[str, threading.Thread] = {}
 _streams_lock = threading.Lock()
+
+# How long a finished recording waits for a name when the job asked for no
+# auto-save deadline. Never forever: a worker restart would otherwise leave a
+# job sitting in `naming` that nobody is going to answer. The file is already
+# on disk under its automatic name the whole time, so this only bounds how
+# long a rename is still on offer.
+NAMING_MAX_WAIT = int(os.environ.get("PYTHON_ZIPPER_NAMING_MAX_WAIT", str(12 * 3600)))
+NAMING_POLL_SECONDS = 2.0
 # Refuse new work below this much free space rather than discovering it at write
 # time. A full disk is what froze the VPS; the guard belongs before dispatch.
 MIN_FREE_BYTES = int(os.environ.get("PYTHON_ZIPPER_MIN_FREE_GB", "5")) * 1024 ** 3
@@ -355,6 +369,15 @@ def run_stream(job: dict) -> None:
                          ("save_dir", "save_dir")):
             if f.get(src) is not None:
                 out[dst] = f[src]
+        # yt-dlp reports speed and eta as floats; the API declares them int,
+        # and pydantic answers a fractional float with a 422 — which dropped
+        # the *whole* report, byte count and all, on every yt-dlp recording.
+        for key in ("speed", "eta", "bytes_done", "bytes_total"):
+            if key in out:
+                try:
+                    out[key] = int(out[key])
+                except (TypeError, ValueError):
+                    out.pop(key)
         if out:
             report(jid, **out)
 
@@ -384,6 +407,101 @@ def run_stream(job: dict) -> None:
                 ds_streams.stop_stream(job_id)
                 return
 
+    def fresh_stream_url() -> dict:
+        """The newest URL the browser has published for this stream.
+
+        The extension cannot reach this machine, and the API's progress
+        endpoint takes a fixed set of fields — `result` is the only free-form
+        one, and a stream job does not otherwise use it (it is where a probe
+        and a preview put their answers). So that is where the tab writes the
+        URL it is currently being served, and this is where the recorder picks
+        it up when the one it has stops working.
+        """
+        row = get_job(job_id) or {}
+        result = row.get("result")
+        if not isinstance(result, dict):
+            return {}
+        # Both halves: a host that publishes audio separately rotates that
+        # playlist's token on its own, and a fresh video muxed against a stale
+        # audio records silence just as surely as no audio at all.
+        return {
+            "stream_url": str(result.get("stream_url") or "").strip(),
+            "audio_url": str(result.get("audio_url") or "").strip(),
+        }
+
+    def ask_for_name(path: str, record: dict) -> str:
+        """Offer the user a rename before the job is reported complete.
+
+        The file is already written under its automatic name; this only keeps
+        a rename on offer. The prompt cannot come from this machine — the
+        user is at the browser — so the job goes to status `naming` with the
+        proposal in `result`, the extension shows it (a notification, and a
+        card in the sidebar), and the answer comes back on the same row:
+        status `named` with `result.chosen_name`, or `result.keep`.
+
+        The deadline is the job's auto-save setting. When it passes, the
+        automatic name stands. A recording never waits on an answer to exist.
+        """
+        # A finished recording is no longer using a stream slot.
+        with _streams_lock:
+            _streams.pop(job_id, None)
+        watcher_stop.set()
+
+        if not options.get("ask_name"):
+            return path
+        try:
+            timeout = int(options.get("name_timeout") or 0)
+        except (TypeError, ValueError):
+            timeout = 0
+        wait = timeout if timeout > 0 else NAMING_MAX_WAIT
+        deadline = time.time() + wait
+
+        cap = record.get("capture") or {}
+        base, ext = os.path.splitext(os.path.basename(path))
+        proposal = {
+            "proposed": base,
+            "ext": ext,
+            "save_path": os.path.abspath(path),
+            # The browser clock and this one may disagree; the remaining
+            # seconds travel alongside the absolute deadline for that reason.
+            "deadline": int(deadline * 1000),
+            "auto_save": timeout > 0,
+            "timeout": timeout,
+            "reason": cap.get("end_reason") or "ended",
+            "label": cap.get("label") or "",
+            "username": cap.get("username") or "",
+            "site": cap.get("site") or "",
+            "duration": record.get("duration"),
+            "height": record.get("height"),
+            "bytes": record.get("size"),
+            "resumes": cap.get("resumes") or 0,
+            "recorder": cap.get("recorder") or "",
+        }
+        report(job_id, status="naming", archives=[os.path.basename(path)],
+               save_dir=os.path.dirname(os.path.abspath(path)),
+               result={"naming": proposal})
+        print(f"[Worker] {job_id} waiting up to {wait}s for a name (auto: {base})")
+
+        chosen = ""
+        while time.time() < deadline and _running:
+            time.sleep(NAMING_POLL_SECONDS)
+            row = get_job(job_id)
+            if not row:
+                continue
+            status = row.get("status")
+            result = row.get("result") if isinstance(row.get("result"), dict) else {}
+            if status == "named" or result.get("chosen_name") or result.get("keep"):
+                chosen = "" if result.get("keep") else str(result.get("chosen_name") or "")
+                break
+            if status in ("aborted", "failed", "completed"):
+                break
+        else:
+            print(f"[Worker] {job_id} no name given; keeping {base}")
+
+        if chosen and ds_records.clean_basename(chosen) != base:
+            path = ds_records.rename_recording(path, chosen, by="user")
+        return path
+
     threading.Thread(target=watch_for_abort, daemon=True).start()
     try:
         ds_streams.download_stream(
@@ -396,6 +514,21 @@ def run_stream(job: dict) -> None:
             sink=sink,
             rcat_remote=remote,
             title=job.get("title") or "",
+            refresh_url=fresh_stream_url,
+            page_url=job.get("page_url") or "",
+            # Set when the extension saw this stream's audio published as its
+            # own playlist with no master joining them.
+            audio_url=options.get("audio_url") or "",
+            meta={
+                "performer": options.get("performer") or "",
+                "tab_title": options.get("tab_title") or "",
+                "quality": options.get("quality") or "",
+                "format_id": options.get("format_id") or "",
+                "is_live": options.get("is_live"),
+                "thumbnail": options.get("thumbnail") or "",
+                "extension_version": options.get("extension_version") or "",
+            },
+            on_saved=ask_for_name,
         )
     finally:
         watcher_stop.set()

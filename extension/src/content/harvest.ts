@@ -20,9 +20,6 @@ import {
 import { explainCandidate, type ElementHints } from '../common/scoring';
 import { upgradeUrl } from '../common/upgrade_rules';
 import { extractCarouselMediaUrls } from './carousel';
-import {
-  detectPhotoSwipe, readPhotoSwipeGallery, slidesToCandidates, type PswpStatus,
-} from './pswp';
 
 /** Attributes lazy-loaders stash real URLs in before swapping them into src. */
 const LAZY_ATTRS = [
@@ -171,17 +168,9 @@ export interface HarvestResult {
   pageUrl: string;
   scanned: number;
   truncated: boolean;
-  /** Surfaced so the sidebar can tell the user a deep run is worth it here. */
-  photoSwipe?: PswpStatus;
 }
 
 export interface HarvestOptions {
-  /**
-   * 'read'  — take the gallery if a viewer is already open (no side effects).
-   * 'open'  — click an item to construct the viewer, then read and close it.
-   * 'off'   — skip PhotoSwipe entirely.
-   */
-  photoSwipe?: 'read' | 'open' | 'off';
   /**
    * Scan only these subtrees instead of the whole document.
    *
@@ -362,47 +351,6 @@ export async function harvestDom(
     if (!prev || c.score > prev.score) found.set(c.url, c);
   }
 
-  // --- pass 5: PhotoSwipe -------------------------------------------------
-  //
-  // Last, and treated as authoritative where it speaks. The viewer's own
-  // dataSource carries the full-size URL *and* its real intrinsic dimensions,
-  // which nothing else on the page does — the markup holds thumbnails. Where it
-  // names a thumbnail, that thumbnail is dropped outright rather than scored
-  // down: the gallery has told us it is a derivative of a URL we now hold, and
-  // that is a stronger statement than any heuristic could make.
-  const mode = opts.photoSwipe ?? 'read';
-  let photoSwipe: PswpStatus | undefined;
-  if (mode !== 'off') {
-    try {
-      photoSwipe = await detectPhotoSwipe();
-      if (photoSwipe.present) {
-        const slides = await readPhotoSwipeGallery(mode === 'open');
-        if (slides.length) {
-          const { candidates, thumbnails } = slidesToCandidates(slides, pageUrl, frameId);
-
-          const byKey = new Map<string, string>();
-          for (const url of found.keys()) byKey.set(dedupKey(url), url);
-          for (const t of thumbnails) {
-            const hit = byKey.get(dedupKey(t));
-            if (hit) { found.delete(hit); hits.delete(hit); }
-          }
-
-          for (const c of candidates) {
-            hits.set(c.url, hits.get(c.url) ?? 1);
-            c.domHits = hits.get(c.url);
-            const prev = found.get(c.url);
-            // A slide outranks anything the DOM walk produced for the same URL:
-            // it came from the viewer's own list, with measured dimensions.
-            if (!prev || prev.origin !== 'carousel') found.set(c.url, c);
-          }
-          photoSwipe = { ...photoSwipe, slides: slides.length, open: true };
-        }
-      }
-    } catch (e) {
-      console.warn('[Zipper] photoswipe read failed', e);
-    }
-  }
-
   // Rescore with the final repeat counts — an element seen early had a hit
   // count of 1 at the time, which understates a URL that turned up 30 times.
   //
@@ -413,9 +361,14 @@ export async function harvestDom(
   // size for, and every grid member the page-relative pass would have rescued,
   // was being thrown away right here. The floor is applied once, after the
   // merge, in harvest_store.
+  const sizes = resourceSizes();
   const finished: MediaCandidate[] = [];
   for (const c of found.values()) {
     c.domHits = hits.get(c.url) ?? 1;
+    if (c.bytes === undefined) {
+      const seen = sizes.get(dedupKey(c.url));
+      if (seen) c.bytes = seen;
+    }
     const s = explainCandidate(c, hintsFor.get(c.url) ?? {});
     c.score = s.score;
     c.reasons = s.rules;
@@ -428,8 +381,38 @@ export async function harvestDom(
     pageUrl,
     scanned,
     truncated,
-    photoSwipe,
   };
+}
+
+/**
+ * Byte sizes the page already knows, from the Resource Timing API.
+ *
+ * Sizes used to come only from the background's network log, which sees a
+ * Content-Length on responses it happens to observe — so two images from the
+ * same directory would show one size and one blank, for no reason visible to
+ * anyone looking at the page. The browser has already recorded the transfer
+ * for everything this document loaded, including from cache, so asking it
+ * costs nothing and no extra request.
+ *
+ * `encodedBodySize` is the wire size and the one to compare against a
+ * Content-Length. It reads 0 for a cross-origin response without
+ * `Timing-Allow-Origin`, which is why only non-zero values are taken: a zero
+ * here means "not allowed to tell you", not "empty file".
+ */
+function resourceSizes(): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    for (const e of entries) {
+      const bytes = e.encodedBodySize || e.transferSize || 0;
+      if (!bytes) continue;
+      const k = dedupKey(e.name);
+      // Keep the largest sighting: a re-request that hit cache can report a
+      // smaller transfer than the original download.
+      if ((out.get(k) ?? 0) < bytes) out.set(k, bytes);
+    }
+  } catch { /* no Resource Timing in this context */ }
+  return out;
 }
 
 /** Our own injected UI must never harvest itself. */

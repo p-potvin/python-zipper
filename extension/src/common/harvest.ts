@@ -259,6 +259,57 @@ export function mergeCandidate(a: MediaCandidate, b: MediaCandidate): MediaCandi
   };
 }
 
+// ---- dimensions written into the URL ----------------------------------------
+
+/**
+ * Plausible pixel bounds. Below 16 is a spacer or a sprite offset, above 20000
+ * is an id that happens to have an "x" in the middle of it.
+ */
+const DIM_MIN = 16;
+const DIM_MAX = 20000;
+
+/** `samples-640x480/`, `photo_1920x1080.jpg`, `?w=1600&h=900`. */
+const WXH_RE = /(?:^|[^0-9a-z])(\d{2,5})\s*[x×]\s*(\d{2,5})(?![0-9a-z])/i;
+const W_PARAM_RE = /[?&](?:w|width)=(\d{2,5})(?:&|$)/i;
+const H_PARAM_RE = /[?&](?:h|height)=(\d{2,5})(?:&|$)/i;
+
+/**
+ * The dimensions a URL states about itself.
+ *
+ * Sites write the size into the path constantly — `samples-640x480/x.jpg` —
+ * and we were ignoring it, so the one candidate whose size was written on the
+ * tin showed a blank resolution while its neighbour, which said nothing,
+ * showed one. Worse, an unknown size escapes every size-based rule in the
+ * scorer, so a 640x480 thumbnail scored like an unmeasured original and got
+ * pre-selected on the strength of not being measurable.
+ *
+ * Taken at face value on purpose. Nobody has any reason to lie about this in a
+ * URL, so the handful of false positives an id like `/12345x2/` produces cost
+ * far less than treating every stated size as unknown. The bounds above are
+ * the only guard.
+ */
+export function dimensionsFromUrl(url: string): { width?: number; height?: number } {
+  if (!url) return {};
+  const inBounds = (n: number) => n >= DIM_MIN && n <= DIM_MAX;
+
+  const m = WXH_RE.exec(url);
+  if (m) {
+    const w = parseInt(m[1], 10);
+    const h = parseInt(m[2], 10);
+    if (inBounds(w) && inBounds(h)) return { width: w, height: h };
+  }
+
+  // Separate w=/h= params, which resizing CDNs use instead of a WxH token.
+  const wm = W_PARAM_RE.exec(url);
+  const hm = H_PARAM_RE.exec(url);
+  const w = wm ? parseInt(wm[1], 10) : NaN;
+  const h = hm ? parseInt(hm[1], 10) : NaN;
+  const out: { width?: number; height?: number } = {};
+  if (inBounds(w)) out.width = w;
+  if (inBounds(h)) out.height = h;
+  return out;
+}
+
 export function makeCandidate(
   url: string,
   kind: MediaKind,
@@ -266,7 +317,7 @@ export function makeCandidate(
   pageUrl: string,
   extra: Partial<MediaCandidate> = {},
 ): MediaCandidate {
-  return {
+  const c: MediaCandidate = {
     url,
     kind,
     origin,
@@ -275,6 +326,15 @@ export function makeCandidate(
     score: 0,
     ...extra,
   };
+  // Only where the caller knew nothing: a measured element always wins over a
+  // string in a path, because a resizing CDN can serve something other than
+  // what its URL claims.
+  if (c.width === undefined && c.height === undefined) {
+    const d = dimensionsFromUrl(url);
+    if (d.width !== undefined) c.width = d.width;
+    if (d.height !== undefined) c.height = d.height;
+  }
+  return c;
 }
 
 // ---- naming -----------------------------------------------------------------

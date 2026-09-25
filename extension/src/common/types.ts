@@ -44,6 +44,19 @@ export interface StreamVariant {
   label: string;
 }
 
+/** The facts a download path can record about an asset (see grab_facts.ts). */
+export interface GrabFactsLike {
+  kind?: string | null;
+  mime?: string | null;
+  bytes?: number | null;
+  width?: number | null;
+  height?: number | null;
+  origin?: string | null;
+  score?: number | null;
+  assetHost?: string | null;
+  pageTitle?: string | null;
+}
+
 export interface DetectedStream {
   /** Stable identity — origin + pathname, so token-rotated re-requests collapse. */
   key: string;
@@ -60,6 +73,14 @@ export interface DetectedStream {
   lastSeen: number;
   hits: number;
   isMaster?: boolean;
+  /**
+   * The stream's audio, when it is published as its own playlist.
+   *
+   * Set only for hosts that serve audio and video as two media playlists with
+   * no master joining them. Nothing can infer it later: by the time a recorder
+   * has the video URL, the audio one is simply not reachable from it.
+   */
+  audioUrl?: string;
   variants?: StreamVariant[];
   meta?: StreamMeta;
   probed?: boolean;
@@ -78,6 +99,10 @@ export type BgMessage =
   | { kind: 'streams:remove'; key: string; tabId?: number }
   | { kind: 'streams:recapture'; tabId?: number }
   | { kind: 'streams:start'; key: string; formatId?: string; title?: string; tabId?: number }
+  | { kind: 'naming:list'; tabId?: number }
+  | { kind: 'of:grab'; urls: string[]; model: string; tabId?: number }
+  | { kind: 'naming:unwatch'; tabId?: number }
+  | { kind: 'naming:choose'; jobId: string; name?: string; tabId?: number }
   | { kind: 'jobs:get' }
   | { kind: 'jobs:stop'; jobId: string }
   | { kind: 'jobs:delete'; jobId: string }
@@ -85,14 +110,17 @@ export type BgMessage =
   | { kind: 'open:path'; path: string }
   | { kind: 'config:get' }
   | { kind: 'config:set'; proxy: string }
-  | { kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean }
+  | {
+      kind: 'downloads:start'; url: string; filename: string; referer?: string; saveAs?: boolean;
+      /** What the sender knows about the asset, for the grab history. */
+      facts?: Record<string, unknown>;
+    }
   | { kind: 'downloads:list' }
   | { kind: 'downloads:reveal'; downloadId?: number; path?: string }
   | { kind: 'gm:xhr'; req: { url: string; method?: string; headers?: Record<string, string>; data?: any } }
   // ---- harvest ----------------------------------------------------------
-  | { kind: 'harvest:run'; mode?: 'quick' | 'deep'; scope?: string; tabId?: number }
+  | { kind: 'harvest:run'; scope?: string; tabId?: number }
   /** Scroll the feed out and open the viewer, then harvest. Manual only. */
-  | { kind: 'harvest:deep-abort'; tabId?: number }
   | { kind: 'harvest:get'; tabId?: number }
   /** What the passive network log already holds — no scan, no page contact. */
   | { kind: 'harvest:peek'; tabId?: number }
@@ -105,7 +133,6 @@ export type BgMessage =
   /** One decoded frame of a stream, for the preview thumbnail. */
   | { kind: 'stream:preview'; url: string; headers?: Record<string, string> }
   /** Is this a PhotoSwipe page? Answered by the top frame. */
-  | { kind: 'pswp:detect' }
   /** Disk headroom, what is still staged locally, and each rclone remote. */
   | { kind: 'storage:get' }
   /** Aggregated download history: by day, by domain, by kind. */

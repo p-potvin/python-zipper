@@ -42,6 +42,21 @@ export interface ZipperSettings {
   liveScan: boolean;
   /** Archive whenever a download covers more than one file. */
   zipMultiple: boolean;
+  /**
+   * Offer a rename when a recording ends — finished, stopped by you, or
+   * stopped on its own.
+   *
+   * Not the browser's save dialog: that is switched off here, and when it is
+   * on it can open somewhere nobody is looking. The file is always written
+   * under its automatic name first; this only keeps a rename on offer, via a
+   * notification and a card at the top of the sidebar.
+   */
+  askNameOnFinish: boolean;
+  /**
+   * Keep the automatic name after this many seconds without an answer.
+   * 0 means wait until you choose (the worker still gives up after 12 hours).
+   */
+  autoSaveAfterSec: number;
 }
 
 export const DEFAULT_SETTINGS: ZipperSettings = {
@@ -50,6 +65,8 @@ export const DEFAULT_SETTINGS: ZipperSettings = {
   minButtonPx: 22,
   liveScan: true,
   zipMultiple: true,
+  askNameOnFinish: false,
+  autoSaveAfterSec: 120,
 };
 
 const KEY = 'zipper-settings';
@@ -65,6 +82,11 @@ function coerce(raw: any): ZipperSettings {
   s.injectButton = !!s.injectButton;
   s.liveScan = !!s.liveScan;
   s.zipMultiple = !!s.zipMultiple;
+  s.askNameOnFinish = !!s.askNameOnFinish;
+  const wait = Number(s.autoSaveAfterSec);
+  s.autoSaveAfterSec = Number.isFinite(wait)
+    ? Math.min(86_400, Math.max(0, Math.round(wait)))
+    : DEFAULT_SETTINGS.autoSaveAfterSec;
   return s;
 }
 

@@ -26,10 +26,12 @@ import json
 import signal
 import subprocess
 import threading
-from urllib.parse import urlparse
+import time
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 from ds_helpers import build_ytdlp_header_args, handoff_to_rclone, ytdlp_bin, ffmpeg_location
-from ds_jobs import update_job, complete_job, fail_job, get_job
+from ds_jobs import update_job, complete_job, fail_job
+import ds_records
 
 STREAMS_DIR = os.environ.get("PYTHON_ZIPPER_STREAMS_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".downloaded", "streams"
@@ -69,6 +71,18 @@ _TITLE_TRIM = " \t-–—|·:,~«»\"'"
 
 _TRAILING_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.I)
 
+# The extension prefixes every title it sends with the page's hostname \u2014
+# "[chaturbate.com] Ada's room" \u2014 so the subject is never the first token.
+# Left in, it becomes the *whole* basename: "[" survives sanitising and the cut
+# at "room" lands before the name has even started.
+_HOST_PREFIX_RE = re.compile(r"^\s*\[[^\]]*\]\s*")
+
+# Filler stranded at the end once the tail is cut: "Ada is live now" cuts at
+# "live" and leaves "Ada is". None of these ever identify anyone.
+_TRAILING_FILLER_RE = re.compile(
+    r"\b(?:is|was|are|were|the|a|an|and|now|on|in|at|going|goes|est|en)$", re.I,
+)
+
 
 def stream_basename(title):
     """The person or channel a stream belongs to, from the tab title.
@@ -84,12 +98,19 @@ def stream_basename(title):
     """
     if not title:
         return ""
+    title = _HOST_PREFIX_RE.sub("", title)
     m = _TITLE_CUT_RE.search(title)
     base = title[:m.start()] if m else title
     base = base.strip(_TITLE_TRIM)
     # The room word is usually possessive — "Ada Luna's Room" — and the
     # apostrophe-s is left behind once the word after it goes.
     base = _TRAILING_POSSESSIVE_RE.sub("", base).strip(_TITLE_TRIM)
+    # Trimmed in a loop: "Ada is going live" strands two filler words, not one.
+    for _ in range(3):
+        trimmed = _TRAILING_FILLER_RE.sub("", base).strip(_TITLE_TRIM)
+        if trimmed == base:
+            break
+        base = trimmed
     return _sanitize_title(base)
 
 
@@ -120,32 +141,193 @@ def stream_filename(title, directory):
     return f"{base} Stream #{next_stream_index(directory, base):02d}"
 
 
-def _finalize_stream_name(path, job_id):
+# Labels that identify nothing: either the generic name of a playlist file, or
+# the word the site puts in every tab title.
+_GENERIC_LABELS = {
+    "stream", "streams", "master", "playlist", "chunklist", "index", "live",
+    "video", "media", "manifest", "hls", "dash", "channel", "cam", "cams",
+    # What a player calls itself. These arrive from the DOM title extractor,
+    # which reads the label nearest the <video> element and outranks every
+    # other source — so "Video Player Stream #04" was the name on a page whose
+    # tab title, hostname and stream URL all said who was streaming.
+    "video player", "media player", "player", "html5 video player",
+    "jwplayer", "videojs", "video js", "livestream", "live stream",
+}
+
+# A username written into the stream path. Chaturbate publishes under
+# `/v1/edge/streams/origin.<username>.<broadcast id>/`, which makes the URL the
+# most reliable source on that host — it is the performer's own name, it cannot
+# be a player's label, and it is there before any title has been extracted.
+_ORIGIN_SEG_RE = re.compile(r"^origin\.([A-Za-z0-9][A-Za-z0-9_-]{1,39})\.[A-Za-z0-9]{8,}$")
+
+# Camsoda's live edge is Flussonic, and it names the stream after the model:
+# `/edge8-ild/cam_obs/madelinefox-flu_v1/index.ll.m3u8`. The `-flu_v<n>` tail
+# is the transcoder profile, not part of the name.
+_FLUSSONIC_SEG_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]{1,39}?)-flu(?:_v\d+)?$", re.I)
+
+
+def url_label(stream_url=""):
+    """The broadcaster's name, when the host writes it into the path."""
+    if not stream_url:
+        return ""
+    try:
+        path = urlparse(stream_url).path
+    except Exception:
+        return ""
+    for seg in path.split("/"):
+        m = _ORIGIN_SEG_RE.match(seg) or _FLUSSONIC_SEG_RE.match(seg)
+        if m:
+            return _sanitize_title(m.group(1))
+    return ""
+
+
+def site_label(page_url="", title=""):
+    """The site a recording came from, as something worth putting in a name.
+
+    Two sources, because either may be missing. The job carries the page URL;
+    and failing that, the extension prefixes every title it sends with the
+    hostname in brackets, so the title itself usually still has it.
+
+    `www.` goes — it identifies nothing — but the TLD stays: "chaturbate.com"
+    is what you would type, and "chaturbate" alone reads like a word rather
+    than a source.
+    """
+    host = ""
+    if page_url:
+        try:
+            host = (urlparse(page_url).hostname or "").strip()
+        except Exception:
+            host = ""
+    if not host and title:
+        m = _HOST_PREFIX_RE.match(title)
+        if m:
+            host = m.group(0).strip().strip("[]").strip()
+    host = re.sub(r"^www\d*\.", "", host, flags=re.I)
+    return _sanitize_title(host)
+
+
+def stream_label(title="", page_url="", fallback_name="", stream_url=""):
+    """What to call this recording, best source first.
+
+    The chain matters more than any one step, because every step above the
+    last used to be skipped: naming asked a job store that was always empty,
+    so a recording was named from its URL and the answer was usually
+    "chunklist" or "master".
+
+      1. The person or channel out of the tab title — the useful one.
+      2. A username written into the stream URL, where the host puts one there.
+      3. The whole tab title, when there was no room/live/cam word to cut at.
+      4. Whatever yt-dlp called the file, which on some hosts is the real
+         stream title from the manifest.
+      5. The site. Not identifying, but "chaturbate.com Stream #03" tells you
+         where to look; "stream_a1b2c3d4e5f6" tells you nothing at all.
+
+    Returns "" only when all four are empty, which leaves the caller to fall
+    back on the job id.
+    """
+    subject = stream_basename(title)
+    if subject and subject.lower() not in _GENERIC_LABELS:
+        return subject
+
+    # Before falling back to the whole title: a name in the URL beats a title
+    # that has already failed to yield one, and it is the performer's own.
+    from_url = url_label(stream_url)
+    if from_url and from_url.lower() not in _GENERIC_LABELS:
+        return from_url
+
+    whole = _sanitize_title(_HOST_PREFIX_RE.sub("", title or ""))
+    if whole and whole.lower() not in _GENERIC_LABELS:
+        return whole
+
+    named = _sanitize_title(fallback_name or "")
+    if named and named.lower() not in _GENERIC_LABELS:
+        return named
+
+    return site_label(page_url, title)
+
+
+def rich_suffix(label, info, page_url="", title="", stream_url=""):
+    """What goes after `<label> Stream #dd`: everything else worth knowing.
+
+    Site, the username when the label is a display name, when it started, the
+    resolution and how long it runs. More in the name is the right trade:
+    trimming a long name is a second of work, recovering a lost one is
+    impossible. Each part is only added when it says something the label
+    does not already say.
+    """
+    if not info:
+        return ""
+    parts = []
+    low = (label or "").lower()
+    username = info.get("username") or url_label(stream_url)
+    if username and username.lower() != low and username.lower() not in low:
+        parts.append(username)
+    site = info.get("site") or site_label(page_url, title)
+    if site and site.lower() != low:
+        parts.append(site)
+    started = info.get("started_local")
+    if started:
+        parts.append(started)
+    height = info.get("height")
+    if height:
+        parts.append(f"{int(height)}p")
+    elif info.get("quality") and info["quality"] not in ("best", "auto"):
+        parts.append(_sanitize_title(str(info["quality"])))
+    dur = ds_records.fmt_duration(info.get("duration"))
+    if dur:
+        parts.append(dur)
+    return " - ".join(_sanitize_title(p) for p in parts if p)
+
+
+def _finalize_stream_name(path, job_id, title="", page_url="", stream_url="", info=None):
+    """Rename a finished recording to `<label> Stream #dd`.
+
+    `title` is passed in rather than looked up. It used to come from
+    `get_job(job_id)`, which reads the *in-process* store belonging to the
+    retired local server; worker jobs live in the API's Postgres, so that
+    lookup returned None every time, the title was always empty, and naming
+    silently fell through to the URL-derived path on every single recording.
+
+    Every recording that has a label at all is numbered, including the ones
+    named after the site. Two recordings from the same place on the same day
+    are the normal case, and `(1)` appended by a collision check reads like a
+    duplicate file rather than a second session.
+    """
     if not path or not os.path.exists(path):
         return path
-    job = get_job(job_id) or {}
-    title = job.get('title') or ''
+    title = title or ""
 
-    # Preferred: the subject out of the tab title, numbered. Falls through to
-    # the old behaviour when the title has nothing in it worth keeping.
-    clean_title = stream_filename(title, os.path.dirname(path) or STREAMS_DIR)
+    # What yt-dlp called it, cleaned up: on some hosts this is the real stream
+    # title out of the manifest, which beats the site name.
+    from_file = os.path.basename(path)
+    if from_file.startswith(f"pzstream_{job_id}_"):
+        from_file = from_file[len(f"pzstream_{job_id}_"):]
+    from_file = re.sub(r'\s*\[[^\]]+\](?=\.[^.]+$)', '', from_file)
+    from_file = re.sub(r'\.[^.]+$', '', from_file)
+    # Names this module itself produced are not evidence of anything.
+    if re.fullmatch(r'(resume\d+|capture|joined|concat)', from_file, re.I):
+        from_file = ""
 
-    if not clean_title:
-        clean_title = _sanitize_title(title)
-    if not clean_title or clean_title.lower() in ('stream', 'master', 'playlist', 'chunklist', 'index'):
-        orig_name = os.path.basename(path)
-        clean_title = orig_name
-        if clean_title.startswith(f"pzstream_{job_id}_"):
-            clean_title = clean_title[len(f"pzstream_{job_id}_"):]
-        clean_title = re.sub(r'\s*\[[^\]]+\](?=\.[^.]+$)', '', clean_title)
-        clean_title = re.sub(r'\.[^.]+$', '', clean_title)
-        clean_title = _sanitize_title(clean_title)
-
-    if not clean_title or clean_title.lower() in ('master', 'index'):
+    # The performer, when the page told us one, outranks everything the title
+    # chain can dig up: it came from the page's own markup, not a guess.
+    performer = _sanitize_title((info or {}).get("performer") or "")
+    if performer and performer.lower() in _GENERIC_LABELS:
+        performer = ""
+    label = performer or stream_label(title, page_url, from_file, stream_url)
+    parent_dir = os.path.dirname(path)
+    if label:
+        index = next_stream_index(parent_dir or STREAMS_DIR, label)
+        clean_title = f"{label} Stream #{index:02d}"
+        suffix = rich_suffix(label, info, page_url, title, stream_url)
+        if suffix:
+            clean_title = f"{clean_title} - {suffix}"[:200].rstrip(" -")
+    else:
+        # Nothing to go on anywhere: no title, no page, no usable filename.
         clean_title = f"stream_{job_id[:12]}"
+    if info is not None:
+        info["label"] = label
 
     ext = os.path.splitext(path)[1] or '.mp4'
-    parent_dir = os.path.dirname(path)
     target_path = os.path.join(parent_dir, f"{clean_title}{ext}")
 
     counter = 1
@@ -187,6 +369,52 @@ def _num(value):
         return None
 
 
+# Query parameters a *client* adds to one request for a playlist, rather than
+# parameters that identify the playlist. RFC 8216bis calls these Delivery
+# Directives: `_HLS_msn` and `_HLS_part` ask the server to block until a
+# specific media sequence and part exist, and `_HLS_skip` asks for a delta
+# update. Hosts add their own — chaturbate sends `sn`, its own sequence number,
+# alongside `_HLS_part`.
+_HLS_DIRECTIVES = {"_hls_msn", "_hls_part", "_hls_skip", "_hls_report"}
+# Only stripped in the company of a real directive, because a bare `sn` on some
+# other host may well be part of the identity.
+_HLS_COMPANIONS = {"sn"}
+
+
+def strip_delivery_directives(url):
+    """Drop per-request LL-HLS parameters from a captured playlist URL.
+
+    A low-latency player asks for *the next part* — `?sn=10176&_HLS_part=0` —
+    and that is the URL we capture, because it is the request that went past
+    the sniffer. Handing it to yt-dlp minutes later asks the edge for a part
+    that left the live window long ago, and the answer is 403. That is the
+    chaturbate failure: fifteen retries against a sequence number frozen at
+    capture time, about five minutes of backoff, then the same 403 from the
+    ffmpeg fallback because it was given the same URL.
+
+    Without the directives the same URL means "the playlist as it is now",
+    which is what a recording wants. Everything else in the query — tokens,
+    signatures, expiries — is left exactly as captured.
+    """
+    if not isinstance(url, str) or "?" not in url:
+        return url
+    try:
+        parsed = urlparse(url)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if not pairs:
+            return url
+        has_directive = any(k.lower() in _HLS_DIRECTIVES for k, _ in pairs)
+        if not has_directive:
+            return url
+        kept = [
+            (k, v) for k, v in pairs
+            if k.lower() not in _HLS_DIRECTIVES and k.lower() not in _HLS_COMPANIONS
+        ]
+        return urlunparse(parsed._replace(query=urlencode(kept)))
+    except Exception:
+        return url
+
+
 def _sanitize_stream_url(url):
     if not isinstance(url, str):
         return None
@@ -211,7 +439,30 @@ def _sanitize_stream_url(url):
         return None
     if not parsed.hostname:
         return None
-    return candidate
+    return strip_delivery_directives(candidate)
+
+
+def classic_hls(url):
+    """The ordinary-HLS twin of a Flussonic low-latency playlist.
+
+    Camsoda publishes `.../<model>-flu_v1/index.ll.m3u8`. Neither recorder
+    follows that one properly: yt-dlp produces nothing and ffmpeg records one
+    6-second segment and stops, which is where all the ~600KB "Camsoda
+    Stream" files came from. Flussonic serves every stream as classic HLS as
+    well, at the same path without `.ll`, with the same token — and that one
+    both clients follow like any live playlist.
+
+    Returns the URL unchanged for anything that is not an `.ll.m3u8`.
+    """
+    if not isinstance(url, str):
+        return url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not parsed.path.lower().endswith(".ll.m3u8"):
+        return url
+    return urlunparse(parsed._replace(path=parsed.path[:-len(".ll.m3u8")] + ".m3u8"))
 
 
 def probe_stream(url, headers=None, proxy=None):
@@ -370,8 +621,18 @@ def preview_stream(url, headers=None, proxy=None):
     }
 
 
-def record_with_ffmpeg(job_id, url, headers=None, proxy=None, report=None, out_path=None):
+def record_with_ffmpeg(job_id, url, headers=None, proxy=None, report=None, out_path=None,
+                       audio_url=None):
     """Record a manifest with ffmpeg instead of yt-dlp.
+
+    Also the *only* client that can record a stream published as two separate
+    playlists. Chaturbate serves `chunklist_3_video_<id>_llhls.m3u8` and
+    `chunklist_5_audio_<id>_llhls.m3u8` as unrelated media playlists with no
+    master tying them together, so there is no format for yt-dlp to merge —
+    `-f best+bestaudio` has nothing to select from, and the recording comes out
+    silent. Two `-i` inputs and an explicit map is what actually joins them,
+    and it is still `-c copy`: no decode, no re-encode, just two live inputs
+    into one container.
 
     This exists because of a case where the two genuinely disagree. On
     livemediahost, yt-dlp's generic extractor fetches the manifest URL as a
@@ -391,21 +652,36 @@ def record_with_ffmpeg(job_id, url, headers=None, proxy=None, report=None, out_p
     report = report or _Reporter()
     ff = os.path.join(ffmpeg_location(), "ffmpeg") if ffmpeg_location() else "ffmpeg"
 
+    def input_args(target):
+        """Per-input options. ffmpeg applies these to the -i that follows, so
+        they have to be repeated for the audio input rather than set once."""
+        out = []
+        if _is_http(target):
+            out += _ffmpeg_header_args(headers)
+            if proxy:
+                out += ["-http_proxy", proxy]
+            out += ["-rw_timeout", str(30 * 1_000_000)]
+        return out
+
     cmd = [ff, "-nostdin", "-loglevel", "error"]
-    if _is_http(url):
-        cmd += _ffmpeg_header_args(headers)
-        if proxy:
-            cmd += ["-http_proxy", proxy]
-        cmd += ["-rw_timeout", str(30 * 1_000_000)]
+    cmd += input_args(url) + ["-i", url]
+    if audio_url:
+        cmd += input_args(audio_url) + ["-i", audio_url]
+    cmd += ["-c", "copy"]
+    if audio_url:
+        # Explicit, and optional on both sides: a video playlist that turns out
+        # to carry its own audio track would otherwise make ffmpeg fail on a
+        # duplicate stream, and an audio playlist that stalls should not take
+        # the video down with it.
+        cmd += ["-map", "0:v:0?", "-map", "1:a:0?"]
     cmd += [
-        "-i", url,
-        "-c", "copy",
         "-f", "mpegts",
         # Machine-readable progress on stdout; errors stay on stderr.
         "-progress", "pipe:1", "-y", out_path,
     ]
 
-    print(f"[Stream] {job_id} recording with ffmpeg -> {os.path.basename(out_path)}")
+    what = "video+audio" if audio_url else "one input"
+    print(f"[Stream] {job_id} recording with ffmpeg ({what}) -> {os.path.basename(out_path)}")
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
         proc = subprocess.Popen(
@@ -613,14 +889,150 @@ def _run_rcat(cmd, remote_path, report, job_id, proxy_note=""):
     report.fail(job_id, err[:500])
 
 
+def _format_selector(format_id):
+    """A yt-dlp `-f` expression that keeps the audio attached.
+
+    HLS masters on these sites publish their video variants as *video only* —
+    the audio is a separate `#EXT-X-MEDIA` rendition — so `-f 4670`, which is
+    exactly what the quality dropdown sends, records a silent file. Verified
+    against Apple's reference master: every one of its 21 video formats is
+    `video only`, and `-f 530` alone produces a stream with no audio track.
+
+    `<fid>+ba/<fid>` merges the best audio rendition onto the chosen video and
+    falls back to the bare format for streams that are already muxed (a chunk
+    list with no rendition to merge), where the `+` side cannot be satisfied
+    and yt-dlp would otherwise error out rather than degrade.
+
+    This holds on the pipe-to-remote path too: `--hls-use-mpegts` puts yt-dlp
+    on the ffmpeg downloader, which takes both inputs and writes the merged
+    MPEG-TS to stdout, so `sink="rcat"` recordings gain audio as well.
+    """
+    fid = str(format_id or "").strip()
+    if not fid:
+        # yt-dlp's own default, spelled out: the `/b` tail is what catches a
+        # muxed-only live stream, which has no separate video stream to pick.
+        return "bv*+ba/b"
+    # An expression the caller built themselves is left exactly as given.
+    if any(c in fid for c in "+/[]"):
+        return fid
+    return f"{fid}+ba/{fid}"
+
+
+def _find_outputs(prefix):
+    """Every finished file for this job, oldest first.
+
+    A resumed recording leaves one file per attempt. Ordered by mtime rather
+    than by name because the first attempt is named from the stream's title and
+    the resumes are not, so there is no lexical order to rely on.
+    """
+    if not os.path.isdir(STREAMS_DIR):
+        return []
+    matches = [
+        f for f in os.listdir(STREAMS_DIR)
+        if f.startswith(prefix) and not f.endswith((".part", ".ytdl", ".txt"))
+    ]
+    matches.sort(key=lambda f: os.path.getmtime(os.path.join(STREAMS_DIR, f)))
+    return [os.path.join(STREAMS_DIR, f) for f in matches]
+
+
+def _concat_parts(paths, job_id):
+    """Join a resumed recording's pieces into one file, without re-encoding.
+
+    `-c copy` throughout: the pieces are MPEG-TS from the same broadcast at the
+    same settings, so this is a container-level join and costs seconds rather
+    than a re-encode of an hour of video. A failure here is not fatal — the
+    caller keeps the longest piece, which is a worse outcome than a joined file
+    but a far better one than no file.
+    """
+    if len(paths) < 2:
+        return paths[0] if paths else None
+
+    ff = os.path.join(ffmpeg_location(), "ffmpeg") if ffmpeg_location() else "ffmpeg"
+    listing = os.path.join(STREAMS_DIR, f"pzstream_{job_id}_concat.txt")
+    joined = os.path.join(STREAMS_DIR, f"pzstream_{job_id}_joined.ts")
+    try:
+        with open(listing, "w", encoding="utf-8") as fh:
+            for pth in paths:
+                # ffmpeg's concat demuxer takes single quotes literally; the
+                # documented escape is to close, escape, and reopen.
+                escaped = pth.replace("'", "'\\''")
+                fh.write("file '" + escaped + "'\n")
+        result = subprocess.run(
+            [ff, "-nostdin", "-loglevel", "error", "-f", "concat", "-safe", "0",
+             "-i", listing, "-c", "copy", "-y", joined],
+            capture_output=True, text=True, timeout=1800,
+        )
+        if result.returncode == 0 and os.path.exists(joined) and os.path.getsize(joined) > 0:
+            for pth in paths:
+                try:
+                    os.remove(pth)
+                except OSError:
+                    pass
+            print(f"[Stream] {job_id} joined {len(paths)} pieces -> {os.path.basename(joined)}")
+            return joined
+        print(f"[Stream] {job_id} join failed ({(result.stderr or '').strip()[:200]}); keeping pieces")
+    except Exception as e:
+        print(f"[Stream] {job_id} join failed ({e}); keeping pieces")
+    finally:
+        try:
+            os.remove(listing)
+        except OSError:
+            pass
+    # Keep the longest piece rather than an arbitrary one.
+    return max(paths, key=lambda pth: os.path.getsize(pth))
+
+
+# How many times a capture will pick up a fresh URL before giving up, and how
+# soon after starting an attempt a restart is allowed. Together they bound the
+# case where the refreshed URL is just as dead as the last one: without the
+# interval, a stream failing instantly would burn all attempts in a second.
+MAX_RESUMES = 20
+MIN_ATTEMPT_SECONDS = 20
+
+
 def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
-                    report=None, sink="local", rcat_remote=None, title=None):
-    """Run yt-dlp with progress tracking; manages the job status end to end."""
+                    report=None, sink="local", rcat_remote=None, title=None,
+                    refresh_url=None, page_url="", audio_url="", meta=None,
+                    on_saved=None):
+    """Run yt-dlp with progress tracking; manages the job status end to end.
+
+    `refresh_url` is a callable returning the freshest URL the browser has seen
+    for this stream, or "" when it has none. It exists because a live edge
+    stops serving a URL long before the broadcast ends — the signature expires,
+    or the CDN drops a viewer it can no longer see — and the only thing that
+    still holds a working URL is the tab, which keeps requesting one every few
+    seconds. Without it, leaving the page ended the recording a few minutes
+    later and there was nothing on this side that could have known better.
+
+    `meta` is what the extension knew about the stream — performer, tab title,
+    quality, thumbnail — and goes into the name and the sidecar. `on_saved`
+    is called with the finished path and its record before the job is marked
+    complete, and may return a different path: it is how the worker offers
+    the user a chance to rename the recording.
+    """
     report = report or _Reporter()
+    meta = dict(meta or {})
+    started_at = time.time()
+    # The captured URL is whatever request the player happened to make, which
+    # for a low-latency stream is a request for one specific part. Cleaned once
+    # here so both clients get the same URL — the ffmpeg fallback used to be
+    # handed the raw one and fail identically, which made a URL problem look
+    # like two independent client problems.
+    safe = _sanitize_stream_url(url)
+    if not safe:
+        report.fail(job_id, "invalid stream url")
+        return
+    # Kept for the sidecar and as a last resort: see classic_hls.
+    original_url = safe
+    url = safe if audio_url else classic_hls(safe)
+    if url != safe:
+        print(f"[Stream] {job_id} low-latency Flussonic playlist; recording its classic HLS twin")
     to_remote = sink == "rcat" and bool(rcat_remote)
     if not to_remote:
         os.makedirs(STREAMS_DIR, exist_ok=True)
     report.update(job_id, status="running", progress=0)
+
+    audio_url = _sanitize_stream_url(audio_url) if audio_url else ""
 
     prefix = f"pzstream_{job_id}_"
     outtmpl = os.path.join(STREAMS_DIR, prefix + "%(title).80s [%(id)s].%(ext)s")
@@ -628,88 +1040,184 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         "PZPROG:%(progress.downloaded_bytes)s/%(progress.total_bytes)s/"
         "%(progress.total_bytes_estimate)s/%(progress.speed)s/%(progress.eta)s"
     )
-    cmd = [
-        ytdlp_bin(),
-        # "-" writes the media to stdout so rclone can take it on stdin. The
-        # progress template then has to leave on stderr, which is why the two
-        # streams are read separately in _run_rcat.
-        "-o", "-" if to_remote else outtmpl,
-        "--no-warnings", "--no-playlist",
-        "--newline", "--progress-template", progress_tmpl,
-        # Keep partial live recordings valid & recoverable if the stream drops.
-        # Doing double duty when piping: mpegts is the container that stays
-        # playable while it is still being written.
-        "--hls-use-mpegts", "--retries", "15", "--fragment-retries", "15",
-    ]
-    ff = ffmpeg_location()
-    if ff:
-        cmd += ["--ffmpeg-location", ff]
-    cmd += _proxy_args(proxy)
-    cmd += build_ytdlp_header_args(headers)
-    if format_id:
-        cmd += ["-f", format_id]
-    cmd.append(url)
+
+    def build_cmd(target_url, out):
+        cmd = [
+            ytdlp_bin(),
+            # "-" writes the media to stdout so rclone can take it on stdin. The
+            # progress template then has to leave on stderr, which is why the two
+            # streams are read separately in _run_rcat.
+            "-o", out,
+            "--no-warnings", "--no-playlist",
+            "--newline", "--progress-template", progress_tmpl,
+            # Keep partial live recordings valid & recoverable if the stream drops.
+            # Doing double duty when piping: mpegts is the container that stays
+            # playable while it is still being written.
+            "--hls-use-mpegts", "--retries", "15", "--fragment-retries", "15",
+        ]
+        ff = ffmpeg_location()
+        if ff:
+            cmd += ["--ffmpeg-location", ff]
+        cmd += _proxy_args(proxy)
+        cmd += build_ytdlp_header_args(headers)
+        cmd += ["-f", _format_selector(format_id)]
+        cmd.append(target_url)
+        return cmd
+
+    cmd = build_cmd(url, "-" if to_remote else outtmpl)
 
     if to_remote:
         target = _rcat_target(rcat_remote, title, job_id)
         print(f"[Stream] {job_id} streaming to {target}")
         return _run_rcat(cmd, target, report, job_id)
 
-    print(f"[Stream] {job_id} downloading: {url}")
     # New process group on Windows so we can send CTRL_BREAK for a *graceful*
     # stop — yt-dlp then finalizes/muxes the partial live recording into a real
     # file instead of leaving a .part behind.
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, encoding="utf-8", errors="replace",
-            creationflags=creationflags,
-        )
-    except FileNotFoundError:
-        report.fail(job_id, "yt-dlp not installed")
-        return
-    except Exception as e:
-        report.fail(job_id, e)
-        return
+    # Bytes banked by attempts that have already finished. A resumed recording
+    # reports the running total, so the readout keeps climbing instead of
+    # dropping back to zero every time the URL is refreshed.
+    banked_bytes = 0
+    # The last process started, for the exit code the failure branch reports.
+    last = {"proc": None}
 
-    with PROCESSES_LOCK:
-        PROCESSES[job_id] = proc
+    def run_attempt(attempt_cmd, attempt_url):
+        """One yt-dlp run, start to finish. Returns (tail, outcome)."""
+        nonlocal banked_bytes
+        print(f"[Stream] {job_id} downloading: {attempt_url}")
+        try:
+            proc = subprocess.Popen(
+                attempt_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, encoding="utf-8", errors="replace",
+                creationflags=creationflags,
+            )
+        except FileNotFoundError:
+            return ["yt-dlp not installed"], "missing"
+        except Exception as e:
+            return [str(e)], "error"
 
-    tail = []
-    try:
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            if line.startswith("PZPROG:"):
-                parts = line[len("PZPROG:"):].split("/")
-                if len(parts) == 5:
-                    downloaded = _num(parts[0])
-                    total = _num(parts[1]) or _num(parts[2])
-                    speed = _num(parts[3])
-                    eta = _num(parts[4])
-                    percent = None
-                    if downloaded is not None and total:
-                        percent = round(min(100.0, downloaded / total * 100.0), 1)
-                    report.update(
-                        job_id,
-                        progress=percent if percent is not None else 0,
-                        downloaded_bytes=int(downloaded) if downloaded else 0,
-                        total_bytes=int(total) if total else 0,
-                        speed=speed, eta=eta,
-                    )
-            else:
-                tail.append(line)
-                if len(tail) > 15:
-                    tail.pop(0)
-    finally:
-        proc.wait()
+        last["proc"] = proc
         with PROCESSES_LOCK:
-            PROCESSES.pop(job_id, None)
+            PROCESSES[job_id] = proc
+
+        lines = []
+        attempt_bytes = 0
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if line.startswith("PZPROG:"):
+                    parts = line[len("PZPROG:"):].split("/")
+                    if len(parts) == 5:
+                        downloaded = _num(parts[0])
+                        total = _num(parts[1]) or _num(parts[2])
+                        speed = _num(parts[3])
+                        eta = _num(parts[4])
+                        if downloaded:
+                            attempt_bytes = int(downloaded)
+                        percent = None
+                        if downloaded is not None and total:
+                            percent = round(min(100.0, downloaded / total * 100.0), 1)
+                        report.update(
+                            job_id,
+                            progress=percent if percent is not None else 0,
+                            downloaded_bytes=banked_bytes + attempt_bytes,
+                            total_bytes=int(total) if total else 0,
+                            speed=speed, eta=eta,
+                        )
+                else:
+                    lines.append(line)
+                    if len(lines) > 15:
+                        lines.pop(0)
+        finally:
+            proc.wait()
+            with PROCESSES_LOCK:
+                PROCESSES.pop(job_id, None)
+        banked_bytes += attempt_bytes
+        return lines, "ran"
+
+    # The capture, and as many resumptions of it as the browser can supply URLs
+    # for. A live edge stops serving a URL well before the broadcast ends, and
+    # nothing on this side can tell that from the broadcast having ended — the
+    # tab can, because it is still being served.
+    def attempt(n):
+        """One capture, by whichever client can actually do the job.
+
+        ffmpeg when the stream is two playlists: yt-dlp is handed one media
+        playlist and no master, so there is no audio rendition for it to merge
+        and `-f <id>+ba` has nothing to select. Two inputs and an explicit map
+        is the only thing that produces a file with sound.
+        """
+        if not audio_url:
+            return run_attempt(cmd, url)
+        out_path = os.path.join(STREAMS_DIR, prefix + f"capture{n:02d}.ts")
+        okay, err = record_with_ffmpeg(
+            job_id, url, headers, proxy, report=report, out_path=out_path,
+            audio_url=audio_url,
+        )
+        return ([] if okay else [f"ffmpeg: {err}"]), "ran"
+
+    recorder = "ffmpeg-paired" if audio_url else "yt-dlp"
+    tail = []
+    resumes = 0
+    while True:
+        began = time.monotonic()
+        tail, outcome = attempt(resumes)
+        ran_for = time.monotonic() - began
+
+        if outcome != "ran" or job_id in STOPPED or resumes >= MAX_RESUMES:
+            break
+        if not refresh_url:
+            break
+
+        # Rate limit, and give the tab a moment to publish a newer URL than the
+        # one that just died. Without this a stream failing instantly would
+        # burn every attempt in a second and report a confusing pile of them.
+        if ran_for < MIN_ATTEMPT_SECONDS:
+            time.sleep(MIN_ATTEMPT_SECONDS - ran_for)
+            if job_id in STOPPED:
+                break
+
+        fresh, fresh_audio = None, ""
+        try:
+            got = refresh_url() or ""
+            # The refresher may hand back both halves, since the audio
+            # playlist's token rotates independently of the video one and a
+            # fresh video muxed against a stale audio records silence.
+            if isinstance(got, dict):
+                fresh = _sanitize_stream_url((got.get("stream_url") or "").strip())
+                fresh_audio = (got.get("audio_url") or "").strip()
+            else:
+                fresh = _sanitize_stream_url(str(got).strip())
+            if fresh and not fresh_audio:
+                fresh = classic_hls(fresh)
+        except Exception as e:
+            print(f"[Stream] {job_id} could not read a fresh URL ({e})")
+            fresh = None
+        # No fresher URL than the one that just failed means the tab is gone or
+        # the broadcast is over. Either way there is nothing left to try.
+        if not fresh or (fresh == url and fresh_audio == audio_url):
+            break
+
+        resumes += 1
+        url = fresh
+        if fresh_audio:
+            audio_url = _sanitize_stream_url(fresh_audio) or audio_url
+        cmd = build_cmd(url, os.path.join(STREAMS_DIR, prefix + f"resume{resumes:02d}.ts"))
+        print(f"[Stream] {job_id} the tab has a newer URL; resuming (#{resumes})")
+        report.update(job_id, status="running")
 
     was_stopped = job_id in STOPPED
-    # Prefer a finalized file; otherwise rescue a leftover .part (dropped
-    # connection or hard kill) so we never throw away a recording.
-    path = _find_output(prefix) or _salvage_part(prefix)
+    # Every attempt left a file. One is the ordinary case; several mean the
+    # recording was resumed, and they are joined into the single file the user
+    # was expecting — a container-level join of MPEG-TS from one broadcast, so
+    # it costs seconds rather than a re-encode.
+    produced = _find_outputs(prefix)
+    path = _concat_parts(produced, job_id) if produced else None
+    # Otherwise rescue a leftover .part (dropped connection or hard kill) so we
+    # never throw away a recording.
+    if not path:
+        path = _salvage_part(prefix)
 
     # yt-dlp produced nothing and the user did not stop it: try ffmpeg before
     # calling it a failure. See record_with_ffmpeg for why the two disagree.
@@ -717,10 +1225,19 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         print(f"[Stream] {job_id} yt-dlp produced nothing; retrying with ffmpeg")
         report.update(job_id, status="running", progress=0)
         fallback = os.path.join(STREAMS_DIR, prefix + "capture.ts")
+        recorder = "ffmpeg"
         okay, ff_err = record_with_ffmpeg(
             job_id, url, headers, proxy, report=report, out_path=fallback,
         )
         was_stopped = job_id in STOPPED
+        # The classic twin was a guess about the host; the URL the page
+        # actually used is still worth one try before giving up.
+        if not okay and not was_stopped and url != original_url:
+            print(f"[Stream] {job_id} classic HLS failed ({ff_err}); trying the low-latency URL")
+            okay, ff_err = record_with_ffmpeg(
+                job_id, original_url, headers, proxy, report=report, out_path=fallback,
+            )
+            was_stopped = job_id in STOPPED
         if okay:
             path = fallback
         else:
@@ -731,7 +1248,46 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
     # A produced file is a success even on non-zero exit — that's the normal
     # outcome of stopping/losing a live recording.
     if path:
-        path = _finalize_stream_name(path, job_id)
+        ended_at = time.time()
+        media = ds_records.probe_media(path)
+        info = dict(meta)
+        info.update({
+            # Local time, because that is the clock the user remembers the
+            # show by. No colons: Windows refuses them in a filename.
+            "started_local": time.strftime("%Y-%m-%d %Hh%M", time.localtime(started_at)),
+            "height": media.get("height"),
+            "duration": media.get("duration"),
+            "username": url_label(url) or url_label(original_url),
+            "site": site_label(page_url, title),
+        })
+        path = _finalize_stream_name(path, job_id, title, page_url, url, info)
+        capture = dict(meta)
+        capture.update({
+            "stream_url": url,
+            "original_stream_url": original_url if original_url != url else "",
+            "audio_url": audio_url,
+            "page_url": page_url,
+            "site": info.get("site"),
+            "username": info.get("username"),
+            "tab_title": meta.get("tab_title") or title or "",
+            "label": info.get("label"),
+            "recorder": recorder,
+            "resumes": resumes,
+            "sink": "local",
+            "proxied": bool(proxy or PROXY),
+            "headers_used": list((headers or {}).keys()),
+            "started_at": ds_records._iso(started_at),
+            "ended_at": ds_records._iso(ended_at),
+            "wall_seconds": round(ended_at - started_at, 1),
+            "end_reason": "stopped" if was_stopped else "ended",
+        })
+        record = ds_records.build_record(path, job_id, capture, media)
+        ds_records.write_sidecar(path, record)
+        if on_saved:
+            try:
+                path = on_saved(path, record) or path
+            except Exception as e:
+                print(f"[Stream] {job_id} naming step failed ({e}); keeping {os.path.basename(path)}")
         if os.environ.get("PYTHON_ZIPPER_STREAM_RCLONE") == "1":
             handoff_to_rclone(path)
             path = _find_output(prefix) or path  # may have moved
@@ -739,14 +1295,17 @@ def download_stream(job_id, url, headers=None, format_id=None, proxy=None,
         report.update(job_id, save_path=os.path.abspath(path), save_dir=STREAMS_DIR)
         report.complete(job_id, archives=[filename], rclone_complete=False)
         print(f"[Stream] {job_id} saved -> {path}")
-    elif was_stopped or (proc.returncode is not None and proc.returncode < 0):
+    elif was_stopped or ((last['proc'] is not None)
+                         and last['proc'].returncode is not None
+                         and last['proc'].returncode < 0):
         report.update(job_id, status="aborted", progress=0)
         print(f"[Stream] {job_id} stopped with no output")
     else:
         # Show the reason on the server console. yt-dlp does not echo secret
         # headers, so this tail is safe to print.
-        err = "\n".join(tail[-8:]) or f"yt-dlp exited {proc.returncode}"
-        print(f"[Stream] {job_id} FAILED (exit {proc.returncode}):\n{err}")
+        code = last["proc"].returncode if last["proc"] is not None else "?"
+        err = "\n".join(tail[-8:]) or f"yt-dlp exited {code}"
+        print(f"[Stream] {job_id} FAILED (exit {code}):\n{err}")
         report.fail(job_id, err)
 
 

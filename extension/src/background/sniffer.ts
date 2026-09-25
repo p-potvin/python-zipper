@@ -1,5 +1,9 @@
 import { ext, IS_FIREFOX } from '../common/api';
 import type { DetectedStream, StreamType, TitleSource } from '../common/types';
+import {
+  stripDeliveryDirectives, playlistRole, arePaired, type PlaylistRole,
+  isGenericTitle,
+} from '../common/streams';
 
 // ---- Detection tables -------------------------------------------------------
 
@@ -154,6 +158,52 @@ function isBadAuthUrl(url: string): boolean {
 
 type TabStreams = Map<string, DetectedStream>;
 const store = new Map<number, TabStreams>();
+
+/**
+ * Streams belonging to pages that have been navigated away from.
+ *
+ * Detection is passive — a stream is only known because a request for it went
+ * past — so discarding a page's streams on navigation means that going back
+ * shows an empty list until the player happens to re-request its manifest.
+ * That wait is the difference between the extension feeling instant and
+ * feeling broken, and it is entirely avoidable: the streams were already
+ * found, they just belong to a page that is not on screen.
+ *
+ * Keyed by page URL rather than by tab, so the same page reopened in a
+ * different tab is served from here too. Bounded and oldest-first, because
+ * this is a convenience cache and not a session history.
+ */
+const parked = new Map<string, { at: number; streams: DetectedStream[] }>();
+const MAX_PARKED_PAGES = 30;
+
+function park(pageUrl: string, streams: DetectedStream[]): void {
+  if (!pageUrl || !streams.length) return;
+  parked.set(pageUrl, { at: Date.now(), streams });
+  while (parked.size > MAX_PARKED_PAGES) {
+    const oldest = [...parked.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (!oldest) break;
+    parked.delete(oldest[0]);
+  }
+}
+
+/**
+ * Put a page's previously-found streams back, if we still have them.
+ *
+ * The tab id is rewritten on the way out: the same page may well be open in a
+ * different tab this time, and every lookup downstream — headers, badge, the
+ * recorder — keys on the tab the stream is currently in.
+ */
+function unpark(tabId: number, pageUrl: string): void {
+  const held = parked.get(pageUrl);
+  if (!held) return;
+  const m = tabMap(tabId);
+  for (const s of held.streams) {
+    if (m.has(s.key)) continue;
+    m.set(s.key, { ...s, tabId });
+  }
+  parked.delete(pageUrl);
+  notify(tabId);
+}
 // Variant playlist keys that belong to a detected master — hidden from the list.
 const childKeys = new Map<number, Set<string>>();
 const pending = new Map<string, { tabId: number; headers: Record<string, string> }>();
@@ -212,6 +262,39 @@ function notify(tabId: number): void {
   updateBadge(tabId);
 }
 
+/**
+ * Audio playlists waiting for the video half they belong to.
+ *
+ * Some hosts publish a stream as two media playlists with no master joining
+ * them, so the audio arrives looking exactly like a stream of its own. Listing
+ * it is noise — you cannot usefully record half a broadcast — and worse, the
+ * video half has no way to know the audio exists, which is why those
+ * recordings came out silent.
+ *
+ * Held per tab and kept fresh, because the session token in the audio URL
+ * rotates just like the video one and a stale one would mux in silence.
+ */
+const pendingAudio = new Map<number, Map<string, string>>();
+
+function groupKey(r: PlaylistRole): string {
+  return r.dir + '#' + r.group;
+}
+
+function audioBank(tabId: number): Map<string, string> {
+  let m = pendingAudio.get(tabId);
+  if (!m) { m = new Map(); pendingAudio.set(tabId, m); }
+  return m;
+}
+
+/** The listed stream, if any, that this playlist is the other half of. */
+function pairedEntry(tabId: number, mine: PlaylistRole): DetectedStream | undefined {
+  for (const other of store.get(tabId)?.values() ?? []) {
+    const theirs = playlistRole(other.url);
+    if (theirs && arePaired(mine, theirs)) return other;
+  }
+  return undefined;
+}
+
 async function register(
   tabId: number,
   url: string,
@@ -221,7 +304,42 @@ async function register(
 ): Promise<void> {
   if (isSnifferIdle()) return;
   if (tabId < 0) return;
+  // A low-latency player's request carries "give me part N" in the query. That
+  // is the request we see, but it is not the stream — recording it later asks
+  // the edge for a part long gone and is answered 403. Cleaned here, at the one
+  // place a URL enters the store, so the probe, the preview and the recorder
+  // all work from the same URL.
+  url = stripDeliveryDirectives(url);
   const key = streamKey(url);
+
+  // Two playlists, one stream. Resolved before anything is stored, in whichever
+  // order the halves arrive.
+  const role = playlistRole(url);
+  if (role) {
+    const bank = audioBank(tabId);
+    const partner = pairedEntry(tabId, role);
+    if (role.role === 'audio') {
+      bank.set(groupKey(role), url);          // always the freshest token
+      if (partner) {
+        partner.audioUrl = url;
+        // It was listed before its video half turned up; it is not a stream.
+        store.get(tabId)?.delete(key);
+        notify(tabId);
+        return;
+      }
+      // No video half yet. Fall through and list it — a genuinely audio-only
+      // stream must still be offered, and if the video arrives it absorbs this.
+    } else {
+      const known = bank.get(groupKey(role));
+      const existingVideo = store.get(tabId)?.get(key);
+      if (known) {
+        if (existingVideo) existingVideo.audioUrl = known;
+        if (partner && partner.key !== key) {
+          store.get(tabId)?.delete(partner.key);   // the audio half, listed early
+        }
+      }
+    }
+  }
   if (childKeys.get(tabId)?.has(key)) return; // folded under a master
 
   const m = tabMap(tabId);
@@ -232,7 +350,7 @@ async function register(
     // Keep a keyed URL; only replace when the new one is no worse. Upgrading
     // from a bad (key=null) URL to a good one re-arms the probe.
     if (!newBad || oldBad) {
-      existing.url = url;
+      existing.url = url;   // already cleaned above
       if (Object.keys(headers).length) existing.headers = headers;
       if (oldBad && !newBad) { existing.probed = false; existing.meta = undefined; }
     }
@@ -260,6 +378,10 @@ async function register(
     firstSeen: Date.now(), lastSeen: Date.now(), hits: 1,
     titleSource: 'tab-title',
   };
+  if (role && role.role === 'video') {
+    const known = audioBank(tabId).get(groupKey(role));
+    if (known) s.audioUrl = known;
+  }
   m.set(key, s);
   notify(tabId);
   onNewStream?.(s);
@@ -291,6 +413,11 @@ async function enrichTitleFromDOM(
 
     const cleaned = cleanStreamTitle(response.title);
     if (!cleaned || cleaned === 'stream') return;
+    // The DOM extractor reads the label nearest the media element, and on a
+    // lot of players that label is the word "player". It outranks every other
+    // source, so letting it through renamed the stream — and the recording —
+    // after the widget instead of the broadcast.
+    if (isGenericTitle(cleaned)) return;
 
     let hostname = '';
     try { hostname = new URL(pageUrl).hostname; } catch { /* bad url */ }
@@ -319,6 +446,20 @@ export function getStream(tabId: number, key: string): DetectedStream | undefine
   return store.get(tabId)?.get(key);
 }
 
+/**
+ * Every stream, on any tab, that a recording is running for.
+ *
+ * Across tabs on purpose: the recorder does not care which tab a stream was
+ * found in, and the URL refresher needs all of them.
+ */
+export function getRecordingStreams(): DetectedStream[] {
+  const out: DetectedStream[] = [];
+  for (const m of store.values()) {
+    for (const s of m.values()) if (s.jobId) out.push(s);
+  }
+  return out;
+}
+
 export function removeStream(tabId: number, key: string): void {
   store.get(tabId)?.delete(key);
   notify(tabId);
@@ -327,6 +468,34 @@ export function removeStream(tabId: number, key: string): void {
 export function clearTab(tabId: number): void {
   store.delete(tabId);
   childKeys.delete(tabId);
+  pendingAudio.delete(tabId);
+  notify(tabId);
+}
+
+/** Clear a tab's streams because it navigated, keeping anything recording.
+ *
+ * A capture outlives the page it was found on: it runs server-side, and
+ * dropping its row here would orphan the Stop button while the recording kept
+ * going. Everything else is stale the moment the page changes — that is the
+ * whole point of clearing.
+ */
+export function clearTabOnNavigate(tabId: number, toUrl = ''): void {
+  childKeys.delete(tabId);
+  pendingAudio.delete(tabId);
+  const m = store.get(tabId);
+  if (m) {
+    const leaving: DetectedStream[] = [];
+    for (const [key, s] of Array.from(m)) {
+      if (s.jobId) continue;             // a recording outlives its page
+      leaving.push(s);
+      m.delete(key);
+    }
+    // Parked rather than dropped, under the page they were found on — coming
+    // back to it should not mean waiting for the player to reveal them again.
+    if (leaving.length) park(leaving[0].pageUrl, leaving);
+    if (!m.size) store.delete(tabId);
+  }
+  if (toUrl) unpark(tabId, toUrl);
   notify(tabId);
 }
 
@@ -385,9 +554,22 @@ export function installSniffer(): void {
   ext.webRequest.onCompleted.addListener(cleanup, filter);
   ext.webRequest.onErrorOccurred.addListener(cleanup, filter);
 
+  // Navigation clear. `tabs.onUpdated` with `info.url` below never fires on a
+  // reload, because the URL does not change — which is exactly how streams
+  // from a previous page survived in the list. The main_frame request fires on
+  // reloads, back/forward and ordinary navigation alike, so it catches all of
+  // them; `media_log.ts` and `harvest_store.ts` already clear this way.
+  ext.webRequest.onBeforeRequest.addListener(
+    (d: any) => {
+      if (d.tabId < 0 || d.type !== 'main_frame' || d.frameId !== 0) return;
+      clearTabOnNavigate(d.tabId, d.url);
+    },
+    { urls: ['<all_urls>'], types: ['main_frame'] },
+  );
+
   ext.tabs.onRemoved.addListener((tabId: number) => clearTab(tabId));
   ext.tabs.onUpdated.addListener((tabId: number, info: any) => {
-    if (info.status === 'loading' && info.url) clearTab(tabId);
+    if (info.status === 'loading' && info.url) clearTabOnNavigate(tabId);
   });
   ext.tabs.onActivated.addListener((activeInfo: any) => {
     if (activeInfo?.tabId) updateBadge(activeInfo.tabId);

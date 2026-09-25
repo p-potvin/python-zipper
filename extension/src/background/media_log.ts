@@ -240,10 +240,23 @@ async function record(d: any): Promise<void> {
 
   // Classify by MIME first — a URL with no extension is common on CDNs, and the
   // server's own content-type is more reliable than guessing from the path.
-  let kind = kindFromMime(ct);
+  const byMime = kindFromMime(ct);
+  let kind = byMime;
   if (!kind) kind = kindFromUrl(d.url);
   if (!kind || kind === 'other') return;
-  if (isRejectedExtension(d.url)) return;
+
+  // The extension blocklist only applies when the server did not identify the
+  // response itself. Some sites serve real media — and the segments of a
+  // stream — under `.js`, `.css`, `.woff` and `.woff2`, with no other
+  // obfuscation than the name. Rejecting on the extension threw those away
+  // while the Content-Type sat right there saying `video/mp4`. Believing the
+  // server costs nothing: a genuine script is `application/javascript` and
+  // never reaches this line, because `kindFromMime` returns nothing for it.
+  //
+  // Disguised *segments* are still dropped — that happens below, on the MIME
+  // and on the manifest's directory, neither of which cares what the file is
+  // called.
+  if (!byMime && isRejectedExtension(d.url)) return;
 
   // Streams are the sniffer's job; it already handles variant folding and
   // header capture. Logging them here too would double-list them.
@@ -302,6 +315,20 @@ async function record(d: any): Promise<void> {
  * those, because a candidate the DOM also saw gains dimensions and a repeat
  * count and may well clear the floor once merged.
  */
+/**
+ * What the network already knows about one URL.
+ *
+ * The response that carried this asset went past here with a Content-Length
+ * and a Content-Type on it, so the bytes and the mime are already banked —
+ * keyed by `dedupKey`, which means a cache-busted re-request still finds them.
+ * Download paths use this to record a grab with real facts instead of a bare
+ * file count, which is why Insights had byte totals of zero for three of its
+ * four domains.
+ */
+export function lookupLogged(tabId: number, url: string): MediaCandidate | undefined {
+  return log.get(tabId)?.get(dedupKey(url));
+}
+
 export function getMediaLog(tabId: number, includeWeak = false): MediaCandidate[] {
   const all = Array.from(log.get(tabId)?.values() ?? []);
   const kept = includeWeak ? all : all.filter((c) => c.score >= SCORE.FLOOR);
